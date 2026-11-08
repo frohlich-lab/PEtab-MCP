@@ -174,25 +174,25 @@ def _exponent_symbols(sm) -> set[str]:
     count — ``exp(x)`` (AST_FUNCTION_EXP) is not a cooperativity exponent and is ignored.
     """
     found: set[str] = set()
-
-    def walk(node):
-        if node is None:
-            return
+    for node in _math_nodes(sm):
         t = node.getType()
         if t in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER) and node.getNumChildren() == 2:
             found.update(_ast_names(node.getChild(1)))  # names in the exponent subtree
-        for i in range(node.getNumChildren()):
-            walk(node.getChild(i))
-
-    for i in range(sm.getNumReactions()):
-        kl = sm.getReaction(i).getKineticLaw()
-        if kl is not None:
-            walk(kl.getMath())
-    for i in range(sm.getNumRules()):
-        walk(sm.getRule(i).getMath())
-    for i in range(sm.getNumInitialAssignments()):
-        walk(sm.getInitialAssignment(i).getMath())
     return found
+
+
+def _math_nodes(sm):
+    """Every AST node of the model's reaction rate laws, rules and initial assignments."""
+    roots = [
+        *(r.getKineticLaw() for r in sm.getListOfReactions()),
+        *sm.getListOfRules(),
+        *sm.getListOfInitialAssignments(),
+    ]
+    stack = [root.getMath() for root in roots if root is not None]
+    while stack:
+        if (node := stack.pop()) is not None:
+            yield node
+            stack.extend(node.getChild(i) for i in range(node.getNumChildren()))
 
 
 def _exponent_bounds(nominal) -> tuple[float, float]:

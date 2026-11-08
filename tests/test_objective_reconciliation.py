@@ -24,9 +24,12 @@ class _Session:
     production code: a fake that omits state the real session always has lets a typo pass."""
 
     def __init__(self):
+        from types import SimpleNamespace
+
         from petab_mcp.criteria import Criterion
 
         self.logger = logging.getLogger("test_objective_reconciliation")
+        self.problem = SimpleNamespace(experiment_df=None, model=None)  # no pre-equilibration
         self.best = None
         self.criterion = Criterion()
 

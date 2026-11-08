@@ -33,6 +33,8 @@ from petab.v2.C import (
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
+    TIME,
+    TIME_PREEQUILIBRATION,
     UPPER_BOUND,
 )
 
@@ -1354,6 +1356,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         #
         # Before that, what AMICI's own check for values that are not finite caught at the nominal
         # point: a rule or rate that is not a number stops the simulation, and every point after it.
+        # Where the objective is finite there, its gradient may not be (see _non_finite_gradient).
         if objective_before is None:
             from pypesto.C import RDATAS
 
@@ -1364,6 +1367,17 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
                     "the fit produced NO usable optimum: every multistart failed, because "
                     f"{caught}, which stops the simulation. Write it so it is a number there."
                 )
+        if sources := _sources_breaking_totals(session.problem):
+            raise ModelUpdateError(
+                "the fit produced NO usable optimum: every multistart failed, because "
+                + _no_steady_state(sources)
+            )
+        if objective_before is not None and (where := _non_finite_gradient(session, problem)):
+            raise ModelUpdateError(
+                "the fit produced NO usable optimum: every multistart failed, though the "
+                "objective is finite at the nominal values: its gradient is not, and every start "
+                f"stops on its first gradient. {where}"
+            )
         undefined = _undefined_points(session, before.get("simulations") or [])
         if undefined:
             raise ModelUpdateError(
@@ -1373,9 +1387,14 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
                 "every species in a ratio starts at 0) or a log of 0. "
                 "Define each readout so it holds at every measured time, t=0 included."
             )
+        where = (
+            "The objective is finite at the nominal values, but no start ended on a finite one"
+            if objective_before is not None
+            else "The objective was non-finite at EVERY start"
+        )
         raise ModelUpdateError(
             "the fit produced NO usable optimum: every multistart failed, so the best result "
-            "carries no parameter vector. The objective was non-finite at EVERY start — a "
+            f"carries no parameter vector. {where} — a "
             "property of the problem, not the optimizer. There are two causes and they need "
             "OPPOSITE fixes, so check which one this is BEFORE editing — the fitting log tells "
             "them apart (have it read if you cannot read it yourself): (a) the SIMULATION "
@@ -1530,6 +1549,57 @@ def _non_finite(session, rdatas) -> str:
     return f"{what} is {'NaN' if identifier == 'AMICI:NaN' else 'infinite'}{when} in {where}"
 
 
+def _non_finite_gradient(session, problem) -> str:
+    """Where the objective is finite at the nominal point and its gradient is not, what the
+    gradient fails on: each power of a state that reaches 0 or below there to an estimated exponent,
+    else the parameters whose derivative is not finite; ``""`` when the gradient is finite. Below 0
+    a power with a non-integer exponent is not a number, and at 0 one with an exponent below 1 has
+    an infinite slope (AMICI writes the derivative in the exponent as 0 at a base of exactly 0).
+    bachmann 78 lost every start on a finite objective, was told the objective was non-finite at
+    every start, and read that as the mechanism refuted (PEtab-MCP#285)."""
+    import libsbml
+    import numpy as np
+    from pypesto.C import FVAL, GRAD, RDATAS
+
+    x = problem_x_from_nominal(problem, session.problem.parameter_df)
+    ret = problem.objective(x, sensi_orders=(0, 1), return_dict=True)
+    grad = np.ravel(np.asarray(ret.get(GRAD), dtype=float))
+    if np.isfinite(ret[FVAL]) and np.all(np.isfinite(grad)):
+        return ""
+    lowest: dict[str, float] = {}
+    for rd in problem.objective(x, sensi_orders=(0,), return_dict=True)[RDATAS]:
+        if rd.x0 is not None and rd.x is not None:
+            states = np.vstack([np.atleast_2d(rd.x0), np.atleast_2d(rd.x)])
+            for sid, col in zip(rd.state_ids, states.T):
+                lowest[sid] = min(lowest.get(sid, np.inf), float(np.nanmin(col)))
+    low = {sid for sid, value in lowest.items() if value <= 0}
+    wp = session.problem
+    estimated = {str(p) for p in wp.parameter_df.index if _reconcile.is_parameter_estimated(wp, p)}
+    found = []
+    for node in _reconcile._math_nodes(wp.model.sbml_model):
+        if node.getType() not in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+            continue
+        base = sorted(_reconcile._ast_names(node.getChild(0)) & low)
+        exponent = sorted(_reconcile._ast_names(node.getChild(1)) & estimated)
+        if base and exponent:
+            reaches = ", ".join(f"`{b}` reaches {lowest[b]:g}" for b in base)
+            found.append(
+                f"`{libsbml.formulaToL3String(node)}` raises a base that is not above 0 ({reaches})"
+                f" to the estimated `{'`, `'.join(exponent)}`"
+            )
+    if found:
+        return (
+            "; ".join(dict.fromkeys(found)) + ". Below 0 a power with a non-integer exponent is "
+            "not a number, and at 0 one with an exponent below 1 has no finite slope: keep that "
+            "base above 0, or write the exponent as a number."
+        )
+    free = [problem.x_names[i] for i in getattr(problem, "x_free_indices", range(len(grad)))]
+    if len(free) == len(grad) and np.isfinite(grad).any():
+        bad = [name for name, g in zip(free, grad) if not np.isfinite(g)]
+        return f"Its derivative in `{'`, `'.join(bad)}` is not a number there."
+    return "The simulation with sensitivities fails there."
+
+
 def _reconcile_objective(
     session, fit: dict[str, Any] | None, sim: dict[str, Any]
 ) -> tuple[float | None, str | None]:
@@ -1544,7 +1614,8 @@ def _reconcile_objective(
     then not scored: ``None``, which no gate ranks (see :func:`compute_improvement`). Scoring it
     on the optimizer's value ranked a model on a number nothing reproduced, beside a ``chi2``
     from the re-simulation that contradicted it, and its agent refit it for 116 min into the same
-    gap (#265).
+    gap (#265). Where a pre-equilibrated model has no steady state
+    (:func:`_sources_breaking_totals`), the note says so instead of blaming the evaluation.
 
     A pass with no fit has only the simulated value, which is then its score.
     """
@@ -1564,6 +1635,12 @@ def _reconcile_objective(
             f"{_fmt(nll_opt)} counts only the points that simulated. Make the model reach every "
             "measured point with a defined readout."
         )
+    elif sources := _sources_breaking_totals(session.problem):
+        note = (
+            f"This fit is not scored: the optimizer reached {_fmt(nll_opt)}, but re-simulating "
+            f"its optimum gives {_fmt(nll_sim)} at the same parameters, because "
+            + _no_steady_state(sources)
+        )
     else:
         note = (
             f"This fit is not scored: the optimizer reached {_fmt(nll_opt)}, but re-simulating "
@@ -1573,6 +1650,57 @@ def _reconcile_objective(
         )
     session.logger.warning("fit: %s", note)
     return None, note
+
+
+def _no_steady_state(sources: list[str]) -> str:
+    """Why a problem with :func:`_sources_breaking_totals` ``sources`` fails to pre-equilibrate,
+    and what to send instead."""
+    return (
+        f"pre-equilibration has no steady state to reach: {', '.join(sources)} "
+        f"{'makes' if len(sources) == 1 else 'make'} a species from nothing that the other "
+        "reactions only pass around, so their total grows for as long as the source runs, and pre-equilibration stops where its convergence check gives out, if at "
+        "all. Write the species a source converts as its reactant (`A -> B`, not `-> B; k*A`), "
+        "or give what it makes a sink."
+    )
+
+
+def _sources_breaking_totals(problem) -> list[str]:
+    """The reactions with no reactant that add to a total every reaction with a reactant
+    conserves, each as ``"`id` (`-> P; rate`)"``, on a problem that pre-equilibrates.
+    That total grows for as long as such a source runs, so the model has no steady state, and the
+    pre-equilibration stops where its convergence check happens to give out: brannmark 42 wrote
+    ``IRS1_bas: -> IRS1p; k_basal*IRS1`` under one, and its fits went unscored as a server fault
+    (PEtab-MCP#285)."""
+    import libsbml
+    import numpy as np
+
+    edf = problem.experiment_df
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None or edf is None or not (edf[TIME] == TIME_PREEQUILIBRATION).any():
+        return []
+    species = [s.getId() for s in sm.getListOfSpecies() if not s.getBoundaryCondition()]
+    row = {sid: i for i, sid in enumerate(species)}
+    sources, columns = [], []
+    for rxn in sm.getListOfReactions():
+        column = np.zeros(len(species))
+        for sign, refs in ((-1.0, rxn.getListOfReactants()), (1.0, rxn.getListOfProducts())):
+            for ref in refs:
+                if ref.getSpecies() in row:
+                    column[row[ref.getSpecies()]] += sign * ref.getStoichiometry()
+        (sources if not rxn.getNumReactants() and column.any() else columns).append((rxn, column))
+    if not sources:
+        return []
+    stoichiometry = np.array([c for _, c in columns]).reshape(len(columns), len(species))
+    _, singular, vh = np.linalg.svd(stoichiometry)
+    totals = vh[int((singular > 1e-9).sum()) :]  # the left null space: what they conserve
+    named = []
+    for rxn, column in sources:
+        if totals.size and np.abs(totals @ column).max() > 1e-9:
+            law = rxn.getKineticLaw()
+            rate = libsbml.formulaToL3String(law.getMath()) if law is not None else ""
+            products = " + ".join(p.getSpecies() for p in rxn.getListOfProducts())
+            named.append(f"`{rxn.getId()}` (`-> {products}; {rate}`)")
+    return named
 
 
 def _disagree(expected: float, nll: float) -> bool:

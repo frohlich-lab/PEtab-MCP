@@ -1678,6 +1678,18 @@ class PetabSession:
                     f"though this fit ran more than the default {self.auto_fit_starts}: "
                     f"{_NEEDLE_ADVICE}.",
                 ]
+            # Most starts stopped on a value that is not a number (PEtab-MCP#285).
+            not_finite = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.NOT_FINITE", 0)
+            if 2 * not_finite > starts:
+                warnings = [
+                    *warnings,
+                    f"{not_finite} of {starts} starts ended NOT_FINITE: the objective or its "
+                    "gradient was not a number where they went, so this score comes from the "
+                    f"other {starts - not_finite} and need not be the best this structure fits. "
+                    "Usual causes: a power with an estimated exponent of a state that goes "
+                    "below 0, a rate that is 0/0 somewhere in the bounds, or bounds wide enough to "
+                    "blow the ODE up. Fix that before judging the structure on this fit.",
+                ]
 
             staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")

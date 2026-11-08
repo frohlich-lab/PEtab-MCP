@@ -69,6 +69,9 @@ _AMICI_RESERVED_HINTS = {
 }
 _AMICI_RESERVED_RE = re.compile(r"amici_([A-Za-z]\w?)\b")
 
+#: What AMICI's SBML importer says when its code generation meets a construct it does not support.
+_AMICI_UNSUPPORTED = "contains features that are currently not supported"
+
 #: Signatures of a BUILD-environment failure rather than a modelling one. These are BUILD-CONTEXT
 #: tokens only. The first version of this matched `No such file or directory` and `Permission
 #: denied` anywhere in the text, which caught fit-time OSErrors (a pruned scratch dir, a missing
@@ -168,6 +171,20 @@ def _compile_fit_failure_message(exc: Exception) -> str:
             "for its generated code (reserved short symbols include h, t, x, k, p, w, e). Rename "
             f"it everywhere it appears in the Antimony (e.g. '{name}' -> '{suggest}') and "
             "re-author with make_changes — the model structure itself may well be fine."
+        )
+    chain = [exc]
+    while len(chain) < 8 and (link := chain[-1].__cause__ or chain[-1].__context__):
+        chain.append(link)
+    if refusal := next((e for e in chain if _AMICI_UNSUPPORTED in str(e)), None):
+        # AMICI's importer refusing a construct, with the construct in the exception it wraps.
+        # The ill-posed text below sent armistead 21 to change three unrelated things
+        # (PEtab-MCP#285).
+        cause = refusal.__cause__ or refusal.__context__
+        return (
+            "AMICI refused to import the model: it contains a construct AMICI does not support"
+            + (f" ({cause})" if cause else "")
+            + ". The model is not ill-posed and its dynamics need no change: rewrite that "
+            "construct and re-author with make_changes."
         )
     tail = _build_output_tail(exc)
     if _is_toolchain_failure(exc) or (tail and _TOOLCHAIN_RE.search(tail)):
@@ -1789,11 +1806,20 @@ def _antimony_parse_hint(text: str, exc: Exception) -> str:
     return " ".join(parts)
 
 
-def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
+def _require_positive_for_log(problem, parameter_id: str, scale: str | None = None) -> None:
+    """Refuse a non-positive lower bound or nominal value on a log-scaled row. ``scale`` is the one
+    this edit sets; ``None`` checks the lower bound alone against the row's own scale, so a bound
+    sent without a scale is checked too (a `lower_bound: 0` on a log10 parameter otherwise reached
+    pyPESTO's start sampling as ``uniform(-inf, ...)``, PEtab-MCP#285)."""
+    from .problem import PARAMETER_SCALE
+
+    given = scale
+    if scale is None and PARAMETER_SCALE in problem.parameter_df.columns:
+        scale = str(problem.parameter_df.loc[parameter_id, PARAMETER_SCALE])
     if scale not in ("log", "log10"):
         return
     row = problem.parameter_df.loc[parameter_id]
-    for field in ("lowerBound", "nominalValue"):
+    for field in ("lowerBound",) if given is None else ("lowerBound", "nominalValue"):
         if field in problem.parameter_df.columns:
             val = row[field]
             try:
@@ -1811,6 +1837,8 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str) -> None:
                         " Bounds are LINEAR values, not log10 coordinates: a rate spanning "
                         "1e-4..1e2 is lower_bound=1e-4, upper_bound=1e2 — never -4/2."
                     )
+                    if given is None:
+                        hint += f" To admit {fval:g}, send `scale: lin` with the bounds."
                 else:
                     hint = (
                         " `nominalValue` is not settable here (allowed keys: parameter_id, "
@@ -2282,6 +2310,7 @@ def _parameter_edit(
                     update["upperBound"] = ub
             if scale is not None:
                 update["parameterScale"] = scale
+            if scale is not None or ub is not None:
                 scale_checks.append((pid, scale))
             updates.append(update)
             summary: dict[str, Any] = {"parameter_id": pid}
@@ -2294,7 +2323,8 @@ def _parameter_edit(
         rows = (session.model_statements or {}).get("rows") or []
         update_parameters(problem, updates, [row["prefix"] for row in rows])
         for pid, scale in scale_checks:
-            # Positive-box check reads the NEW scale + bounds, so it runs AFTER the update.
+            # Positive-box check reads the NEW scale + bounds (a bound alone: against the row's
+            # scale), so it runs AFTER the update.
             _require_positive_for_log(problem, pid, scale)
         out: dict[str, Any] = {"changed": changed}
         if warnings:

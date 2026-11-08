@@ -254,6 +254,24 @@ def test_change_parameters_invalid_scale_is_reverted(session):
     assert after["A_init"] == before["A_init"]
 
 
+def test_a_bound_alone_is_checked_against_the_rows_log_scale(session):
+    """#285: fontaine 96 sent `lower_bound: 0` without a scale on a log10 parameter. The bound was
+    stored, and the fit died in pyPESTO's start sampling on numpy's uniform(-inf, ...) overflow,
+    read as an ill-posed ODE; three attempts later the agent dropped the structure."""
+    from petab.v2.C import LOWER_BOUND
+
+    refused = r"log10 scale for 'k1': lowerBound=0.0 .*`scale: lin`"
+    with pytest.raises(OperationError, match=refused):
+        O.change_parameters(
+            session,
+            [{"parameter_id": "k1", "lower_bound": 0.0, "upper_bound": 10.0}],
+            justification="x",
+        )
+    assert float(session.problem.parameter_df.loc["k1", LOWER_BOUND]) > 0  # reverted
+    linear = [{"parameter_id": "k1", "lower_bound": 0.0, "upper_bound": 10.0, "scale": "lin"}]
+    assert O.change_parameters(session, linear, justification="x")["applied"] is True
+
+
 def test_change_parameters_bounds(session):
     res = O.change_parameters(
         session,
@@ -602,6 +620,29 @@ def test_compile_fit_failure_message_generic_is_ill_posed():
     # A genuine solver failure keeps the ill-posed guidance.
     msg = O._compile_fit_failure_message(RuntimeError("CVODES failed: too much accuracy"))
     assert "ill-posed" in msg
+
+
+def test_compile_fit_failure_message_names_the_construct_amici_does_not_support():
+    """#285: AMICI's importer refusal ("features that are currently not supported") got the
+    ill-posed text, and armistead 21 changed three unrelated things in response. The construct
+    sits in the exception the refusal wraps, which a caller may wrap again."""
+    construct = "Root-finding for models without differential states is currently not supported."
+    try:
+        try:
+            raise NotImplementedError(construct)
+        except NotImplementedError as e:
+            raise RuntimeError(
+                "The SBML model contains features that are currently not supported by the AMICI "
+                "SBML importer."
+            ) from e
+    except RuntimeError as exc:
+        refusal = exc
+    wrapped = ValueError("import failed")
+    wrapped.__cause__ = refusal
+    for exc in (refusal, wrapped):
+        msg = O._compile_fit_failure_message(exc)
+        assert construct in msg and "does not support" in msg
+        assert "trajectories stay bounded" not in msg
 
 
 def test_compile_fit_failure_message_no_false_positive_on_internals():
