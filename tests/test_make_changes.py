@@ -1071,7 +1071,10 @@ def test_a_warning_the_last_version_carried_is_not_sent_again(tmp_path):
     grounding = "`statements` agents carry no grounding: A, B."
     assert grounding in commit([_statement_row()], {"conv": "mass_action"})
     one = {"conv": "mass_action", "back": "mass_action"}
-    assert commit([_statement_row(), back], one) == ["1 warning(s) unchanged since version 0."]
+    assert commit([_statement_row(), back], one) == [
+        "1 warning(s) unchanged since version 0.",
+        "New estimated parameter(s): `back_k`.",  # PEtab-MCP#286
+    ]
     shared = {"conv": "mass_action k=k_ab", "back": "mass_action k=k_ab"}
     said = commit([_statement_row(), back], shared)
     assert "1 warning(s) unchanged since version 0." in said and grounding not in said
