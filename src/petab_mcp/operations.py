@@ -35,7 +35,7 @@ from .errors import ModelUpdateError, ParameterError, PetabMcpError, ValidationE
 from .parameters import estimated_mask
 from .provenance import binding_of
 from .references import resolve_references
-from .validation import INPUT_REMEDY, frozen_parametric_stoichiometry_issues, validate_problem
+from .validation import INPUT_UNREAD, frozen_parametric_stoichiometry_issues, validate_problem
 
 # AMICI reserves a handful of short symbols for its generated code (the state vector ``x``,
 # parameters ``p``, constants ``k``, expressions ``w``, time ``t``, the Heaviside/root vector
@@ -384,13 +384,14 @@ def _rejection_summary(issues: list[str]) -> str:
 
 
 #: A fix the agent can act on, for an issue libpetab states without one. "Condition table
-#: contains invalid targets" means the model never read an input the condition table sets, and
-#: the message names the targets without saying that the model has to.
+#: contains invalid targets" means the model does not declare an input the condition table sets,
+#: and the message names the targets without saying that the model has to.
 _ISSUE_HINTS = (
     (
         "Condition table contains invalid targets",
         " — each named target is an input the condition table SETS per experiment, so the model "
-        f"must have it: {INPUT_REMEDY}",
+        "must declare it under its id: a parameter (`dose = 0;`) or, on the statements route, a "
+        f'seed at its id alone (`{{"agent": "dose", "amount": "dose"}}`). {INPUT_UNREAD}',
     ),
 )
 
