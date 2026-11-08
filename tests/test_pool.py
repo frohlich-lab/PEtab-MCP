@@ -126,7 +126,9 @@ def test_two_servers_on_different_problems_fit_at_once_and_each_gets_its_own_sta
         np.random.seed(0)
         here[label] = _fit(_server(yaml, amici_build_root, tmp_path / label / "here"))
 
-    # Each fit draws its x0 from the seed, then waits for the other's before submitting a batch.
+    # Each fit draws its x0 from the seed, then submits each batch with the other's. A fit now sends
+    # its batches in one burst, and the first burst to reach an idle pool fills its workers' slots
+    # before the other fit has any batch queued (CI, py3.13, on PEtab-MCP#280).
     drawn, both, run, arrived = (
         threading.Event(),
         threading.Barrier(2, timeout=300),
@@ -140,9 +142,10 @@ def test_two_servers_on_different_problems_fit_at_once_and_each_gets_its_own_sta
         both.wait()
         return run(self, tasks)
 
-    submitted, submit = {}, Client.submit
+    submitted, submit, paired = {}, Client.submit, threading.Barrier(2, timeout=60)
 
     def spy(self, *args, **kwargs):
+        paired.wait()
         future = submit(self, *args, **kwargs)
         submitted[future.key] = self
         return future

@@ -45,6 +45,7 @@ import argparse
 import asyncio
 import json
 import sys
+import tempfile
 import threading
 import time
 from collections import Counter
@@ -148,7 +149,7 @@ def _server(
     if any."""
     engine = None
     try:
-        engine = DaskEngine(address)
+        engine = DaskEngine(address, tempfile.gettempdir())  # a batch leaves no problem
         connected.wait()
         fit = [_Batch(f"{i}:{j}", seconds) for j in range(batches)]
         engine.batched(1, _CAP_S).execute(fit)
@@ -180,7 +181,7 @@ def stress(
         # and its workers would import it on their event loops at the first server's poll and
         # plugin, which is not load.
         client.run_on_scheduler(_import_engine)
-        DaskEngine(address).client.close()
+        DaskEngine(address, tempfile.gettempdir()).client.close()
         client.register_plugin(_Monitor(interval))
         began = time.monotonic()
         try:

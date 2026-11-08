@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import statistics
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -36,14 +37,14 @@ from petab_mcp.server import create_server
 
 @contextlib.contextmanager
 def _engine(n_workers: int = 2, config: dict | None = None):
-    """A :class:`DaskEngine` on a fresh process cluster; ``config`` is dask config for its
-    scheduler. Closed on exit."""
+    """A :class:`DaskEngine` on a fresh process cluster, with a build root of its own; ``config``
+    is dask config for its scheduler. Closed on exit."""
     with dask.config.set(config or {}):
         cluster = LocalCluster(
             n_workers=n_workers, threads_per_worker=1, processes=True, dashboard_address=":0"
         )
-    with cluster:
-        engine = DaskEngine(cluster)
+    with cluster, tempfile.TemporaryDirectory() as build_root:
+        engine = DaskEngine(cluster, build_root)
         with engine.client:
             yield engine
 
@@ -75,15 +76,15 @@ class _Log(Task):
 
 
 class _Count(Task):
-    """A start that counts itself into ``seen``, which every start of its fit shares here."""
+    """A start that counts itself into its problem, which every start of its fit shares here."""
 
-    def __init__(self, seen: list) -> None:
+    def __init__(self, problem: list) -> None:
         super().__init__()
-        self.seen = seen
+        self.problem = problem
 
     def execute(self):
-        self.seen.append(None)
-        return len(self.seen)
+        self.problem.append(None)
+        return len(self.problem)
 
 
 class _Die(Task):
@@ -132,6 +133,27 @@ class _Build(Task):
         creator = {"v1": AmiciObjectiveCreator, "v2": AmiciPetabV2ObjectiveCreator}[self.how]
         problem = SimpleNamespace(model=SimpleNamespace(type_id="sbml"))
         return creator(problem, output_folder=self.folder, model_name="m").create_model()
+
+
+def _sharing(tasks: list[Task]) -> list[Task]:
+    """``tasks``, holding one problem as the starts of a fit do."""
+    problem = {"shared": True}
+    for task in tasks:
+        task.problem = problem
+    return tasks
+
+
+@pytest.fixture
+def left(monkeypatch) -> list[Path]:
+    """The file each fit leaves its problem in, in the order the fits left them."""
+    paths, leave = [], dask_engine._leave
+
+    def spy(problem, folder):
+        paths.append(leave(problem, folder))
+        return paths[-1]
+
+    monkeypatch.setattr(dask_engine, "_leave", spy)
+    return paths
 
 
 def test_a_server_given_a_cluster_fits_there_and_each_start_ends_as_it_would_here(
@@ -283,6 +305,31 @@ def test_a_fits_amici_settings_reach_its_starts_on_a_worker(fit_session, monkeyp
         (on_worker,) = engine.execute([_SolverSettings(problem)])
 
     assert on_worker == (fitting.FIT_AMICI_ATOL, 1e-7, 1e-9, 1e-11, 3)
+
+
+def test_a_fits_problem_leaves_the_server_once_and_its_starts_carry_only_themselves(
+    fit_session, monkeypatch, left
+):
+    """Each froehlich start carried its 0.45 GiB problem as its task's argument, which the scheduler
+    keeps until the fit ends: a sweep's 160 starts in flight needed 72 GiB of a pool job of 8 GB, and
+    the server pickled the problem once per start, at 60 s each (NEMO, 2026-11-07). A fit now leaves
+    its problem in one file, gone once it returns, and each start crosses the scheduler in a few KB."""
+    sizes, problem_bytes = [], []
+    with _engine(n_workers=1) as engine:
+        submit = engine.client.submit
+
+        def spy(fn, payloads, problem, **kwargs):
+            sizes.extend(len(payload) for payload in payloads)
+            problem_bytes.append(problem.stat().st_size)
+            return submit(fn, payloads, problem, **kwargs)
+
+        monkeypatch.setattr(engine.client, "submit", spy)
+        fit_session.engine.fit_engine = engine
+        fitting.fit_and_simulate(fit_session, fit_session.engine, do_fit=True, n_starts=3)
+        assert list(engine.problems.iterdir()) == []
+
+    assert len(left) == 1 and len(sizes) == 3
+    assert max(sizes) < 10_000 and 10 * max(sizes) < min(problem_bytes), (sizes, problem_bytes)
 
 
 def test_a_fit_arriving_during_another_takes_turns_with_it():
@@ -519,9 +566,45 @@ def test_a_batch_crosses_the_scheduler_once_though_its_progress_is_read(monkeypa
 def test_the_starts_of_a_batch_share_nothing_on_their_worker():
     """Each start of a batch runs on its own copy of what it was given, as it would alone: starts
     that share one problem here do not share one objective there."""
-    seen = []
+    problem = []
     with _engine(n_workers=1) as engine:
-        assert engine.batched(3).execute([_Count(seen) for _ in range(3)]) == [1, 1, 1]
+        assert engine.batched(3).execute([_Count(problem) for _ in range(3)]) == [1, 1, 1]
+
+
+def test_a_fits_problem_file_is_removed_however_the_fit_ends(monkeypatch, left):
+    """The file a fit left its problem in is gone once the fit returns: finished, failed, or with a
+    batch stopped past its caps that still runs on its worker."""
+    monkeypatch.setattr(dask_engine, "FIT_DEADLINE_MARGIN_S", 0.5)
+    monkeypatch.setattr(multistart, "POLL_S", 0.1)
+    with _engine() as engine:
+        engine.client.run(_Sleep, "warm", 0, 0)
+        engine.batched(2).execute(_sharing([_Sleep("a", i, 0) for i in range(3)]))
+        with pytest.raises(FitBackendError, match="start failed"):
+            engine.execute(_sharing([_Fail(), _Sleep("b", 1, 0)]))
+        _, stopped = engine.batched(2, 0.25)._run(
+            _sharing([_Sleep("c", 0, 0), _Sleep("c", 1, 30), _Sleep("c", 2, 0)])
+        )
+        assert stopped == {0, 1}
+        assert len(left) == 3 and list(engine.problems.iterdir()) == []
+
+
+def test_a_worker_that_cannot_read_its_fits_problem_fails_the_fit_as_fit_pool(monkeypatch):
+    """A worker off the server's build root cannot read the file its fit left the problem in: the
+    fit fails as ``fit_pool``, naming the file and the host, not with an unpickling error."""
+    leave = dask_engine._leave
+
+    def gone(problem, folder):
+        path = leave(problem, folder)
+        path.unlink()
+        return path
+
+    monkeypatch.setattr(dask_engine, "_leave", gone)
+    with _engine(n_workers=1) as engine:
+        with pytest.raises(InfrastructureError) as refused:
+            engine.execute(_sharing([_Sleep("a", 0, 0)]))
+
+    assert refused.value.cause == FIT_POOL
+    assert f"is not readable on worker {socket.gethostname()}" in str(refused.value)
 
 
 def test_a_start_failing_mid_batch_fails_the_fit_and_cancels_its_batches_still_queued(tmp_path):
@@ -647,7 +730,7 @@ def test_a_server_joining_a_cluster_that_has_no_build_reaches_no_worker():
     scheduler past every connect's 30 s deadline (NEMO, 2026-11-04)."""
     with _engine() as engine:
         installed = engine.client.run(_no_build_plugin)
-        with DaskEngine(engine.client.cluster).client:
+        with DaskEngine(engine.client.cluster, engine.problems.parent).client:
             assert engine.client.run(_no_build_plugin) == installed
 
 

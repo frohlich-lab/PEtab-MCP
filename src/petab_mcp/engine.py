@@ -134,14 +134,18 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
         (folder / ".built").touch()
 
 
+def resolve_build_root(build_root: str | Path | None) -> Path:
+    """``build_root``, or where a server given none builds its models: under the temporary
+    directory as it is when called, which the test suite sets per xdist worker."""
+    return Path(build_root) if build_root else Path(tempfile.gettempdir()) / "petab_mcp_amici"
+
+
 class AmiciEngine:
     """Compile-cached AMICI backend bound to a :class:`PetabSession`."""
 
     def __init__(self, session, build_root: str | Path | None = None, fit_engine=None) -> None:
         self.session = session
-        self.build_root = (
-            Path(build_root) if build_root else Path(tempfile.gettempdir()) / "petab_mcp_amici"
-        )
+        self.build_root = resolve_build_root(build_root)
         # Where this AMICI's modules are built and imported; see amici_identity.
         self.module_root = self.build_root / f"amici-{amici_identity()}"
         self.module_root.mkdir(parents=True, exist_ok=True)
