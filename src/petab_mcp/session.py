@@ -841,16 +841,22 @@ class PetabSession:
         constrained = (
             {"n_constraints": len(self.constraints.items)} if self.constraints is not None else {}
         )
+        authored = self.model_authored()
+        # Counted on an authored model only, never on the seed's placeholders (docs/RATIONALE.md).
+        counts = (
+            {"n_species": int(sm.getNumSpecies()), "n_model_parameters": int(sm.getNumParameters())}
+            if authored
+            else {}
+        )
         return constrained | {
             "model_id": self.model.model_id,
             # Has a MECHANISM been authored? False for a problem that ships without one, whose
             # initial version is a content-free seed (species only, no dynamics) rather than the
             # broken empty skeleton it used to be. Replaces `model_initialized`, which since the
             # seed is True from construction and no longer answers the question anyone asked.
-            "model_authored": self.model_authored(),
-            "n_species": int(sm.getNumSpecies()),
+            "model_authored": authored,
+            **counts,
             "n_reactions": int(sm.getNumReactions()),
-            "n_model_parameters": int(sm.getNumParameters()),
             "n_table_parameters": int(len(p.parameter_df)),
             "n_estimated": int(p.n_estimated),
             "free_parameters": [str(x) for x in p.x_free_ids],
