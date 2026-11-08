@@ -28,7 +28,9 @@ from conftest import DATA_DIR
 from petab_mcp.references import StubReferenceResolver
 
 
-def _server(tmp_path, tag="prov"):
+def _server(tmp_path, build_root, tag="prov"):
+    """A server on a copy of the toy. ``build_root`` is the worker's shared one, and the tests write
+    the same few rate laws, so each model compiles once per worker."""
     from petab_mcp.server import create_server
 
     work = tmp_path / f"toy_{tag}"
@@ -38,7 +40,7 @@ def _server(tmp_path, tag="prov"):
     return create_server(
         str(work / "problem.yaml"),
         provenance_dir=str(tmp_path / f"prov_{tag}"),
-        build_root=str(tmp_path / f"amici_{tag}"),
+        build_root=str(build_root),
         resolver=StubReferenceResolver(),
         auto_fit=True,
     ), tmp_path / f"prov_{tag}"
@@ -49,8 +51,8 @@ def _call(mcp, name, args):
 
 
 @pytest.fixture
-def served(tmp_path):
-    return _server(tmp_path)
+def served(tmp_path, amici_build_root):
+    return _server(tmp_path, amici_build_root)
 
 
 def _start_objective(prov: Path, result: dict) -> float:
@@ -75,7 +77,7 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(served):
         "make_changes",
         {
             "justification": "v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1/2 + k1/2)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
         },
     )
     r1 = _call(
@@ -83,7 +85,7 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(served):
         "make_changes",
         {
             "justification": "v1",
-            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2/2 + k2/2)*B"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2*1.0)*B"}],
         },
     )
     assert (r0["version"], r1["version"]) == (0, 1)
@@ -93,7 +95,7 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(served):
         "make_changes",
         {
             "justification": "fork from v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1/3 + 2*k1/3)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3)*A"}],
             "base_version": 0,
         },
     )
@@ -121,7 +123,7 @@ def test_an_ordinary_commit_still_descends_from_head(served):
 
     op("v0", "r1", "(k1*1.0)*A")
     op("v1", "r2", "(k2*1.0)*B")
-    forked = op("fork", "r1", "(k1/2 + k1/2)*A", base_version=0)
+    forked = op("fork", "r1", "(k1*3)*A", base_version=0)
     after = op("ordinary commit after a fork", "r2", "(k2*1.00)*B")
     assert forked["committed"] is True and after["committed"] is True, (forked, after)
     assert _meta(prov, forked["version"])["parent"] == 0
@@ -193,8 +195,8 @@ def test_a_fork_patches_its_BASE_not_head(served):
     v1's change is absent from it. Under structured edits this is the strong property: the
     operations apply to the source, so `child.source == parent.source + ops` holds exactly.
 
-    (Matching is on symbols, never on exact formatting: libantimony re-renders `(k1*2)*A` as
-    `k1*2*A`, so asserting the literal trips over the very render gap the production failures
+    (Matching is on symbols, never on exact formatting: libantimony re-renders `(k1*3)*A` as
+    `k1*3*A`, so asserting the literal trips over the very render gap the production failures
     came from.)"""
     mcp, prov = served
     _v0 = _call(
@@ -202,7 +204,7 @@ def test_a_fork_patches_its_BASE_not_head(served):
         "make_changes",
         {
             "justification": "v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*2)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
         },
     )
     _v1 = _call(
@@ -210,7 +212,7 @@ def test_a_fork_patches_its_BASE_not_head(served):
         "make_changes",
         {
             "justification": "v1",
-            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2*2)*B"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2*1.0)*B"}],
         },
     )
     v2 = _call(
@@ -225,7 +227,7 @@ def test_a_fork_patches_its_BASE_not_head(served):
     assert v2["committed"] is True
     submitted = (prov / "versions" / f"v{v2['version']}" / "model_source.ant").read_text()
     assert "k1*3" in submitted  # this call's patch is in it
-    assert "k2*2" not in submitted, (
+    assert "k2*1.0" not in submitted, (
         "the fork's submitted text carries v1's change — it was patched from HEAD, not v0"
     )
 
@@ -268,7 +270,7 @@ def test_a_fork_restores_the_search_space_not_just_the_model(served):
         {
             "justification": "fork from v0",
             "base_version": v0["version"],
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3.0)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3)*A"}],
         },
     )
     assert fork.get("committed") is True, fork
@@ -300,7 +302,7 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(served):
         {
             "justification": "fork and rebound",
             "base_version": v0["version"],
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*2.0)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3)*A"}],
             "parameters": [{"parameter_id": "k1", "lower_bound": 0.02, "upper_bound": 20.0}],
         },
     )
@@ -364,7 +366,7 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):
         "make_changes",
         {
             "justification": "v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
         },
     )
     v0_nllh = v0["neg_log_likelihood"]
@@ -413,7 +415,7 @@ def test_the_starting_point_comes_back_even_for_a_parameter_the_fork_rebounds(se
         "make_changes",
         {
             "justification": "v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
         },
     )
     _call(
