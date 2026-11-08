@@ -39,7 +39,6 @@ from typing import Any
 
 from . import criteria
 from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
-from .messages import fix_or
 
 
 def _identifiability_stats(
@@ -227,21 +226,13 @@ def _identifiability_stats(
             "FIM is a LOCAL linearization of uncertainty — read se/correlations together "
             "with multistart_std (a model-free spread) and flat_directions (the actual "
             "non-identifiable parameter combinations). High |r|≈1, large fold_uncertainty, "
-            "at_bound, or a flat direction all mark "
-            + fix_or(
-                "a parameter as a simplification candidate: remove its term, take its limiting "
-                "(irreversible/instantaneous) form, or merge a collinear pair into one parameter "
-                "— all MODEL edits. `merge_candidates` prices the ONE-SHARED-VALUE form of that "
-                "merge",
-                "a parameter the data do not determine. `merge_candidates` prices giving a pair "
-                "ONE SHARED value",
-            )
-            + ", cheapest first, with the parameter move each tie would take. "
-            + fix_or(
-                "If none fits cleanly, leave it: there is no value/estimate tool, and a "
-                "hard-coded literal is a magic number; values come only from the fit.",
-                "There is no value/estimate tool: values come only from the fit.",
-            )
+            "at_bound, or a flat direction all mark a parameter as a simplification "
+            "candidate: remove its term, take its limiting (irreversible/instantaneous) "
+            "form, or merge a collinear pair into one parameter — all MODEL edits. "
+            "`merge_candidates` prices the ONE-SHARED-VALUE form of that merge, cheapest "
+            "first, with the parameter move each tie would take. "
+            "If none fits cleanly, leave it: there is no value/estimate "
+            "tool, and a hard-coded literal is a magic number; values come only from the fit."
         ),
     }
 
@@ -1106,8 +1097,6 @@ def stored_merge_hints(session) -> list[dict[str, Any]] | None:
     re-serve another model's ties as if they were this state's — but a de-dup no-op does not drop
     them: HEAD is still that fit, and the score read beside it is still that fit's score.
     """
-    if not session.fix_pointers:
-        return None
     diagnosis = stored_diagnosis(session)
     if not diagnosis.get("available") or diagnosis.get("stale"):
         return None
