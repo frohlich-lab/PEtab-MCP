@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from petab_mcp import skills as skills_mod
+from petab_mcp.messages import render
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 
@@ -254,11 +255,12 @@ def test_the_skills_stay_short():
     a symbol to itself). Each one costs a whole edit-and-fit cycle when it fires and gives an error
     that points somewhere else, so they earn their characters — but the budget is a real cost, so
     keep new entries at rule-plus-consequence length and keep the measured evidence out of the
-    skill."""
+    skill. Measured as the agent reads it with fix pointers on, the longer side
+    (:func:`petab_mcp.messages.render`)."""
     for skill_dir in sorted(SKILLS_DIR.iterdir()):
         md = skill_dir / "SKILL.md"
         if md.is_file():
-            n = len(md.read_text())
+            n = len(render(md.read_text(), True))
             assert n < 6500, f"{skill_dir.name}/SKILL.md is {n} chars — too long to re-send"
 
 

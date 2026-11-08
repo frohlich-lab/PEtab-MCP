@@ -2,7 +2,7 @@
 name: independence-audit
 description: >-
   Read when residuals stay structured after re-fitting. Which independence assumption the data is
-  denying, the ways a model can meet it, and how to derive the check yourself when the diagnostics
+  denying,⟦ the ways a model can meet it,⟧ and how to derive the check yourself when the diagnostics
   cannot answer.
 ---
 
@@ -11,7 +11,7 @@ description: >-
 A misfit that survives re-fitting is usually an **independence assumption** your model imposes that
 the data denies — states acting independently, one relaxation timescale, a linear input, no
 conserved total. Re-fitting cannot fix that, and neither can parameters that leave the assumption
-intact. You need the missing mechanism, and this skill is about identifying WHICH one.
+intact.⟦ You need the missing mechanism, and this skill is about identifying WHICH one.⟧
 
 Start with the regime diagnostics: they read the measurements directly and report what any model
 must reproduce — whether the response rises and falls, whether a second timescale is
@@ -19,14 +19,14 @@ distinguishable, how steep the dose-response is, whether a total is conserved. T
 no model, so read them before theorising. A structured residual tells you something is missing; the
 diagnostics tell you what.
 
-Read them in one direction only. A non-null `requirement` is ESTABLISHED and forces that structure
-in; `support_for_extension: suggestive` leans that way without establishing it, which is a reason to
-try it. A null `requirement` — like `testable: false` — says only that this DESIGN did not settle
+Read them in one direction only. A non-null `requirement` is ESTABLISHED⟦ and forces that structure
+in⟧; `support_for_extension: suggestive` leans that way without establishing it⟦, which is a reason to
+try it⟧. A null `requirement` — like `testable: false` — says only that this DESIGN did not settle
 the question, which is the ordinary outcome for a test with little power. It is never evidence that
 the simpler form suffices, so it neither answers the audit below nor excuses skipping it: where the
 data are silent, the assumption still has to be judged on the mechanism.
 
-## Ways to meet a requirement
+⟦## Ways to meet a requirement
 
 Most requirements have several encodings, and they differ in what they ASSUME about the system:
 
@@ -41,7 +41,7 @@ Most requirements have several encodings, and they differ in what they ASSUME ab
 Pick what the biology and the diagnostics support. Where two are equally supported, fit each and let
 the score say which the data prefers — that is a measurement, and it beats guessing in advance.
 
-## When the data cannot tell you
+⟧## When the data cannot tell you
 
 A `testable: false` verdict means the DESIGN cannot answer that question — not that the answer is
 no. It is common: a dose-response slope needs several dose levels, a conserved total needs every

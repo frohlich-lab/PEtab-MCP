@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any
 
 from .formatting import finite_float
+from .messages import fix, fix_or
 from .parameters import estimated_ids
 
 # The same structure may be authored at most this many times before ``set_model`` refuses
@@ -209,8 +210,11 @@ def decide(
             "message": (
                 f"This same model structure has already been fit {prior_attempts} times. Re-fitting an "
                 "identical structure recompiles and refits to the SAME result — it cannot improve the "
-                "fit. Stop re-fitting it: your best model is kept regardless, so make a "
-                "genuinely different structural change and fit THAT."
+                "fit."
+                + fix_or(" Stop re-fitting it: your", " Your")
+                + " best model is kept regardless"
+                + fix(", so make a genuinely different structural change and fit THAT")
+                + "."
             ),
         }
 
@@ -231,9 +235,12 @@ def decide(
             "warnings": [],
             "message": (
                 f"This model is identical to the current version (v{head_version}); the fit was "
-                "not re-run (its metrics are unchanged). To improve the fit, "
-                f"change the STRUCTURE, or {_refit(head.get('n_starts'), max_starts)}; an earlier "
-                "model you already committed is kept regardless."
+                "not re-run (its metrics are unchanged)"
+                + fix(
+                    ". To improve the fit, change the STRUCTURE, or "
+                    + _refit(head.get("n_starts"), max_starts)
+                )
+                + "; an earlier model you already committed is kept regardless."
             ),
         }
     if standing:
@@ -244,8 +251,11 @@ def decide(
             "duplicate_of": k,
             "message": (
                 f"This model is identical to v{k}, which is fitted, kept and scored; it was not "
-                f"re-fitted and no version was made. To build on it, send your next change with "
-                f"`base_version={k}`; to refit it, {_refit(twin.get('n_starts'), max_starts)}."
+                "re-fitted and no version was made."
+                + fix(
+                    f" To build on it, send your next change with `base_version={k}`; to refit "
+                    f"it, {_refit(twin.get('n_starts'), max_starts)}."
+                )
             ),
         }
 
@@ -272,7 +282,8 @@ def decide(
                 f"This structure family previously scored {name}≈{fb:.1f}, {fb - gb:.1f} WORSE "
                 f"than the best model so far ({name}≈{gb:.1f}, v{best.get('version')}). "
                 f"Revisiting it is "
-                f"unlikely to beat the best (v{best.get('version')} is kept regardless) "
-                "— try a different structure."
+                f"unlikely to beat the best (v{best.get('version')} is kept regardless)"
+                + fix(" — try a different structure")
+                + "."
             )
     return {"action": "proceed", "warnings": warnings}

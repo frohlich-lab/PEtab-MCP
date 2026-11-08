@@ -38,6 +38,7 @@ from typing import Any
 
 from petab.v2.C import EXPERIMENT_ID, MEASUREMENT, OBSERVABLE_ID, TIME
 
+from .messages import fix, fix_or
 from .problem import experiment_inputs, observable_transformation
 
 # A feature must clear this many noise sigmas to be called real. 3 is the conventional bar and it is
@@ -237,8 +238,8 @@ def _shape(series, sigma) -> dict[str, Any]:
     # Absence stays absence: monotone/flat set `requirement: None`.
     _EXCURSION = (
         "the response must rise AND fall — constant production with first-order decay "
-        "cannot produce this at any rate constants, so a depletable pool, a second "
-        "state, or feedback is REQUIRED"
+        "cannot produce this at any rate constants"
+        + fix(", so a depletable pool, a second state, or feedback is REQUIRED")
     )
     return {
         "testable": True,
@@ -531,7 +532,9 @@ def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
     # nothing. Pushing structure in on noise is the one failure this tool must not add to the one
     # it has.
     suggestive = raw_slope - selection * raw_unc > 1.0
-    _STEEP = "steeper than one binding step (cooperativity / cascade / saturation elsewhere)"
+    _STEEP = "steeper than one binding step" + fix(
+        " (cooperativity / cascade / saturation elsewhere)"
+    )
     if established:
         verdict, support = _STEEP, "established"
     elif suggestive:
@@ -545,7 +548,8 @@ def _dose_response(frame, inputs, sigma, coordinate) -> dict[str, Any]:
             f"central slope {slope} exceeds one by more than the selection bias alone "
             f"(+-{round(selection, 2)}x{unc_j}), but not by the full band (+-{round(z, 2)}x"
             f"{unc_j}), so a single binding step is not excluded — WEAK SUPPORT for "
-            "cooperativity / a cascade / saturation, not a finding"
+            + fix_or("cooperativity / a cascade / saturation", "a slope above one")
+            + ", not a finding"
         )
         support = "suggestive"
     else:
@@ -697,8 +701,8 @@ def _conservation(by_obs) -> dict[str, Any]:
     established = len(holds) == tested
     _CONSERVED = (
         "the summed observables are constant while the components vary in every "
-        "experiment tested — a conserved total is available, and imposing it REMOVES a "
-        "parameter"
+        "experiment tested — a conserved total is available"
+        + fix(", and imposing it REMOVES a parameter")
     )
     return {
         "testable": True,
@@ -782,13 +786,16 @@ def data_regimes(session, observables: "str | None" = None) -> dict[str, Any]:
             "distinguishable timescales rule out a single relaxing pool, a log-log slope above "
             "one rules out a single mass-action binding step. Everything else is EVIDENCE, graded "
             "by `support_for_extension` — `suggestive` means the estimate leans toward the richer "
-            "structure without establishing it, and is a reason to TRY that structure. "
-            "THESE FINDINGS CAN FORCE STRUCTURE IN; THEY NEVER RULE IT OUT. `testable: false` "
+            "structure without establishing it"
+            + fix(", and is a reason to TRY that structure")
+            + ". THESE FINDINGS CAN FORCE STRUCTURE IN; THEY NEVER RULE IT OUT. `testable: false` "
             "means the design cannot answer, and a null `requirement` means this design did not "
             "settle it — neither is permission to simplify. No evidence for a second timescale is "
             "not evidence that one suffices, and a slope this design cannot push above one may "
-            "still be above one. Build what the mechanism needs. The one entry that genuinely "
-            "constrains is `conservation`: imposing a conserved total removes a parameter."
+            "still be above one."
+            + fix(" Build what the mechanism needs.")
+            + " The one entry that genuinely constrains is `conservation`"
+            + fix_or(": imposing a conserved total removes a parameter.", ".")
         ),
     }
     if omitted:

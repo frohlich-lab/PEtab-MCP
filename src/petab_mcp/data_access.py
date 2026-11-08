@@ -62,6 +62,7 @@ from petab.v2.C import (
 
 from .errors import MissingDependencyError, ValidationError
 from .formatting import _clean
+from .messages import fix_or
 from .problem import PARAMETER_SCALE
 
 # Canonical (minimal) column schema for each FIXED PEtab table. Used only as a FALLBACK when
@@ -1588,8 +1589,11 @@ def _replicate_lof_advice(verdict: dict[str, Any]) -> str:
         f"errors of the scatter pooled over each point's noise sigma ({named}; Holm p "
         f"{verdict['min_p_holm']:.3g} at alpha {verdict['alpha']}). "
         "A larger sigma cannot close that gap, since the yardstick is the replicates themselves. "
-        "A mechanism those points need might, but replicates tighter than the spread between "
-        "experiments flag the same way, so it is not proof that one exists."
+        + fix_or(
+            "A mechanism those points need might, but replicates tighter than the spread between "
+            "experiments flag the same way, so it is not proof that one exists.",
+            "Replicates tighter than the spread between experiments flag the same way.",
+        )
     )
 
 

@@ -49,6 +49,7 @@ from .constants import (
 from .engine import build_lock
 from .errors import ModelUpdateError, PetabMcpError, disk_full_error
 from .formatting import finite_float as _flt
+from .messages import fix, fix_or
 from .parameters import structure_fingerprint
 from .problem import (
     LOG,
@@ -448,7 +449,7 @@ def _inner_fitted_values(pypesto_problem, best, inner: dict[str, str]) -> dict[s
             "the fit ran, but the server could not read the fitted values of "
             f"{', '.join(missing)} back from pyPESTO's result, so it cannot write the optimum "
             "into the parameter table. This is a server-side failure, not a problem with the "
-            "model: do not re-author it."
+            "model" + fix(": do not re-author it") + "."
         )
     return found
 
@@ -1365,7 +1366,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             if caught := _non_finite(session, rdatas):
                 raise ModelUpdateError(
                     "the fit produced NO usable optimum: every multistart failed, because "
-                    f"{caught}, which stops the simulation. Write it so it is a number there."
+                    f"{caught}, which stops the simulation."
+                    + fix(" Write it so it is a number there.")
                 )
         if sources := _sources_breaking_totals(session.problem):
             raise ModelUpdateError(
@@ -1384,8 +1386,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
                 "the fit produced NO usable optimum: every multistart failed, because the model "
                 f"leaves measured points UNDEFINED: {undefined}. A readout there is not a number "
                 "(NaN or infinite): a division by an amount that is 0 at that time (0/0 where "
-                "every species in a ratio starts at 0) or a log of 0. "
-                "Define each readout so it holds at every measured time, t=0 included."
+                "every species in a ratio starts at 0) or a log of 0."
+                + fix(" Define each readout so it holds at every measured time, t=0 included.")
             )
         where = (
             "The objective is finite at the nominal values, but no start ended on a finite one"
@@ -1395,17 +1397,26 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         raise ModelUpdateError(
             "the fit produced NO usable optimum: every multistart failed, so the best result "
             f"carries no parameter vector. {where} — a "
-            "property of the problem, not the optimizer. There are two causes and they need "
-            "OPPOSITE fixes, so check which one this is BEFORE editing — the fitting log tells "
-            "them apart (have it read if you cannot read it yourself): (a) the SIMULATION "
-            "fails — 'FORWARD_FAILURE' / 'AMICI simulation failed' appears in the log; the ODE "
-            "is non-integrable or extremely stiff, usually from the last structural change (a "
-            "new pool with no sink, a rate at an extreme default, or writing into a symbol the "
-            "observables use as a normalisation constant), and re-initialising species will NOT "
-            "help. (b) the simulation succeeds but the OBSERVABLE is undefined — a "
-            "log-transformed observable reaching 0 or negative at a measured time (a species "
-            "started at exactly 0 and measured at t=0 gives log10(0) = -inf); there, fixing the "
-            "initial value or the bound that admits it IS the fix."
+            "property of the problem, not the optimizer. "
+            + fix_or(
+                "There are two causes and they need OPPOSITE fixes, so check which one this is "
+                "BEFORE editing — the fitting log tells them apart (have it read if you cannot "
+                "read it yourself)",
+                "Two causes produce this, and the fitting log tells them apart",
+            )
+            + ": (a) the SIMULATION fails — 'FORWARD_FAILURE' / 'AMICI simulation failed' "
+            "appears in the log; the ODE is non-integrable or extremely stiff"
+            + fix(
+                ", usually from the last structural change (a new pool with no sink, a rate at an "
+                "extreme default, or writing into a symbol the observables use as a "
+                "normalisation constant)"
+            )
+            + ", and re-initialising species will NOT help. (b) the simulation succeeds but the "
+            "OBSERVABLE is undefined — a log-transformed observable reaching 0 or negative at a "
+            "measured time (a species started at exactly 0 and measured at t=0 gives log10(0) = "
+            "-inf)"
+            + fix("; there, fixing the initial value or the bound that admits it IS the fix")
+            + "."
         )
     df = session.problem.parameter_df
     nllh = float(best["fval"])
@@ -1590,8 +1601,9 @@ def _non_finite_gradient(session, problem) -> str:
     if found:
         return (
             "; ".join(dict.fromkeys(found)) + ". Below 0 a power with a non-integer exponent is "
-            "not a number, and at 0 one with an exponent below 1 has no finite slope: keep that "
-            "base above 0, or write the exponent as a number."
+            "not a number, and at 0 one with an exponent below 1 has no finite slope"
+            + fix(": keep that base above 0, or write the exponent as a number")
+            + "."
         )
     free = [problem.x_names[i] for i in getattr(problem, "x_free_indices", range(len(grad)))]
     if len(free) == len(grad) and np.isfinite(grad).any():
@@ -1632,8 +1644,8 @@ def _reconcile_objective(
             f"This fit is not scored: re-simulating its optimum leaves "
             f"{sim.get('n_missing_simulations')} of {sim.get('n_expected_points')} measured points "
             f"without a value, so its likelihood is undefined there, and the optimizer's "
-            f"{_fmt(nll_opt)} counts only the points that simulated. Make the model reach every "
-            "measured point with a defined readout."
+            f"{_fmt(nll_opt)} counts only the points that simulated."
+            + fix(" Make the model reach every measured point with a defined readout.")
         )
     elif sources := _sources_breaking_totals(session.problem):
         note = (
@@ -1645,8 +1657,9 @@ def _reconcile_objective(
         note = (
             f"This fit is not scored: the optimizer reached {_fmt(nll_opt)}, but re-simulating "
             f"its optimum gives {_fmt(nll_sim)} at the same parameters. That is a fault in how the "
-            "server evaluates this model, not a verdict on it, and a refit returns the same gap: "
-            "make a different change."
+            "server evaluates this model, not a verdict on it, and a refit returns the same gap"
+            + fix(": make a different change")
+            + "."
         )
     session.logger.warning("fit: %s", note)
     return None, note
@@ -1659,8 +1672,11 @@ def _no_steady_state(sources: list[str]) -> str:
         f"pre-equilibration has no steady state to reach: {', '.join(sources)} "
         f"{'makes' if len(sources) == 1 else 'make'} a species from nothing that the other "
         "reactions only pass around, so their total grows for as long as the source runs, and pre-equilibration stops where its convergence check gives out, if at "
-        "all. Write the species a source converts as its reactant (`A -> B`, not `-> B; k*A`), "
-        "or give what it makes a sink."
+        "all."
+        + fix(
+            " Write the species a source converts as its reactant (`A -> B`, not `-> B; k*A`), "
+            "or give what it makes a sink."
+        )
     )
 
 
@@ -2146,16 +2162,21 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
 # learns WHY a good-looking BIC won't be accepted and fixes the mechanism instead of the noise.
 NOISE_SIGMA_INFLATED_ADVICE = (
     "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit — "
-    "the chi2 goodness-of-fit is not genuine adequacy here. Do NOT widen or lean on the noise; fix "
-    "the mechanism so the residuals shrink at a plausible sigma (this result's residual_structure "
-    "verdict still flags the structure). A fit resting on an inflated sigma will "
-    "NOT be accepted as finished."
+    "the chi2 goodness-of-fit is not genuine adequacy here."
+    + fix(
+        " Do NOT widen or lean on the noise; fix the mechanism so the residuals shrink at a "
+        "plausible sigma (this result's residual_structure verdict still flags the structure)."
+    )
+    + " A fit resting on an inflated sigma will NOT be accepted as finished."
 )
 NOISE_SIGMA_COLLAPSED_ADVICE = (
     "an ESTIMATED noise sigma has collapsed far below the data's own variability — the fit is "
-    "overfitting the noise for a good-looking score, not genuine adequacy. Prefer a simpler / more "
-    "parsimonious mechanism at a plausible sigma rather than one that drives the residuals to ~0. "
-    "A fit resting on a collapsed sigma will NOT be accepted as finished."
+    "overfitting the noise for a good-looking score, not genuine adequacy."
+    + fix(
+        " Prefer a simpler / more parsimonious mechanism at a plausible sigma rather than one that "
+        "drives the residuals to ~0."
+    )
+    + " A fit resting on a collapsed sigma will NOT be accepted as finished."
 )
 
 

@@ -2036,9 +2036,13 @@ def _reject_repeated_widening(
         f"~{last_gain:.2g} BIC gain. A "
         "parameter pinned at a bound with a flat/collinear FIM direction "
         "is UNIDENTIFIABLE, not under-explored — widening chases it toward "
-        f"infinity while it keeps re-pinning. {_pinned_limit_advice(problem, parameter_id, side)} "
-        "Do not widen again or hard-code a value (there is no value/estimate tool, and a literal "
-        "is just a magic number — values come only from the fit)."
+        "infinity while it keeps re-pinning. "
+        + M.fix_or(
+            f"{_pinned_limit_advice(problem, parameter_id, side)} Do not widen again or hard-code "
+            "a value (there is no value/estimate tool, and a literal is just a magic number — "
+            "values come only from the fit).",
+            "There is no value/estimate tool: values come only from the fit.",
+        )
     )
 
 
@@ -2559,8 +2563,9 @@ def bundle_result(
             f"{lineage} No new version: this change gives the same model as version "
             f"{fit_result.get('duplicate_of_version')} (the same equations and estimated "
             "parameters), so the working model stays that version exactly as stored and its "
-            "metrics stand. Make a genuinely different change; that version is kept and scored "
-            "regardless."
+            "metrics stand."
+            + M.fix_or(" Make a genuinely different change; that", " That")
+            + " version is kept and scored regardless."
         )
     elif snapshotted:
         # The fit broke only AFTER snapshotting, so HEAD moved: report where it landed rather than
@@ -2579,9 +2584,13 @@ def bundle_result(
         message = (
             f"{lineage} Change REVERTED: it could not be scored, so it was undone — the working "
             f"model is unchanged, still version {head_now}, and nothing is left half-done. The fit "
-            f"reported: {fit_result.get('error') or 'no error message'} — ACT ON THAT rather than "
-            "assuming the model is broken: it says whether to fix the change and send it again, "
-            "or to stop re-sending this structure and make a genuinely different change instead."
+            f"reported: {fit_result.get('error') or 'no error message'}"
+            + M.fix(
+                " — ACT ON THAT rather than assuming the model is broken: it says whether to fix "
+                "the change and send it again, or to stop re-sending this structure and make a "
+                "genuinely different change instead"
+            )
+            + "."
         )
     off_best = []
     if best is not None and best not in (base, version):
@@ -2590,7 +2599,9 @@ def bundle_result(
                 M.SOURCE_TOOL,
                 f"v{base}, which this change was applied to, is not the best version; v{best} "
                 f"is. A change applies to the working model, now v{head_now}, unless "
-                f"`base_version` names another: send `base_version={best}` to change the best.",
+                "`base_version` names another"
+                + M.fix(f": send `base_version={best}` to change the best")
+                + ".",
             )
         ]
     # Pipeline order: the tool's, the edit's messages, then the fit's. `run_fit` /

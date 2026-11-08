@@ -19,19 +19,19 @@ description: >-
   With estimated sigmas chi2 sits near `n_data_points` by construction.
 - Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
 - A change's result lists only what is new since the parent version in
-  `fitted_parameters_changed`, `parameter_scales`, `parameters_at_bound` and `merge_hints`, only
+  `fitted_parameters_changed`, `parameter_scales`⟦, `parameters_at_bound` and `merge_hints`⟧⟪ and `parameters_at_bound`⟫, only
   flagged sigmas in `noise_sigma_report`, and three flagged observables in `residual_structure`,
-  with `n_parameters_at_bound`, `n_merge_hints` and `n_flagged_observables` the full counts. A fit
-  summary has every pin, tie, sigma and flagged observable.
+  with `n_parameters_at_bound`⟦, `n_merge_hints`⟧ and `n_flagged_observables` the full counts. A fit
+  summary has every pin, ⟦tie, ⟧sigma and flagged observable.
 - `is_new_best`: this version became the best model, `progress.best_version`, the lowest score
   so far. A lower score that did not carries `new_best_declined`, saying why.
 
 ## Flags
 
-- `parameters_at_bound`: fitted values within ~1% of a bound, on their estimation scale. Widen
-  at most once. A parameter that re-pins after a widening is unidentifiable and its optimum
-  unbounded, often an exponent faking a mechanism the model lacks: remove its term, or leave it
-  pinned. Its limit is safe only for some roles (an exponent's is a step function).
+- `parameters_at_bound`: fitted values within ~1% of a bound, on their estimation scale.⟦ Widen
+  at most once.⟧ A parameter that re-pins after a widening is unidentifiable and its optimum
+  unbounded⟦, often an exponent faking a mechanism the model lacks: remove its term, or leave it
+  pinned. Its limit is safe only for some roles (an exponent's is a step function)⟧.
 - `noise_sigma_report`: each estimated noise sigma against a data-driven reference (a fraction of
   its observable's measurement std), with a `status` of `ok`, `inflated`, `collapsed`, or
   `unknown` (no std to compare with). `data_noise_estimate` is a model-free noise level from
@@ -39,11 +39,11 @@ description: >-
   is strong evidence of inflation and one below it only weak evidence of collapse.
   `noise_sigma_inflated` / `noise_sigma_collapsed` with `noise_sigma_advice` flag either case: an
   inflated sigma absorbs misfit, a collapsed one overfits the noise, and either way the score is
-  not genuine adequacy. The fix is the model's form, not the noise.
+  not genuine adequacy.⟦ The fix is the model's form, not the noise.⟧
 - `residual_structure`: the verdict over the residual tests, with a replicate lack-of-fit arm
   where the design has replicates. A flag marks where the fit is off, not proof of a better form,
-  and stops nothing. Its `sigma_heterogeneity` names the sigmas whose `p` (below) survives Holm.
-- `merge_hints`: the cheapest few priced ties (below).
+  and stops nothing. Its `sigma_heterogeneity` names the sigmas whose `p` (below) survives Holm.⟦
+- `merge_hints`: the cheapest few priced ties (below).⟧
 
 ## Diagnosis: residuals
 
@@ -70,7 +70,7 @@ different structure is in the working state.
 - Per parameter: `se_scaled`, `fold_uncertainty`, `at_bound`, and `multistart_std` (how far it
   wanders across near-optimal starts, a model-free check); `correlations` and
   `partial_correlations`; `flat_directions`, the parameter combinations the data cannot pin;
-  `candidates` ranks the parameters to cut. The FIM is local: read it with the multistart spread.
+  `candidates` ranks the ⟦parameters to cut⟧⟪flagged parameters⟫. The FIM is local: read it with the multistart spread.
 - `merge_candidates` prices giving a pair one shared value: `dnll`, `dscore` (negative when the
   merge lowers the score), `move_scaled` (how far the tie moves a parameter; cheap but many decades
   rarely survives a refit). Only pairs the model's math reads, of one role and scale, neither at a

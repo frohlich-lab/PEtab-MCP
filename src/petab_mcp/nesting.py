@@ -36,6 +36,7 @@ import re
 from typing import Any
 
 from .formatting import finite_float as _finite
+from .messages import fix
 from .provenance import model_diff
 
 # An nll worsening below this is numerical noise (the same optimum re-reported), not a nesting
@@ -56,13 +57,16 @@ NESTING_ADVISORY_TMPL = (
     "WORSE by {worse:.6g}, though the edit only added to {against} and its fitted values lie "
     "inside the bounds — a model nested in its parent cannot fit worse. Either the fit "
     "under-converged or a new term cannot be switched off inside its bounds. This does NOT show "
-    "the added structure fails to help: re-fit with more starts before concluding anything from "
-    "it."
+    "the added structure fails to help"
+    + fix(": re-fit with more starts before concluding anything from it")
+    + "."
 )
 NOT_NESTED_TMPL = (
     "vs {against}, not nested: {reason}. k rose {parent_k}->{child_k} and neg_log_likelihood got "
     "worse by {worse:.6g}, which a model not nested in its parent can do. It does not show the "
-    "added structure fails to help; to test that, add only that structure to {against}."
+    "added structure fails to help"
+    + fix("; to test that, add only that structure to {against}")
+    + "."
 )
 
 # A reaction (``id: A -> B; rate;``, irreversible ``=>``) and an assignment (``x := ...``) or rate
