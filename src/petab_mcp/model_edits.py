@@ -1004,14 +1004,49 @@ _HANDLERS = {
 }
 
 
+def _untied(text: str, op: dict[str, Any], fixed: dict[str, str]) -> str | None:
+    """Why ``op`` cannot tie the parameter it renames or defines, or ``None``. ``fixed`` is
+    :func:`reconcile.fixed_table_parameters`: a ``rename`` whose ``old`` only the fixed tables name
+    finds it nowhere in the model text, one whose ``old`` they read as well as the model leaves
+    them reading the old name, and a ``set_assignment`` defining one only they name takes the row
+    their overrides need. The rename's own refusal ("does not occur in the model") and the lint's
+    ("Missing parameter(s)") named no reason; bachmann and fiedler agents tried such ties on
+    offsets and gel sigmas a merge hint had offered (PEtab-MCP#283)."""
+    from .reconcile import FIXED_TABLE_REASONS, READ_BY_TABLES_TOO
+
+    name = (op.get("op") or "").strip()
+    pid = (op.get("old" if name == "rename" else "id") or "").strip()
+    key = fixed.get(pid) if name in ("rename", "set_assignment") else None
+    if key is None or (key == READ_BY_TABLES_TOO and name != "rename"):
+        return None
+    if key == READ_BY_TABLES_TOO:
+        return (
+            f"{pid!r} {FIXED_TABLE_REASONS[key]}, so renamed away the model stops reading what "
+            "they read. To tie it, rename the other parameter onto it."
+        )
+    if name == "rename" and re.search(rf"(?<![\w.]){re.escape(pid)}\b", mask_comments(text)):
+        return None
+    return (
+        f"{pid!r} {FIXED_TABLE_REASONS[key]}, so no edit renames it, defines it or ties it to "
+        "another parameter. Leave it out."
+    )
+
+
 def apply_model_edits(
-    source: str, edits: "list[dict[str, Any]]", *, where: str = "make_changes"
+    source: str,
+    edits: "list[dict[str, Any]]",
+    *,
+    where: str = "make_changes",
+    fixed: "dict[str, str] | None" = None,
 ) -> tuple[str, list[str]]:
     """Apply a batch of structured operations to the model SOURCE.
 
     Returns ``(new_source, summary)`` — the summary is one line per operation, which is also the
     pre-classified diff (add / remove / rate law / initial / rename) that an analysis would
     otherwise have to reconstruct from text.
+
+    ``fixed`` is :func:`reconcile.fixed_table_parameters` of the problem: a ``rename`` or
+    ``set_assignment`` that cannot tie one of its parameters is refused, saying why.
     """
     if not isinstance(edits, (list, tuple)) or not edits:
         raise OperationError(
@@ -1029,6 +1064,11 @@ def apply_model_edits(
             raise OperationError(
                 f"{label}: unknown op {name!r}; use one of {', '.join(OPS)}. NOTHING was applied.",
                 cause="unknown_op",
+            )
+        untied = _untied(text, op, fixed) if fixed else None
+        if untied is not None:
+            raise OperationError(
+                f"{label}: {untied} NOTHING was applied.", cause="untieable_parameter"
             )
         text, msg = handler(text, op, label)
         summary.append(msg)

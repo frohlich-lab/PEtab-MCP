@@ -764,3 +764,47 @@ def test_a_boundary_species_declared_out_of_line_is_not_a_dynamic_state():
     assert "EGF" not in out_of_line and {"B", "C"} <= out_of_line
     # the inline form keeps working
     assert "EGF" not in _stoichiometry_symbols("R1: $EGF -> B; k\n")
+
+
+# ------------------------------------------------------------------ ties no edit can make (#283)
+def test_a_rename_or_rule_on_a_parameter_only_the_tables_name_says_why(tool_env):
+    """PEtab-MCP#283: merge hints offered ties of offsets and noise sigmas, and agents trying one
+    got "symbol 'offset_SOCS3_long' does not occur in the model" (a rename) or "Missing
+    parameter(s)" (a rule took the row the measurement table's overrides need). Both are refused
+    before anything applies, naming what the parameter is."""
+    mcp, _ = tool_env
+    for op in (
+        {"op": "rename", "old": "sigma_B", "new": "k1"},
+        {"op": "set_assignment", "id": "sigma_B", "antimony": "k1"},
+    ):
+        res = _call(mcp, "make_changes", {"model_edits": [op], "justification": "tie"})
+        assert res["applied"] is False and res["error_cause"] == "untieable_parameter", op
+        assert "'sigma_B' is named only by the observable and measurement tables" in res["error"]
+    # a rename of a parameter the model does read is not refused for it
+    out, _ = me.apply_model_edits(
+        SRC, [{"op": "rename", "old": "k2", "new": "k1"}], fixed={"sigma_B": "x"}
+    )
+    assert "k2" not in out
+
+
+def test_a_noise_sigma_the_fit_solves_is_refused_as_that():
+    """The bound refusal on such a sigma says the fit solves it analytically (#274); a tie on it
+    says the same, not that it is missing (armistead's `sd_Cer_obs := sd_Sphinga_obs`)."""
+    with pytest.raises(OperationError, match="noise sigma the fit solves analytically") as exc:
+        me.apply_model_edits(
+            SRC,
+            [{"op": "set_assignment", "id": "sd_a", "antimony": "sd_b"}],
+            fixed={"sd_a": "solved_analytically"},
+        )
+    assert exc.value.cause == "untieable_parameter"
+
+
+def test_a_parameter_the_tables_read_too_is_kept_by_a_tie_not_renamed_away():
+    """A total that also normalises an observable is read by the model AND the fixed tables: renamed
+    away, the model stops reading what the tables read, so the tie renames the other onto it."""
+    fixed = {"k1": "tables_read_it_too"}
+    with pytest.raises(OperationError, match="rename the other parameter onto it"):
+        me.apply_model_edits(SRC, [{"op": "rename", "old": "k1", "new": "k2"}], fixed=fixed)
+    out, _ = me.apply_model_edits(SRC, [{"op": "rename", "old": "k2", "new": "k1"}], fixed=fixed)
+    assert "k2" not in out
+    me.apply_model_edits(SRC, [{"op": "set_assignment", "id": "k1", "antimony": "A"}], fixed=fixed)

@@ -1118,3 +1118,31 @@ def test_the_report_declares_an_amount_as_the_concentration_it_is():
     )
     (row,) = [r for r in R.initial_conditions_report(prob) if r["species"] == "A"]
     assert row["declared_t0"] == 2.5
+
+
+def test_fixed_table_parameters_say_how_the_tables_name_each_row(session):
+    """PEtab-MCP#283: what a merge hint may not offer and a rename refuses with its reason. A sigma
+    the fit solves analytically says so, as its bound refusal does (#274); an observation scale or
+    offset is named only by the observable and measurement tables; a rate only the model reads is
+    not named; one the observable reads too is kept by a tie."""
+    p = session.problem
+    p = session.problem = p.replace(
+        observable_df=p.observable_df.assign(
+            observableFormula="observableScale_obs_B * B + observableOffset_obs_B",
+            observablePlaceholders="observableScale_obs_B;observableOffset_obs_B",
+        ),
+        measurement_df=p.measurement_df.assign(observableParameters="scale_B;offset_B"),
+    )
+    for pid, value in (("scale_B", 1.0), ("offset_B", 0.0)):
+        p.parameter_df.loc[pid] = p.parameter_df.loc["k1"]
+        p.parameter_df.loc[pid, ["parameterScale", "lowerBound", "upperBound"]] = ["lin", -10, 10]
+        p.parameter_df.loc[pid, ["nominalValue", "estimate"]] = [value, True]
+    assert R.fixed_table_parameters(p) == {
+        "sigma_B": "measurement_tables_only",  # shipped fixed: nothing for the fit to solve
+        "scale_B": "measurement_tables_only",
+        "offset_B": "measurement_tables_only",
+    }
+    p.parameter_df.loc["sigma_B", "estimate"] = True
+    assert R.fixed_table_parameters(p)["sigma_B"] == "solved_analytically"
+    p = p.replace(observable_df=p.observable_df.assign(observableFormula="B / k2"))
+    assert R.fixed_table_parameters(p)["k2"] == R.READ_BY_TABLES_TOO
