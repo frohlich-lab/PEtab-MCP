@@ -103,15 +103,69 @@ def conditions_tsv(df: "pd.DataFrame | None") -> str:
     return df_to_tsv(wide.reindex(index=df[CONDITION_ID].unique(), columns=df[TARGET_ID].unique()))
 
 
-def experiments_tsv(df: "pd.DataFrame | None") -> str:
+#: Most bytes :func:`experiments_tsv` returns. froehlich's table, one experiment per cell line,
+#: drug and dose, is 1 MB, which a harness re-sends with every later result as it did the 36 MB
+#: condition table (PEtab-MCP#290); lun's, the largest of the rest, is 42 KB.
+EXPERIMENTS_MAX_BYTES = 32 * 1024
+
+
+def experiments_tsv(df: "pd.DataFrame | None", max_bytes: int = EXPERIMENTS_MAX_BYTES) -> str:
     """The v2 experiment table, one row per (experiment, time, condition), as TSV with one row per
-    period, its conditions space-separated in ``conditionId``."""
+    period, its conditions space-separated in ``conditionId``; :func:`experiments_summary` where
+    that would pass ``max_bytes``."""
     if df is None or len(df) == 0:
         return df_to_tsv(df)
-    periods = df.groupby([EXPERIMENT_ID, TIME], sort=False)[CONDITION_ID].agg(
-        lambda ids: " ".join(filter(None, ids.dropna()))
+    periods = (
+        df.groupby([EXPERIMENT_ID, TIME], sort=False)[CONDITION_ID]
+        .agg(lambda ids: " ".join(filter(None, ids.dropna())))
+        .reset_index()
     )
-    return df_to_tsv(periods.reset_index())
+    text = df_to_tsv(periods)
+    return text if len(text.encode()) <= max_bytes else experiments_summary(periods, max_bytes)
+
+
+def experiments_summary(periods: pd.DataFrame, max_bytes: int = EXPERIMENTS_MAX_BYTES) -> str:
+    """An experiment table too large for one reply, given as :func:`experiments_tsv`'s one row per
+    period, as TSV with one row per period layout, most shared first: how many experiments share
+    it, their periods' start times in order, how many conditions each period applies and the first
+    such experiment, under a line that says where an experiment's own periods are. Layouts past
+    ``max_bytes`` are counted, not listed."""
+    ordered = periods.assign(
+        _experiment=pd.factorize(periods[EXPERIMENT_ID])[0],
+        times=periods[TIME].map("{:g}".format),
+        n_conditions=periods[CONDITION_ID].str.split().str.len().astype(str),
+    ).sort_values(["_experiment", TIME], kind="stable")
+    experiments = ordered.groupby(EXPERIMENT_ID, sort=False)[["times", "n_conditions"]].agg(
+        " ".join
+    )
+    layouts = experiments.reset_index().groupby(["times", "n_conditions"], sort=False)
+    table = (
+        pd.DataFrame({"n_experiments": layouts.size(), "example": layouts[EXPERIMENT_ID].first()})
+        .reset_index()
+        .sort_values("n_experiments", ascending=False, kind="stable")
+    )
+    table["n_periods"] = table["times"].str.count(" ") + 1
+    head = (
+        f"{len(experiments)} experiments, too large a table for one reply: one row per period "
+        "layout instead, `n_conditions` the conditions each of its `times` applies. An "
+        "experiment's own periods are query_data `SELECT time, conditionId FROM experiments WHERE "
+        f"experimentId = '{periods[EXPERIMENT_ID].iloc[0]}'`.\n"
+    )
+    columns = ["n_experiments", "n_periods", "times", "n_conditions", "example"]
+    header, *rows = (
+        table[columns].to_csv(sep="\t", index=False, lineterminator="\n").splitlines(keepends=True)
+    )
+    tail = "(+{} more layouts, {} experiments)\n"
+    budget = max_bytes - len((head + header + tail.format(len(rows), len(experiments))).encode())
+    kept = []
+    for row in rows:
+        budget -= len(row.encode())
+        if budget < 0:
+            break
+        kept.append(row)
+    rest = table["n_experiments"].iloc[len(kept) :].sum()
+    more = tail.format(len(rows) - len(kept), rest) if len(kept) < len(rows) else ""
+    return head + header + "".join(kept) + more
 
 
 def summarize_measurements(df: "pd.DataFrame | None", *, preview: int = 4) -> dict[str, Any]:
