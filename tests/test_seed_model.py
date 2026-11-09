@@ -387,3 +387,45 @@ def test_a_problem_with_no_declarable_entity_refuses_to_construct(tmp_path):
         PetabSession(
             str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
         )
+
+
+#: The toy's conversion A <-> B written as rate rules on PARAMETERS: no species, no reactions.
+RULES_ONLY_ANT = """model conversion_reaction
+  A' = -k1 * A + k2 * B;
+  B' = k1 * A - k2 * B;
+  A = A_init;
+  B = B_init;
+  A_init = 1.0;
+  B_init = 0.0;
+  k1 = 0.5;
+  k2 = 0.1;
+end
+"""
+
+
+def rules_only_problem(tmp_path: Path) -> Path:
+    """A copy of the toy whose shipped ``model.ant`` holds its states as rate-rule parameters."""
+    work = tmp_path / "rules_only"
+    shutil.copytree(DATA_DIR, work)
+    (work / "model.ant").write_text(RULES_ONLY_ANT, encoding="utf-8")
+    return work / "problem.yaml"
+
+
+def test_a_shipped_model_of_rate_rules_alone_is_kept_not_seeded_over(tmp_path):
+    """A model whose every state is a parameter driven by a rate rule has no species and no
+    reaction, and `has_model` counts only those. The session read such a delivery as model-less
+    and replaced it with the content-free seed, so the judge scored nothing ("no model built") for
+    a valid problem the agent had fitted. It is kept, with the placeholder species carrying the
+    one-species invariant."""
+    session = PetabSession(
+        str(rules_only_problem(tmp_path)),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+    sm = session.model.sbml_model
+    assert sorted(sm.getRule(i).getVariable() for i in range(sm.getNumRules())) == ["A", "B"]
+    assert R.species_ids(sm) == {R.PLACEHOLDER_SPECIES}
+    assert session.model_authored() is True
+    assert session.describe()["model_authored"] is True
+    report = validate_problem(session.problem)
+    assert report["valid"], report["issues"]

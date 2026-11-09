@@ -245,6 +245,17 @@ class PetabSession:
             from . import reconcile as R
 
             self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
+        if self.problem.model is not None:
+            from . import reconcile as R
+
+            sm = self.problem.model.sbml_model
+            # A model whose every state is a PARAMETER driven by a rate rule declares no species
+            # and no reaction, yet moves. `has_model` (species or reactions) reads it as the empty
+            # skeleton, so `_seed_initial_model` below would replace it with the seed and a
+            # delivered model would be scored as never built. The placeholder species keeps the
+            # one-species invariant AMICI's import needs and leaves the mechanism as it came.
+            if R.has_dynamics(sm) and sm.getNumSpecies() == 0:
+                R.ensure_one_species(sm)
 
         self.lock = threading.RLock()
         # Held only while the timing accumulators and the early-stop state below are updated
