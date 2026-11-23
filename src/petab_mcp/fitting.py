@@ -47,7 +47,7 @@ from .constants import (
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import ModelUpdateError, PetabMcpError, disk_full_error
+from .errors import ModelUpdateError, PetabMcpError, ValidationError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .problem import (
@@ -661,13 +661,7 @@ def amici_facing_problem(session):
     cached = getattr(session, "_amici_problem_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1], True
-    from amici.importers.petab import flatten_timepoint_specific_output_overrides
-
-    flat_petab = copy.deepcopy(session.problem.to_petab())
-    flatten_timepoint_specific_output_overrides(flat_petab)
-    flat = session.problem.replace(
-        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
-    )
+    flat = _flattened(session.problem)
     session._amici_problem_cache = (key, flat)
     session.logger.info(
         "flattening timepoint-specific output overrides for the AMICI build only "
@@ -676,6 +670,73 @@ def amici_facing_problem(session):
         len(flat.observable_df),
     )
     return flat, True
+
+
+def _flattened(problem):
+    """``problem`` with AMICI's flattening applied to a deep copy of its tables — the one
+    flatten :func:`amici_facing_problem` builds from and :func:`check_flattenable` tries."""
+    from amici.importers.petab import flatten_timepoint_specific_output_overrides
+
+    flat_petab = copy.deepcopy(problem.to_petab())
+    flatten_timepoint_specific_output_overrides(flat_petab)
+    return problem.replace(
+        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
+    )
+
+
+def check_flattenable(problem) -> None:
+    """Raise :class:`ValidationError` if ``problem`` needs flattening and AMICI cannot flatten it.
+
+    The flattened observable ids are ``<observableId>__<overrides>``, built by petab's
+    ``get_observable_replacement_id``, which only replaces ``;`` and ``.`` — so an override like
+    ``-1`` or ``1e-3`` yields an id PEtab rejects. Those ids depend only on the observable and
+    measurement tables, which no edit can change, so the failure is decided at load: a problem
+    that passes here cannot fail it at compile time, and one that fails would otherwise fail
+    EVERY fit, labelled as an ill-posed model the agent would keep rewriting.
+
+    The verdict is the real flatten (:func:`_flattened`), never a re-derivation of the ids, so it
+    cannot drift from what gets compiled. Only naming the offending ids is best-effort.
+    """
+    if not needs_flattening(problem):
+        return
+    try:
+        _flattened(problem)
+    except Exception as exc:
+        culprits = _invalid_flattened_ids(problem)
+        named = (
+            "; ".join(
+                f"observable {old!r} with override {new.removeprefix(old + '__')!r} "
+                f"would become {new!r}"
+                for new, old in culprits
+            )
+            if culprits
+            else f"{type(exc).__name__}: {exc}"
+        )
+        raise ValidationError(
+            "this problem cannot be fit: its measurement table varies observable/noise "
+            "parameter overrides within one (observable, experiment) pair, so AMICI must give "
+            "each override its own copy of the observable, and the ids those copies get are not "
+            f"valid PEtab ids ({named}). The observable and measurement tables are fixed, so no "
+            "model change can fix this. Fix the problem files: use named parameters instead of "
+            "numeric literals in those overrides (e.g. a fixed parameter `sign_neg` with "
+            "nominal value -1 in place of -1), or remove the overrides that differ within one "
+            "(observable, experiment) pair.",
+            issues=[f"invalid flattened observable id {new!r}" for new, _ in culprits],
+        ) from exc
+
+
+def _invalid_flattened_ids(problem) -> list[tuple[str, str]]:
+    """``(flattened id, original id)`` for every flattened id PEtab would reject — AMICI's own
+    mapping, which is private, so ``[]`` when it is unavailable or itself fails."""
+    from petab.v1.lint import is_valid_identifier
+
+    try:
+        from amici.importers.petab._petab_importer import _get_flattened_id_mappings
+
+        mappings = _get_flattened_id_mappings(problem.to_petab())
+    except Exception:
+        return []
+    return [(new, old) for new, old in mappings.items() if not is_valid_identifier(new)]
 
 
 def estimation_problem(session, engine, *, solve_inner: bool = True):

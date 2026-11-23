@@ -44,6 +44,7 @@ from .errors import (
 )
 from .fitting import (
     FIT_PER_START_TIMEOUT_S,
+    check_flattenable,
     noise_sigma_collapsed,
     noise_sigma_inflated,
     table_fitted_values,
@@ -270,6 +271,9 @@ class PetabSession:
         # call belongs here, in the first thing the server constructs, rather than next to the
         # fitting code that provokes the warnings.
         logging_setup.configure_amici()
+        # A problem AMICI cannot flatten fails every fit, and nothing the agent can edit changes
+        # that, so it is refused here, once. After `configure_amici`: this imports amici.
+        check_flattenable(self.problem)
 
         # Ids of parameters that ship FIXED and are structural/mechanistic constants — the ones
         # the agent must neither free nor remove. Derived once from the initial (v0) problem and

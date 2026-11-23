@@ -114,3 +114,63 @@ def test_describe_names_the_condition_targets(dosed_session):
     """froehlich's analysts spent rounds listing its 145 targets out of a 36 MB `list_conditions`
     (PEtab-MCP#290)."""
     assert dosed_session.describe()["condition_targets"] == ["dose"]
+
+
+_FLATTEN_OBSERVABLES = (
+    "observableId\tobservableFormula\tnoiseFormula\tobservablePlaceholders\n"
+    "obs_B\tsign_obs_B * B\tsigma_B\tsign_obs_B\n"
+)
+
+
+def _flattening_problem(tmp_path, overrides):
+    """The toy problem with one observable placeholder whose override varies between
+    timepoints of one experiment, so it needs flattening."""
+    import shutil
+
+    from conftest import DATA_DIR
+
+    root = tmp_path / "problem"
+    shutil.copytree(DATA_DIR, root)
+    (root / "observables.tsv").write_text(_FLATTEN_OBSERVABLES)
+    rows = [
+        f"obs_B\t\t{t}\t{m}\t{o}"
+        for t, m, o in zip((0.0, 1.0, 2.0, 4.0), (0.0, 0.3, 0.48, 0.66), overrides, strict=True)
+    ]
+    (root / "measurements.tsv").write_text(
+        "observableId\texperimentId\ttime\tmeasurement\tobservableParameters\n"
+        + "\n".join(rows)
+        + "\n"
+    )
+    return root / "problem.yaml"
+
+
+def test_a_problem_whose_flattened_ids_are_invalid_is_refused_at_load(tmp_path):
+    """An override of `-1` flattens to the observable id `obs_B__-1`, which PEtab rejects.
+    It used to load cleanly and then fail every fit as "ill-posed for estimation", so an agent
+    rewrote a model that was fine until its budget ran out (stop_reason: no_model_built after
+    2.8 h). The tables it comes from are fixed, so it is refused once, naming the culprit."""
+    from petab_mcp.errors import ValidationError
+
+    yaml_path = _flattening_problem(tmp_path, ("1", "-1", "1", "1"))
+    with pytest.raises(ValidationError) as exc:
+        PetabSession(yaml_path, provenance_dir=str(tmp_path / "p"))
+    message = str(exc.value)
+    assert "obs_B__-1" in message and "'-1'" in message
+    assert exc.value.issues == ["invalid flattened observable id 'obs_B__-1'"]
+
+
+def test_a_problem_that_flattens_to_valid_ids_still_loads(tmp_path):
+    """The check refuses only an unflattenable problem, not every one that needs flattening:
+    named overrides flatten to valid ids, and the copy the compile path builds is the one the
+    check tried."""
+    from petab_mcp.fitting import amici_facing_problem, needs_flattening
+
+    yaml_path = _flattening_problem(tmp_path, ("s_pos", "s_neg", "s_pos", "s_pos"))
+    params = yaml_path.parent / "parameters.tsv"
+    params.write_text(
+        params.read_text() + "s_pos\tlin\t-10\t10\t1.0\tfalse\ns_neg\tlin\t-10\t10\t-1.0\tfalse\n"
+    )
+    s = PetabSession(yaml_path, provenance_dir=str(tmp_path / "p"))
+    assert needs_flattening(s.problem) is True
+    flat, flattened = amici_facing_problem(s)
+    assert flattened and set(flat.observable_df.index) == {"obs_B__s_pos", "obs_B__s_neg"}
