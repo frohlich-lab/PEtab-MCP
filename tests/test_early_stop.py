@@ -125,6 +125,34 @@ def test_a_small_new_best_moves_the_best_not_the_streak(session):
     )
 
 
+def test_a_refit_tie_is_the_best_and_says_it_is_not_progress(session):
+    """PEtab-MCP#340, fujita 64076246_0: a refit of an identical structure gained 7.2e-07. It is
+    the strict minimum, so the best, as the judge takes it; the fit's progress says why the streak
+    did not reset, and the next fit's does not repeat it."""
+    _op(session, 1, _fitsim(-50.0, 500.0))
+    imp = _op(session, 2, _fitsim(-50.0 - 3.6e-7, 500.0))
+    assert imp["is_new_best"] is True
+    p = session.progress_report()
+    assert (p["best_version"], p["non_improving_streak"]) == (2, 1)
+    assert p["streak_not_reset"] == (
+        "v2 is the best by a bic gain of 7.2e-07 since the streak last reset, under the 2 that "
+        "counts as progress"
+    )
+    _op(session, 3, _fitsim(-49.0, 500.0))
+    assert session.progress_report()["streak_not_reset"] is None
+
+
+def test_an_unscored_fit_leaves_the_streak_once_a_fit_has_scored(session):
+    """PEtab-MCP#335: a fit left unscored (the optimizer and the re-simulation disagree) says
+    nothing about the model's score, so it neither advances the streak nor counts as an op.
+    Before anything has scored it does (see the unscored-stall tests below)."""
+    _op(session, 1, _fitsim(-50.0, 500.0))
+    for v in (2, 3):
+        session.record_fit_progress(v, _fitsim(None, None), {"is_new_best": False})
+    p = session.progress_report()
+    assert (p["n_fitted_ops"], p["non_improving_streak"], p["best_version"]) == (1, 0, 1)
+
+
 def test_a_gain_too_small_to_reset_the_streak_holds_off_the_plateau(session):
     """PEtab-MCP#271, dessauges 1: the plateau window measured gains from the 2-unit checkpoint, so
     a 1.6 BIC gain read as 0 and an adequate session plateau-stopped while still improving. It is

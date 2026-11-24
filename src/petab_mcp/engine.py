@@ -35,7 +35,7 @@ from petab.v2.C import (
 )
 
 from . import filelock
-from .formatting import finite_float
+from .formatting import finite_float, measurement_time
 from .problem import observable_transformation, scale
 
 
@@ -568,7 +568,7 @@ class AmiciEngine:
             {
                 "observable_id": row.get(OBSERVABLE_ID),
                 "experiment_id": row.get(EXPERIMENT_ID),
-                "time": finite_float(row.get(TIME)),
+                "time": measurement_time(row.get(TIME)),
                 "measurement": finite_float(row.get(MEASUREMENT)),
                 "simulation": None,
                 "residual": None,
@@ -685,7 +685,7 @@ class AmiciEngine:
                 {
                     "observable_id": row.get(OBSERVABLE_ID),
                     "experiment_id": row.get(EXPERIMENT_ID),
-                    "time": finite_float(row.get(TIME)),
+                    "time": measurement_time(row.get(TIME)),
                     "measurement": m,
                     "simulation": s,
                     "residual": residual,
