@@ -384,11 +384,14 @@ def test_a_starts_records_land_in_the_pypesto_log_of_the_session_that_ran_it(tmp
         assert other not in log
 
 
-def test_a_killed_worker_fails_the_fit():
-    """A worker that dies under a start is a cluster failure: the fit fails with FitBackendError."""
+def test_a_killed_worker_fails_the_fit_as_the_pools_failure():
+    """A worker that dies under a start is a cluster failure: the fit fails with FitBackendError,
+    which says so. DeepSeek raimundez 63782292_12 read a bare ``KilledWorker`` as its Hill form
+    crashing (PEtab-MCP#341)."""
     with _engine(n_workers=1, config={"distributed.scheduler.allowed-failures": 0}) as engine:
-        with pytest.raises(FitBackendError, match="KilledWorker"):
+        with pytest.raises(FitBackendError, match="KilledWorker") as failed:
             engine.execute([_Die()])
+    assert "the pool's failure, not the model's" in str(failed.value)
 
 
 def test_a_failed_start_cancels_the_fits_starts_still_queued(tmp_path):
