@@ -486,26 +486,29 @@ def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
     assert not any("needle" in w for w in fit_session.fit(n_starts=4)["warnings"])
 
 
-def test_a_default_fit_that_leaves_one_start_at_the_best_says_refit_before_editing(
+def test_a_default_fit_with_few_of_its_starts_at_the_best_says_refit_before_editing(
     fit_session, monkeypatch
 ):
-    """A fit at the default count with 1 start at the best warned of nothing, so the agent read
+    """A fit at the default count with few starts at the best warned of nothing, so the agent read
     its score as the structure's and edited the model rather than raising `n_starts`. It now says
-    to refit first; 2 of 3 at the best, not under half the starts, does not."""
-    real, at_best = fitting.fit_and_simulate, {"n": 2}
+    to refit first once the starts at the best are 20% or fewer of those completed: 1 of 5 is, 1
+    of 3 is not."""
+    real = fitting.fit_and_simulate
 
-    def forced_at_best(*args, **kwargs):
+    def one_at_best(*args, **kwargs):
         out = real(*args, **kwargs)
-        out["n_starts_at_best"] = at_best["n"]
+        out["n_starts_at_best"] = 1
         return out
 
-    monkeypatch.setattr(fitting, "fit_and_simulate", forced_at_best)
+    monkeypatch.setattr(fitting, "fit_and_simulate", one_at_best)
     fit_session.auto_fit_starts = 3
     assert not any("starts reached the best" in w for w in fit_session.fit()["warnings"])
     # A larger default, so the de-dup runs this fit of the same model rather than skipping it.
-    fit_session.auto_fit_starts, at_best["n"] = 4, 1
-    warned = [w for w in fit_session.fit()["warnings"] if "1 of 4 starts reached" in w]
-    assert len(warned) == 1 and "`n_starts` above the default 4" in warned[0]
+    fit_session.auto_fit_starts = 5
+    warned = [w for w in fit_session.fit()["warnings"] if "1 of 5 starts reached" in w]
+    assert len(warned) == 1
+    assert "20% of those that completed" in warned[0]
+    assert "`n_starts` above the default 5" in warned[0]
 
 
 def test_a_refit_at_the_cap_is_not_offered_more_starts(fit_session):
