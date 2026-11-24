@@ -1125,8 +1125,23 @@ def test_a_folded_warning_keeps_the_symbols_it_names(session):
     from petab_mcp import messages as M
 
     said = "species `B` starts at 0 and stays 0 (`r2`, 'k2', `statements`, `gone`)."
-    session.warnings_sent = {(M.SOURCE_VALIDATION, said): 7}
-    out = O._unrepeated(session, [M.warning(M.SOURCE_VALIDATION, said)], None)
+    session.warnings_sent = {7: {(M.SOURCE_VALIDATION, said): 7}}
+    out = O._unrepeated(session, [M.warning(M.SOURCE_VALIDATION, said)], 7, None)
     assert [m["message"] for m in out] == [
         "1 warning(s) unchanged since version 7, naming `B`, `r2`, `k2`."
     ]
+
+
+def test_a_fold_is_against_the_changed_version_and_names_what_its_reconcile_pruned(session):
+    """crauste 33's `base_version=6` edit was told its warning was "unchanged since version 7", a
+    sibling's; fontaine 100's fold of "Removed species ...: `G1`, `G2`." named nothing, 23 times,
+    since a pruned species is no id of the model (PEtab-MCP#328)."""
+    from petab_mcp import messages as M
+
+    said = "Removed species nothing in the model reads, with their initial amounts: `G1`."
+    session.warnings_sent = {6: {}, 7: {(M.SOURCE_EDIT, said): 7}}
+    one = [M.warning(M.SOURCE_EDIT, said)]
+    assert O._unrepeated(session, one, 6, 8) == one
+    assert session.warnings_sent[8] == {(M.SOURCE_EDIT, said): 8}
+    out = O._unrepeated(session, one, 7, None, gone={"G1"})
+    assert [m["message"] for m in out] == ["1 warning(s) unchanged since version 7, naming `G1`."]

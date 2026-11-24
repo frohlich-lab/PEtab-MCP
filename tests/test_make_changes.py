@@ -1098,6 +1098,51 @@ def test_a_warning_the_last_version_carried_is_not_sent_again(tmp_path):
     assert "1 warning(s) unchanged since version 0." in said and grounding not in said
 
 
+def test_a_pruned_species_leaves_the_stored_source_and_is_reported_once(tmp_path):
+    """fontaine 100's `G1`, `G2`: the stored source still declared them, so every later edit
+    pruned them again, and the fold of that warning named nothing, 23 times (PEtab-MCP#328)."""
+    mcp = _server(tmp_path)
+    unread = _antimony("species C in compartment_;", "C = 2;")
+    v0 = _call(mcp, "make_changes", {"antimony": unread, "justification": "C, read by nothing"})
+    assert any(
+        m["message"].startswith("Removed species") and "`C`" in m["message"] for m in v0["messages"]
+    ), v0["messages"]
+    assert not re.search(r"\bC\b", _call(mcp, "get_model", {"version": 0})["result"])
+    edit = [{"op": "set_rate_law", "id": "r2", "antimony": "k2 * B * B"}]
+    v1 = _call(mcp, "make_changes", {"model_edits": edit, "justification": "r2 is bimolecular"})
+    assert v1["committed"] is True, v1
+    assert [m for m in v1["messages"] if m["source"] == "edit"] == []
+
+
+def test_a_rename_merge_leaves_one_declaration_in_what_get_model_serves(tmp_path):
+    """oliveira 57: `get_model(version=18)` served `beta_asy` declared three times, one per
+    merge (PEtab-MCP#328)."""
+    mcp = _server(tmp_path)
+    _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0"})
+    tie = [{"op": "rename", "old": "k2", "new": "k1"}]
+    v1 = _call(mcp, "make_changes", {"model_edits": tie, "justification": "one rate"})
+    assert v1["committed"] is True, v1
+    source = _call(mcp, "get_model", {"version": v1["version"]})["result"]
+    assert re.findall(r"(?<![\w.])k1\s*=(?![>=])[^;]*", source) == ["k1 = 0.5"], source
+
+
+def test_a_fork_folds_against_its_base_not_the_last_commit(tmp_path):
+    """crauste 33: a `base_version=6` edit was told its warning was "unchanged since version 7",
+    a sibling it does not descend from (PEtab-MCP#328). A fork of v0 gets whole what v0 did not
+    carry, however recently a sibling did."""
+    mcp = _server(tmp_path)
+    _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0"})
+    dead = ("species C in compartment_;", "C = 0;", "k3 = 0.2;", "r3: A => B; k3 * A * C;")
+    v1 = _call(mcp, "make_changes", {"antimony": _antimony(*dead), "justification": "C gates r3"})
+    (lint,) = [m for m in v1["messages"] if m["source"] == "validation"]
+    fork = _antimony(*dead, "r4: B => ; k4 * B;")
+    v2 = _call(
+        mcp, "make_changes", {"antimony": fork, "base_version": 0, "justification": "C, and r4"}
+    )
+    assert v2["committed"] is True, v2
+    assert lint in v2["messages"], v2["messages"]
+
+
 def test_a_folded_warning_is_kept_whole_in_its_version(tmp_path):
     """A version's meta keeps every warning its change and lint gave, as its result carried them
     before the fold. bachmann 77's dead `pSTAT5n` was a count in every result from v8 on, and the

@@ -346,7 +346,8 @@ class PetabSession:
         self.invalid_comparison: str | None = None
 
         # The Antimony the CALLER actually submitted for the next commit — the agent's own text,
-        # before the reconcile adds declarations and before libantimony re-renders it. Stored
+        # before the reconcile adds declarations and before libantimony re-renders it, less the
+        # declarations of what the reconcile pruned (``operations._commit_change``). Stored
         # alongside the committed model as ``model_source.ant`` (see _snapshot_version).
         #
         # WHY IT IS WORTH A FILE. What every version stores today is the BUILD OUTPUT, and three
@@ -421,9 +422,10 @@ class PetabSession:
         # starts — count toward the loop guard. A within-session counter (a fresh session
         # legitimately starts over), not persisted.
         self._fit_attempts: dict[str, int] = {}
-        # The edit and lint warnings the last committed `make_changes` result carried, each with
-        # the version whose result first carried it in full (see `operations.bundle_result`).
-        self.warnings_sent: dict[tuple[str, str], int] = {}
+        # The edit and lint warnings each committed `make_changes` result carried, by its version,
+        # each with the version whose result first carried it in full (see
+        # `operations._unrepeated`).
+        self.warnings_sent: dict[int, dict[tuple[str, str], int]] = {}
 
         if self.provenance.current_version < 0:
             # The initial model is WORKING STATE, not a version: every version is a fit, and
@@ -1591,7 +1593,7 @@ class PetabSession:
 
         ``edit_warnings`` are the warnings that change and its lint gave, as message-stack entries
         (:mod:`messages`). They ARE written to the version meta, whole: the result folds a warning
-        the last committed result carried into a count (``operations._unrepeated``), so the meta
+        the changed version's result carried into a count (``operations._unrepeated``), so the meta
         is the one place a version's warnings can still be read in full. The gemot harness reads
         them there when its lead finishes, and its finish gate shows them again. bachmann 77's best
         model kept a dead `pSTAT5n` its results had folded since v7 (PEtab-MCP#286).

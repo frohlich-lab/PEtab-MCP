@@ -616,6 +616,15 @@ def _commit_change(
                 )
         else:
             recon = None
+        # The text this change stores as its source, without what the reconcile pruned: a source
+        # that still declared it was pruned again on every later edit, and a fold of the prune's
+        # warning named nothing (PEtab-MCP#328).
+        source = getattr(session, "submitted_source", None)
+        if recon is not None and source:
+            from .model_edits import strip_pruned
+
+            pruned = recon["pruned"]
+            source = strip_pruned(source, [*pruned["species"], *pruned["parameters"]])
 
         def lint() -> dict:
             # A parameter that ships FIXED and is a mechanistic/structural constant (a
@@ -763,6 +772,8 @@ def _commit_change(
         # can throw. A throw after the swap would leave the live problem changed while the caller
         # reports `applied: false`, and `make_changes` returns on that without reverting.
         session.problem = problem
+        if recon is not None and source:
+            session.submitted_source = source
         if signed is not None and model_build is not None:
             record.clear()  # the caller keeps this record as the new model's rows
             record.update(signed)
@@ -2523,8 +2534,8 @@ def bundle_result(
     Both halves' diagnostics are merged into ONE ordered ``messages`` stack (see :mod:`messages`) —
     the edit's advisories and lint warnings first, then the fit's — so a caller reads every
     warning and the error that stopped the call from a single place, each tagged with the step it
-    came from. An edit or lint warning the last committed result already carried is folded into
-    one line naming that version (see :func:`_unrepeated`).
+    came from. An edit or lint warning the result of the version it changed already carried is
+    folded into one line naming the version that first carried it (see :func:`_unrepeated`).
 
     On a failure the message does NOT prescribe a fix, it forwards ``error`` — because that error
     is not always "the model is broken". The identical-structure loop guard reaches the same
@@ -2599,13 +2610,16 @@ def bundle_result(
     # Pipeline order: the tool's, the edit's messages, then the fit's. `run_fit` /
     # `edit_then_fit` already shape a rejected fit as error entries; a fit that RAN reports its
     # advisories as the flat `warnings` the de-dup produces, so both shapes are folded in here.
+    pruned = (edit_result.get("reconcile") or {}).get("pruned") or {}
     messages = _unrepeated(
         session,
         off_best
         + list(edit_result.get("messages") or [])
         + list(fit_result.get("messages") or [])
         + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings")),
+        base,
         version if committed else None,
+        gone={*pruned.get("species", ()), *pruned.get("parameters", ())},
     )
     result = {
         **{k: edit_result[k] for k in _EDIT_KEYS_KEPT if k in edit_result},
@@ -2634,14 +2648,15 @@ _QUOTED_NAME = re.compile(r"[`']([A-Za-z_]\w*)[`']")
 _FOLDED_NAMES_SHOWN = 12
 
 
-def _folded(problem, texts: list[str], version: int) -> str:
+def _folded(problem, texts: list[str], version: int, gone: set[str] = frozenset()) -> str:
     """The one line standing for ``texts``, warnings first sent whole with ``version``, with the
     model's and the parameter table's ids they quote: bachmann 77's dead `pSTAT5n`, still read by
     three readouts, was "1 warning(s) unchanged since version 7" from then on, and the best model
-    kept the bug (PEtab-MCP#286)."""
+    kept the bug (PEtab-MCP#286). ``gone`` is what this change's reconcile pruned, which a warning
+    about the prune quotes though the model no longer has it (PEtab-MCP#328)."""
     sm = problem.model.sbml_model
     known = R.species_ids(sm) | R.parameter_ids(sm) | {str(p) for p in problem.parameter_df.index}
-    known |= {r.getId() for r in sm.getListOfReactions()}
+    known |= {r.getId() for r in sm.getListOfReactions()} | set(gone)
     names = list(dict.fromkeys(n for t in texts for n in _QUOTED_NAME.findall(t) if n in known))
     shown = ", ".join(f"`{n}`" for n in names[:_FOLDED_NAMES_SHOWN])
     if len(names) > _FOLDED_NAMES_SHOWN:
@@ -2651,15 +2666,22 @@ def _folded(problem, texts: list[str], version: int) -> str:
     )
 
 
-def _unrepeated(session, messages: list[dict[str, str]], version: int | None) -> list[dict]:
-    """``messages`` with every edit or lint warning the last committed result carried folded into
-    one line per source, naming the version whose result carried it in full and the symbols it
-    quotes (:func:`_folded`).
+def _unrepeated(
+    session,
+    messages: list[dict[str, str]],
+    base: int,
+    version: int | None,
+    gone: set[str] = frozenset(),
+) -> list[dict]:
+    """``messages`` with every edit or lint warning the result of ``base``, the version this call
+    changed, carried folded into one line per source, naming the version whose result first
+    carried it in full and the symbols it quotes (:func:`_folded`). Folding against the last
+    commit instead named a sibling's on a ``base_version`` fork (PEtab-MCP#328).
 
     ``version`` is the version this call created, ``None`` when it created none. Only a committed
     result is remembered, so the version a line names always has a result of its own, and a
     warning that skipped a commit is sent whole again."""
-    sent = session.warnings_sent
+    sent = session.warnings_sent.get(base, {})
 
     def first_sent(m: dict[str, str]) -> int | None:
         if m["level"] != M.LEVEL_WARNING or m["source"] not in _FOLDED_SOURCES:
@@ -2676,9 +2698,9 @@ def _unrepeated(session, messages: list[dict[str, str]], version: int | None) ->
         if v is None:
             out.append(m)
         elif (texts := folded.pop((m["source"], v), None)) is not None:
-            out.append(M.warning(m["source"], _folded(session.problem, texts, v)))
+            out.append(M.warning(m["source"], _folded(session.problem, texts, v, gone)))
     if version is not None:
-        session.warnings_sent = {
+        session.warnings_sent[version] = {
             (m["source"], m["message"]): version if (v := first_sent(m)) is None else v
             for m in messages
             if m["level"] == M.LEVEL_WARNING and m["source"] in _FOLDED_SOURCES

@@ -471,6 +471,120 @@ def _line_bounds(text: str, pos: int) -> tuple[int, int]:
     return start, (len(text) if end < 0 else end)
 
 
+def _cut(text: str, start: int, end: int) -> str:
+    """``text`` without ``[start, end)``: a STATEMENT, not its line, since a line may carry another
+    the caller did not ask to remove. The line goes too once nothing but whitespace is left."""
+    cut = text[:start] + text[end:]
+    line_start, line_end = _line_bounds(cut, min(start, max(len(cut) - 1, 0)))
+    if not cut[line_start:line_end].strip():
+        cut = cut[:line_start] + cut[min(line_end + 1, len(cut)) :]
+    elif not cut[start:line_end].strip():
+        cut = cut[:start].rstrip(" \t") + cut[start:]
+    return cut
+
+
+def _in_event(masked: str, pos: int) -> bool:
+    """Whether ``pos`` is inside an EVENT, which assigns at a trigger time (``E1: at (time > 10):
+    A = 5;``), not at t=0. Back to the statement's ``;``, never the nearest newline: an event may
+    span lines, and its trigger may be parenless (``E1: at time > 10: A = 5;``)."""
+    stmt_start = masked.rfind(";", 0, pos) + 1
+    return re.search(r"(?<![\w.])at(?![\w.])", masked[stmt_start:pos]) is not None
+
+
+def _value_assignments(text: str, sid: str) -> list[re.Match]:
+    """``sid``'s ``sid = value`` statements, matched on the comment mask, in order: none inside a
+    reaction or an event. The ``;`` is optional, as in :func:`assigned_symbols`: a pattern that
+    required it reported a symbol as unknown and listed it as known in the same sentence."""
+    masked = mask_comments(text)
+    rxn_spans = [(m.start(), m.end()) for m in _RXN_STMT.finditer(masked)]
+    pat = re.compile(rf"(?<![\w.]){re.escape(sid)}\s*=(?![>=])\s*[^;\n]+?\s*(?:;|$)", re.MULTILINE)
+    return [
+        m
+        for m in pat.finditer(masked)
+        if not any(s <= m.start() < e for s, e in rxn_spans) and not _in_event(masked, m.start())
+    ]
+
+
+#: A declaration: its keywords, then a comma list of names (``species A in cell, $B;``,
+#: ``const k1, k2;``), which may run on to the next line after a comma.
+_DECLARATION = re.compile(
+    r"(?<![\w.$])(?P<head>(?:(?:const|var|substanceOnly|species|compartment|formula)[ \t]+)+)"
+    r"(?P<items>[^;\n]*(?:,[ \t]*\n[^;\n]*)*);?",
+    re.MULTILINE,
+)
+
+
+def _declared(masked: str) -> list[tuple[re.Match, list[tuple[int, int, str]]]]:
+    """Each declaration in ``masked`` with its entries: ``(start, end, name)``, the span of the
+    entry's text between commas (outside parentheses) and the name it declares."""
+    out = []
+    for m in _DECLARATION.finditer(masked):
+        entries, start, depth = [], m.start("items"), 0
+        for i in range(m.start("items"), m.end("items") + 1):
+            ch = masked[i] if i < m.end("items") else ","
+            depth += (ch == "(") - (ch == ")")
+            if ch == "," and depth <= 0:
+                name = re.match(r"\s*\$?\s*([A-Za-z_]\w*)", masked[start:i])
+                entries.append((start, i, name[1] if name else ""))
+                start = i + 1
+        out.append((m, entries))
+    return out
+
+
+def drop_declarations(text: str, sid: str, like: str | None = None) -> str:
+    """``text`` without ``sid``'s own declarations: its ``sid = value`` statements, its entries in
+    declaration lists (``species``, ``const``, ...) and its ``sid is "…"`` display name. With
+    ``like``, only the kinds ``like`` has too: a rename merging ``sid`` into ``like`` keeps the
+    target's own, and a kind only ``sid`` had becomes ``like``'s by the rename."""
+    masked = mask_comments(text)
+    cuts: list[tuple[int, int]] = []
+    if like is None or _value_assignments(text, like):
+        cuts += [m.span() for m in _value_assignments(text, sid)]
+    shown = re.compile(r'(?<![\w.])({})\s+is\s+"[^"\n]*"\s*;?')
+    if like is None or re.search(shown.pattern.format(re.escape(like)), masked):
+        cuts += [m.span() for m in re.finditer(shown.pattern.format(re.escape(sid)), masked)]
+    declared = _declared(masked)
+    heads = {
+        " ".join(m["head"].split()) for m, entries in declared if like in {e[2] for e in entries}
+    }
+    edits: list[tuple[int, int, str]] = []  # (start, end, replacement)
+    for m, entries in declared:
+        if sid not in {e[2] for e in entries} or (
+            like is not None and " ".join(m["head"].split()) not in heads
+        ):
+            continue
+        kept = [text[s:e] for s, e, name in entries if name != sid]
+        if not kept:
+            cuts.append(m.span())
+            continue
+        kept[0] = kept[0].lstrip()
+        edits.append((m.start("items"), m.end("items"), ",".join(kept)))
+    edits += [(s, e, "") for s, e in cuts]
+    for start, end, new in sorted(edits, reverse=True):
+        text = text[:start] + new + text[end:] if new else _cut(text, start, end)
+    return text
+
+
+def strip_pruned(source: str, ids: list[str]) -> str:
+    """``source`` without the declarations of ``ids``, what the reconcile pruned
+    (:func:`reconcile.prune_orphans`), so a prune happens once rather than again on every edit of
+    the source that still declares it (PEtab-MCP#328). An id is stripped only where nothing of it
+    is left after; ``X = X0`` keeps ``X0`` until ``X`` is gone, so the ids go round until none
+    moves."""
+    left = list(dict.fromkeys(ids))
+    while left:
+        gone = []
+        for sid in left:
+            out = drop_declarations(source, sid)
+            if not re.search(rf"(?<![\w.]){re.escape(sid)}\b", mask_comments(out)):
+                source = out
+                gone.append(sid)
+        if not gone:
+            break
+        left = [sid for sid in left if sid not in gone]
+    return source
+
+
 def _model_block_start(masked: str) -> int:
     """Offset just past the ``model <name>(...)`` header, or 0 when there is no explicit block.
 
@@ -718,13 +832,7 @@ def _op_remove_reaction(text, op, where):
     m = _find_reaction(text, rid)
     if m is None:
         raise _unknown_reaction(where, rid, text)
-    # Cut the STATEMENT, not the line: a line may carry another reaction the caller did not ask to
-    # remove. Drop the whole line only once nothing but whitespace is left on it.
-    cut = text[: m.start()] + text[m.end() :]
-    line_start, line_end = _line_bounds(cut, min(m.start(), max(len(cut) - 1, 0)))
-    if not cut[line_start:line_end].strip():
-        cut = cut[:line_start] + cut[min(line_end + 1, len(cut)) :]
-    return cut, f"removed reaction {rid}"
+    return _cut(text, m.start(), m.end()), f"removed reaction {rid}"
 
 
 def _law_of(law: str, rid: str, rxn: re.Match, where: str) -> tuple[str, str]:
@@ -798,32 +906,12 @@ def _op_set_initial(text, op, where):
             "fixed) or a symbol like 'A_init'. NOTHING was applied."
         )
     _reject_semicolons(where, antimony=str(value))
-    # Found on the MASK, rewritten in the original: the terminating `;` is optional here exactly as
-    # it is in `assigned_symbols`, because a pattern that required it reported a symbol as unknown
-    # and listed it as known in the same sentence.
     masked = mask_comments(text)
-    rxn_spans = [(m.start(), m.end()) for m in _RXN_STMT.finditer(masked)]
-    pat = re.compile(rf"(?<![\w.]){re.escape(sid)}\s*=(?![>=])\s*[^;\n]+?\s*(?:;|$)", re.MULTILINE)
-
-    # An EVENT assigns the same symbol at a trigger time (`E1: at (time > 10): A = 5;`), and
-    # rewriting THAT leaves the real initial value untouched while reporting success — the exact
-    # class of silent wrong result the comment masking removed. Skip event statements, and of the
-    # remaining candidates take the LAST: a symbol assigned twice at top level takes the later
-    # value, so rewriting the first would be overwritten by the second.
-    def _in_event(pos: int) -> bool:
-        # Back to the true STATEMENT start — `;` only, never the nearest newline. An event may
-        # span lines (`E1: at (time > 10):\n  A = 5,\n  B = 3;`), and stopping at the newline made
-        # the slice for `B` just "  B", missing the trigger entirely, so the event assignment was
-        # rewritten and reported as the initial value. The trigger may also be parenless
-        # (`E1: at time > 10: A = 5;`), so `\(` cannot be required.
-        stmt_start = masked.rfind(";", 0, pos) + 1
-        return re.search(r"(?<![\w.])at(?![\w.])", masked[stmt_start:pos]) is not None
-
-    candidates = [
-        m
-        for m in pat.finditer(masked)
-        if not any(s <= m.start() < e for s, e in rxn_spans) and not _in_event(m.start())
-    ]
+    # An EVENT's assignment rewritten left the real initial value untouched while reporting
+    # success, so events are skipped (:func:`_value_assignments`); of the rest take the LAST: a
+    # symbol assigned twice at top level takes the later value, so rewriting the first would be
+    # overwritten by the second.
+    candidates = _value_assignments(text, sid)
     if candidates:
         m = candidates[-1]
         return text[: m.start()] + f"{sid} = {value};" + text[m.end() :], f"set {sid} = {value}"
@@ -945,6 +1033,16 @@ def _op_rename(text, op, where):
             "NOTHING was applied.",
             cause="species_merge_refused",
         )
+    merged = ""
+    if collides:
+        # A MERGE: `new` keeps its own row and value (`operations._merge_note`), so `old`'s own
+        # declarations go rather than becoming second ones of `new`. They piled up in the stored
+        # source, which `get_model(version=N)` serves: `beta_asy = 0.6; ...; beta_asy = 0.13`
+        # after three merges (PEtab-MCP#328).
+        kept = drop_declarations(text, old, like=new)
+        if kept != text:
+            text, merged = kept, f"; {new} keeps its own declaration"
+            spans = [m.span() for m in pat.finditer(mask_comments(text))]
     out = []
     prev = 0
     for start, end in spans:
@@ -952,7 +1050,7 @@ def _op_rename(text, op, where):
         out.append(new)
         prev = end
     out.append(text[prev:])
-    return "".join(out), f"renamed {old} -> {new} ({len(spans)} occurrences)"
+    return "".join(out), f"renamed {old} -> {new} ({len(spans)} occurrences{merged})"
 
 
 def _op_set_assignment(text, op, where):
@@ -1052,11 +1150,7 @@ def _op_remove_assignment(text, op, where):
             cause="unknown_symbol",
         )
     m = hits[-1]
-    cut = text[: m.start()] + text[m.end() :]
-    line_start, line_end = _line_bounds(cut, min(m.start(), max(len(cut) - 1, 0)))
-    if not cut[line_start:line_end].strip():
-        cut = cut[:line_start] + cut[min(line_end + 1, len(cut)) :]
-    return cut, f"removed assignment {sid}"
+    return _cut(text, m.start(), m.end()), f"removed assignment {sid}"
 
 
 _HANDLERS = {

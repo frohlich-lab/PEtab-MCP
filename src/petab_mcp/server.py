@@ -1976,8 +1976,9 @@ def _register_model_tools(
             # the result of applying this call's operations to the base source. Stored beside
             # the committed model as model_source.ant (see session.submitted_source), and read
             # back by `base_version` forks and by `get_model(version=N)`. On BOTH routes this is
-            # the agent's own text: operations apply to the source, never to the re-render, so
-            # `child.source == parent.source + ops` holds exactly.
+            # the agent's own text, less the declarations of what the reconcile prunes
+            # (`operations._commit_change`): operations apply to the source, never to the
+            # re-render, so `child.source == parent.source + ops`, less those prunes.
             session.submitted_source = antimony
             session.submitted_statements = statement_record
             try:
@@ -2016,6 +2017,8 @@ def _register_model_tools(
                     return result
                 result["messages"] = statement_warnings + (result.get("messages") or [])
                 out = ctx.edit_then_fit(result, n_starts, justification, before)
+                # What the version stored as its source: without what the reconcile pruned.
+                stored = session.submitted_source
             finally:
                 session.derived_from = None
                 session.renamed = []
@@ -2026,7 +2029,7 @@ def _register_model_tools(
                 # A rejected or fit-reverted call leaves the model where it was (`applied` false),
                 # and a de-dup no-op leaves the session on the version it duplicates (see
                 # `edit_then_fit`), so in both the source correctly stays put.
-                session.model_source = antimony
+                session.model_source = stored
                 session.model_statements = statement_record
                 if written is not None:
                     session.mechanisms = written
