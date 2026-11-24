@@ -76,12 +76,10 @@ def test_commit_change_refuses_a_no_op_edit(session):
 
 
 def test_references_optional_for_model_ops(session):
-    # references are optional for model ops now (justification still required). This edit
-    # adds species D, which appears in no observable -> a parsimony warning.
+    # references are optional for model ops now (justification still required).
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B is degraded to D")
     assert res["applied"] is True
     assert res["references"] == []
-    assert any("unobserved species" in w for w in res["warnings"])
 
 
 def test_no_parsimony_warning_when_reusing_species(session):
@@ -102,12 +100,41 @@ def test_no_parsimony_warning_when_new_species_feeds_observable(session):
     assert not any("unobserved species" in w for w in res["warnings"])
 
 
-def test_parsimony_warning_still_fires_for_disconnected_sink(session):
-    # D is a pure downstream sink of the observed species B (B -> D): it feeds no observable and
-    # no input sets it, so it stays flagged as a genuinely disconnected hidden state.
+def test_no_parsimony_warning_for_a_parameter_free_sink(session):
+    # D is a pure downstream sink of the observed species B (B -> D), starting empty: read by
+    # nothing and carrying no parameter, it fits as `B ->` does (bruno, PEtab-MCP#341).
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B drains to D")
     assert res["applied"] is True
-    assert any("unobserved species" in w for w in res["warnings"])
+    assert not any("unobserved species" in w for w in res["warnings"])
+
+
+@pytest.mark.parametrize(
+    "own", [["K: D => ; k4 * D;"], ["D = D_init;", "D_init = 0.5;"]], ids=["decay", "initial"]
+)
+def test_parsimony_warning_fires_for_a_sink_with_a_parameter_of_its_own(session, own):
+    # D's own decay rate, or its estimated initial value, is a parameter no data constrains.
+    res = _set_model(session, ["J: B => D; k3 * B;", *own], justification="B drains to D")
+    assert res["applied"] is True
+    assert any("unobserved species ['D']" in w for w in res["warnings"])
+
+
+def test_the_placeholder_species_is_neither_warned_about_nor_counted(session):
+    # A closed-form model (a rule, no species) gets the server's placeholder species, which no
+    # warning, structure or count names (PEtab-MCP#331).
+    from petab_mcp import reconcile as R
+    from petab_mcp.model import model_structure
+
+    res = O.set_model(session, "model m\n  k1 = 0.5;\n  B := k1;\nend\n", justification="closed")
+    assert res["applied"] is True
+    assert _species(session) == {R.PLACEHOLDER_SPECIES}
+    assert not any(R.PLACEHOLDER_SPECIES in w for w in res["warnings"])
+    structure = model_structure(session, initial_conditions="")
+    assert structure["species"] == [] and structure["initial_conditions"] == []
+    assert session.describe()["n_species"] == 0
+    # Copied back into a model with real species, it is pruned without a word.
+    res = _set_model(session, [f"species {R.PLACEHOLDER_SPECIES} in compartment_;"])
+    assert R.PLACEHOLDER_SPECIES not in _species(session)
+    assert not any(R.PLACEHOLDER_SPECIES in w for w in res["warnings"])
 
 
 def _blinded_session(tmp_path):
@@ -127,12 +154,16 @@ def _blinded_session(tmp_path):
 def test_a_readout_rule_carries_what_it_reads_into_the_observed_set(tmp_path):
     # On a blinded problem the formula names only `readout_B`, never a species. Read off the
     # formula alone, every added species was reported as feeding no observable — all ten, in one
-    # model. C feeds B, which the readout reads; the sink D is still flagged.
+    # model. C feeds B, which the readout reads; the sink D, with a decay of its own, is flagged.
     session = _blinded_session(tmp_path)
     res = _set_model(session, ["readout_B := B;", "J: C => B; k3 * C;"], justification="C feeds B")
     assert res["applied"] is True
     assert not any("unobserved species" in w for w in res["warnings"])
-    res = _set_model(session, ["readout_B := B;", "J: B => D; k3 * B;"], justification="B to D")
+    res = _set_model(
+        session,
+        ["readout_B := B;", "J: B => D; k3 * B;", "K: D => ; k4 * D;"],
+        justification="B to D",
+    )
     assert any("unobserved species ['D']" in w for w in res["warnings"])
 
 

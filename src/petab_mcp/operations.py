@@ -284,14 +284,13 @@ def _reaches_observed(sid: str, edges: dict[str, set[str]], targets: set[str]) -
 
 
 def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
-    """Advisory warning for an edit that adds a *genuinely disconnected* hidden species.
+    """Advisory warning for an edit that adds a hidden species carrying parameters no data sees.
 
-    Data only constrains species that connect to an observable, so a newly introduced species
-    that feeds no observable — a dead-end sink like ``B -> C`` — can degenerately fit a single
-    observable just as well as a repair that reuses existing species (e.g. making a reaction
-    reversible). We flag *only* that case, in-loop, without rejecting the (structurally valid)
-    edit. "New" is against ``old_species``, the species of the version the edit applies to
-    (:func:`_parent`): a fork's base, not HEAD.
+    Data only constrains species that connect to an observable. A newly introduced species that
+    feeds no observable and carries a parameter of its own (:func:`_owns_parameter`) adds a
+    direction the data cannot pin. We flag *only* that case, in-loop, without rejecting the
+    (structurally valid) edit. "New" is against ``old_species``, the species of the version the
+    edit applies to (:func:`_parent`): a fork's base, not HEAD.
 
     We deliberately do NOT flag species that are legitimately unobserved, because doing so
     trained the agent to ignore the warning entirely (it fired 62× on correct choices on one
@@ -302,7 +301,10 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
       states (see :func:`reconcile.input_species`);
     * **any species that feeds an observed species** — an enzyme, a substrate, an upstream
       regulator reaches an observable through the reaction network, so the data does constrain
-      it (see :func:`reconcile.species_influence_graph`).
+      it (see :func:`reconcile.species_influence_graph`);
+    * **a parameter-free sink** — ``C`` in ``B -> C`` with ``C`` starting at a fixed value: it is
+      read by nothing, so the fit is that of ``B ->``, and the drain's rate acts on ``B``;
+    * **the server's own** :data:`reconcile.PLACEHOLDER_SPECIES`.
     """
     sm = problem.model.sbml_model
     new_species = set(R.species_ids(sm)) - old_species
@@ -313,23 +315,43 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     if not unobserved:
         return []
 
-    exempt = R.condition_target_symbols(problem) | R.input_species(sm)
+    exempt = R.condition_target_symbols(problem) | R.input_species(sm) | {R.PLACEHOLDER_SPECIES}
     observed_species = observed & set(R.species_ids(sm))
     edges = R.species_influence_graph(sm)
+    seen = observed_species | {
+        sid for sid in R.species_ids(sm) if _reaches_observed(sid, edges, observed_species)
+    }
     disconnected = sorted(
-        sid
-        for sid in unobserved
-        if sid not in exempt and not _reaches_observed(sid, edges, observed_species)
+        sid for sid in unobserved - exempt - seen if _owns_parameter(problem, sid, seen)
     )
     if not disconnected:
         return []
     return [
-        f"Added unobserved species {disconnected}: they feed no observable, come from no "
-        "condition-table input, and are set by no forcing rule — genuinely disconnected hidden "
-        "states that no data constrains. A repair that reuses observed/existing species (e.g. "
-        "making an existing reaction reversible) is usually preferable, since a disconnected "
-        "species can degenerately fit the data."
+        f"Added unobserved species {disconnected}: they feed no observable, and an estimated "
+        "initial value or a reaction that changes only them carries a parameter no data "
+        "constrains. A repair that reuses observed/existing species (e.g. making an existing "
+        "reaction reversible) is usually preferable."
     ]
+
+
+def _owns_parameter(problem, sid: str, seen: set[str]) -> bool:
+    """Whether species ``sid`` carries a parameter of its own: an estimated initial value, or a
+    reaction that changes no species in ``seen`` (those an observable reads or that feed one)."""
+    sm = problem.model.sbml_model
+    ic = R._ic_symbol_for(sm, sid)
+    if any(
+        R.is_parameter_estimated(problem, p)
+        for p in ({ic} if ic else R._ic_expression_params(sm, sid))
+    ):
+        return True
+    held = R.input_species(sm)
+    for rxn in sm.getListOfReactions():
+        changed = {
+            ref.getSpecies() for ref in (*rxn.getListOfReactants(), *rxn.getListOfProducts())
+        }
+        if sid in changed and not (changed - held) & seen:
+            return True
+    return False
 
 
 def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
@@ -338,7 +360,9 @@ def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
     A seed whose species nothing reads goes with its initial amount, which may have been a
     condition input's only reader: raimundez's ``Serum`` in 27 of 33 edits, with no reply saying so
     (PEtab-MCP#205). An input that leaves unread is the lint's to name
-    (:func:`validation._unread_input_issues`)."""
+    (:func:`validation._unread_input_issues`). The server's own
+    :data:`reconcile.PLACEHOLDER_SPECIES` goes unnamed."""
+    pruned = [sid for sid in pruned if sid != R.PLACEHOLDER_SPECIES]
     if not pruned:
         return []
     shown = ", ".join(
