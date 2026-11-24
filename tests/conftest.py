@@ -20,6 +20,14 @@ def pytest_configure(config):  # noqa: D401 - pytest hook
     _ensure_swig_on_path()
 
 
+def confirmed(call):
+    """``call()``, a ``make_changes``, sent again where it was refused as an implicit base off the
+    best (PEtab-MCP#330), as an agent that means HEAD does. Whether a fit leaves HEAD the best
+    depends on its random starts, so a test that commits in sequence cannot know."""
+    out = call()
+    return call() if out.get("error_cause") == "implicit_base" else out
+
+
 @pytest.fixture
 def yaml_path() -> str:
     return str(YAML_PATH)

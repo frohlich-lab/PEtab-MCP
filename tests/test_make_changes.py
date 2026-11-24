@@ -24,6 +24,8 @@ import pytest
 
 from pathlib import Path
 
+from conftest import confirmed
+
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
 from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS, MAX_FIT_STARTS_FACTOR
@@ -336,7 +338,8 @@ def test_a_refit_of_the_current_model_is_ranked_like_any_fit(tmp_path):
     assert out["progress"]["best_version"] == 1
     out = _call(mcp, "make_changes", {"justification": "harder", "n_starts": 3})
     assert out["committed"] is True and out["version"] == 2 and out["n_starts"] == 3
-    out = _call(mcp, "make_changes", {"justification": "as hard again", "n_starts": 3})
+    again = {"justification": "as hard again", "n_starts": 3}
+    out = confirmed(lambda: _call(mcp, "make_changes", again))
     assert out["no_change"] is True and out["version"] == 2
 
 
@@ -463,12 +466,12 @@ def test_a_revert_to_an_earlier_model_is_refused_as_that_version(tmp_path):
         {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "v1", "n_starts": 2},
     )
     back = {"model_edits": [_set_rate("k1")], "justification": "back", "n_starts": 2}
-    refused = _call(mcp, "make_changes", back)
+    refused = confirmed(lambda: _call(mcp, "make_changes", back))
     assert refused["applied"] is False and "identical to v0" in refused["error"]
     assert _head(mcp)["current_version"] == 1
 
     bounds = [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e3}]
-    wider = _call(mcp, "make_changes", {**back, "parameters": bounds})
+    wider = confirmed(lambda: _call(mcp, "make_changes", {**back, "parameters": bounds}))
     assert wider["committed"] is True and wider["version"] == 2, wider["message"]
 
 
@@ -633,7 +636,7 @@ def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):
     )
 
     # fewer starts than the new HEAD -> back to a no-op, not a weaker refit
-    weaker = _call(mcp, "make_changes", {**same_model, "n_starts": 3})
+    weaker = confirmed(lambda: _call(mcp, "make_changes", {**same_model, "n_starts": 3}))
     assert weaker["no_change"] is True and _head(mcp)["current_version"] == 1
 
 
@@ -1542,14 +1545,14 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     model = _call(resumed, "get_model", {"format": "statements"})["result"]
     assert "mechanism saturating" in model
     row["prefix"] = "conv2"
-    assert _call(resumed, "make_changes", {"justification": "reuse", "statements": [row],
-                                           "bindings": {"conv2": "saturating"}})[
-        "applied"
-    ] is True
+    reuse = {"justification": "reuse", "statements": [row], "bindings": {"conv2": "saturating"}}
+    assert confirmed(lambda: _call(resumed, "make_changes", reuse))["applied"] is True
     # Model text without rows changes the model under them: that version records none. A server
     # offers the text routes or `statements`, never both, so the text comes from a server without
     # the map resuming the same store.
-    out = _call(_server(tmp_path), "make_changes", {"justification": "by hand", "antimony": _antimony()})
+    text = _server(tmp_path)
+    by_hand = {"justification": "by hand", "antimony": _antimony()}
+    out = confirmed(lambda: _call(text, "make_changes", by_hand))
     assert out["committed"] is True
     assert not (versions / "v3" / "statements.json").exists()
     # Resumed at v3, which has no rows, the run's written mechanisms still come back: a row names
@@ -1557,13 +1560,11 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     again = _statements_server(tmp_path)
     row["prefix"] = "conv3"
     rows = {"statements": [row], "bindings": {"conv3": "saturating"}}
-    assert _call(again, "make_changes", {"justification": "back", **rows})[
-        "applied"
-    ] is True
+    back = {"justification": "back", **rows}
+    assert confirmed(lambda: _call(again, "make_changes", back))["applied"] is True
     changed = {**_SATURATING, "rate": "vmax"}
-    out = _call(
-        again, "make_changes", {"justification": "y", **rows, "mechanisms": [changed]}
-    )
+    redefined = {"justification": "y", **rows, "mechanisms": [changed]}
+    out = confirmed(lambda: _call(again, "make_changes", redefined))
     assert out["error_cause"] == "mechanism_redefined"
 
 
@@ -2690,9 +2691,9 @@ def test_an_edit_reports_only_the_rows_it_touches(tmp_path):
         {"op": "add_row", "row": "back: B becomes A", "binding": "mass_action"}]})
     assert out["applied"] is True, out.get("error")
     assert said(out) == []
-    out = _call(mcp, "make_changes", {"justification": "z", "statement_edits": [
+    out = confirmed(lambda: _call(mcp, "make_changes", {"justification": "z", "statement_edits": [
         {"op": "remove_row", "prefix": "aa"},
-        {"op": "add_row", "row": "back2: B becomes A, modulated by C", "binding": "slowed"}]})
+        {"op": "add_row", "row": "back2: B becomes A, modulated by C", "binding": "slowed"}]}))
     assert out["applied"] is True, out.get("error")
     (message,) = said(out)
     assert message.startswith("`back2`: you stated `modulated by C`")
