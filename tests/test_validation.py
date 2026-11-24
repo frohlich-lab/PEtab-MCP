@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -211,6 +212,75 @@ def test_an_input_read_only_by_a_rule_nothing_reads_is_named(dosed_session, rate
             "condition target(s) `dose` are read by nothing in the model, or only by assignment "
             "rules nothing reads, so the model never sees their value."
         )
+
+
+def test_an_input_the_edit_leaves_unread_leads_as_newly_unread(dosed_session):
+    """froehlich 91's re-author dropped Erlotinib and Lapatinib, and the two sat unmarked among
+    about 120 unread names; the agent read the worse fit as a mechanism (PEtab-MCP#332). Unread
+    against the model before the edit, they lead; the next edit sends the plain list."""
+
+    def unread(rate: str) -> str:
+        result = O.set_model(dosed_session, _DOSED.format(rate=rate), justification="dose B")
+        (said,) = [m["message"] for m in result["messages"] if "read by nothing" in m["message"]]
+        return said
+
+    O.set_model(dosed_session, _DOSED.format(rate="k*dose"), justification="dose drives B")
+    assert unread("k").startswith(
+        "NEWLY UNREAD: condition target(s) `dose`, which the model before this edit read, are "
+        "read by nothing in the model"
+    )
+    assert unread("k").startswith("condition target(s) `dose` are read by nothing")
+
+
+def test_inputs_unread_before_the_edit_too_are_capped():
+    """The 12 shown of those the base left unread too follow the newly unread (PEtab-MCP#332)."""
+    import pandas as pd
+    from petab.v2.C import CONDITION_ID, TARGET_ID, TARGET_VALUE
+
+    from petab_mcp.validation import _unread_input_issues
+
+    ids = [f"u{i:02d}" for i in range(15)]
+    decl = "".join(f"  {t} = 0;\n" for t in ids)
+    prob = WorkingProblem(
+        model=SbmlModel.from_antimony(
+            f"model m\n  species X; X = 1; k = 0.1;\n  r: X -> ; k*X;\n{decl}end\n"
+        )
+    )
+    prob.condition_df = pd.DataFrame({CONDITION_ID: "c", TARGET_ID: ids, TARGET_VALUE: 1.0})
+    (issue,) = _unread_input_issues(prob, read_before={"u00"})
+    shown = ", ".join(f"`{t}`" for t in ids[1:13])
+    assert issue["message"].startswith(
+        "NEWLY UNREAD: condition target(s) `u00`, which the model before this edit read"
+    )
+    assert f" Unread before it too: {shown} (+2 more). {INPUT_UNREAD}" in issue["message"]
+
+
+def test_an_input_the_model_leaves_out_is_declared_at_0(dosed_session):
+    """froehlich's ~145 inputs each had to be declared by hand, and dropping an input's last
+    reader was refused as an invalid target with no op to declare it again (raimundez 7,
+    froehlich 29; PEtab-MCP#332). The reconcile declares it: a constant at 0, with no row."""
+    O.set_model(dosed_session, _DOSED.format(rate="k*dose"), justification="dose drives B")
+    bare = _DOSED.format(rate="k").replace("  species D = 2*dose\n", "").replace("; dose = 0", "")
+    assert not re.search(r"\bdose\b", bare)
+    result = O.set_model(dosed_session, bare, justification="B without dose")
+    dose = dosed_session.problem.model.sbml_model.getParameter("dose")
+    assert (dose.getValue(), dose.getConstant()) == (0.0, True)
+    assert "dose" not in dosed_session.problem.parameter_df.index
+    assert result["reconcile"]["inputs"] == ["dose"]
+    assert any(
+        m["message"].startswith("NEWLY UNREAD: condition target(s) `dose`")
+        for m in result["messages"]
+    )
+
+
+def test_a_rule_on_an_input_is_refused_at_validation(dosed_session):
+    """froehlich 29 assigned `Sorafenib` by a rule; the edit was accepted and AMICI refused the
+    model at compile, after the fit was started (PEtab-MCP#332)."""
+    from petab_mcp.errors import ValidationError
+
+    ruled = _DOSED.format(rate="k*dose").replace("dose = 0", "dose := 1")
+    with pytest.raises(ValidationError, match=r"`dose` are computed by an assignment rule"):
+        O.set_model(dosed_session, ruled, justification="dose by a rule")
 
 
 def test_a_later_period_that_keeps_the_value_changes_nothing(dosed_session):
