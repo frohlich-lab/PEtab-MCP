@@ -406,10 +406,15 @@ def test_score_session_refits_each_unit_on_its_own_and_sums_the_units(session, e
     assert session.problem.experiment_df is None
 
 
-def test_a_refit_optimum_that_does_not_simulate_again_is_non_finite(session, engine, monkeypatch):
+@pytest.mark.parametrize("retry_steps", [V.RETRY_SOLVER["max_steps"], 1])
+def test_a_refit_optimum_that_does_not_simulate_again_is_non_finite(
+    session, engine, monkeypatch, retry_steps
+):
     """AMICI-backed (#288): the solver is left one step once the multistart is done, so the unit's
-    optimum, finite to the optimizer, fails when simulated again for its records. That is no score:
-    `non_finite`, naming the unit, the experiment and AMICI's status, never `ok` with `nll: null`."""
+    optimum, finite to the optimizer, fails when simulated again for its records. It is simulated
+    again at `RETRY_SOLVER` (#323), which scores it; where that fails too it is no score:
+    `non_finite`, naming the unit, the experiment and AMICI's status, never `ok` with `nll: null`.
+    `tolerances` records both attempts either way."""
     import pypesto.optimize
 
     minimize = pypesto.optimize.minimize
@@ -420,6 +425,7 @@ def test_a_refit_optimum_that_does_not_simulate_again_is_non_finite(session, eng
         return result
 
     monkeypatch.setattr(pypesto.optimize, "minimize", _then_one_step)
+    monkeypatch.setattr(V, "RETRY_SOLVER", {**V.RETRY_SOLVER, "max_steps": retry_steps})
     meas = session.problem.measurement_df
     held = V.HeldOut(
         measurement_df=meas.assign(experimentId="e1", measurement=meas.measurement * 2),
@@ -430,10 +436,16 @@ def test_a_refit_optimum_that_does_not_simulate_again_is_non_finite(session, eng
 
     out = V.score_session(session, engine, held, n_starts=2)
 
-    assert out["status"] == V.STATUS_NON_FINITE and out["unit"] == "u1", out
-    assert "nll" not in out
-    assert out["reason"].startswith("unit `u1`: the refit's optimum (nll "), out["reason"]
-    assert "fails in `e1` (AMICI_TOO_MUCH_WORK at t=" in out["reason"], out["reason"]
+    if retry_steps > 1:
+        assert out["status"] == V.STATUS_OK and math.isfinite(out["nll"]), out
+        tolerances = out["units"]["u1"]["tolerances"]
+    else:
+        assert out["status"] == V.STATUS_NON_FINITE and out["unit"] == "u1", out
+        assert "nll" not in out
+        assert out["reason"].startswith("unit `u1`: the refit's optimum (nll "), out["reason"]
+        assert "fails in `e1` (AMICI_TOO_MUCH_WORK at t=" in out["reason"], out["reason"]
+        tolerances = out["tolerances"]
+    assert len(tolerances) == 2 and tolerances[-1] == V.RETRY_SOLVER
 
 
 def test_a_transfer_score_stores_each_units_records_at_its_own_optimum(session, engine):

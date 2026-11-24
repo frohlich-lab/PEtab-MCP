@@ -569,6 +569,81 @@ def _sourceless_species_issues(problem) -> list[dict[str, Any]]:
     ]
 
 
+def _power_of_state_issues(problem) -> list[dict[str, Any]]:
+    """One warning per power whose base can go negative with a state and whose exponent reads an
+    estimated parameter. The integrator lets a state dip just below 0, after a pulse, where a
+    non-integer power is NaN and the simulation fails: 11 of 25 fujita runs scored no held-out
+    data for it, while the one whose powers read ``abs()`` of the state scored best
+    (PEtab-MCP#323).
+
+    A state is a species a reaction or rate rule changes. The base reads one through sums,
+    differences, products, quotients and assignment rules alone; any function of it (``max``,
+    ``abs``, ``exp``) is taken to guard it. The exponent reads an estimated row, directly or
+    through assignment rules."""
+    sm = getattr(problem.model, "sbml_model", None)
+    pdf = getattr(problem, "parameter_df", None)
+    if sm is None or pdf is None or ESTIMATE not in pdf.columns:
+        return []
+    estimated = {str(p) for p, e in zip(pdf.index, pdf[ESTIMATE]) if as_bool(e)}
+    ruled = {r.getVariable(): r.getMath() for r in sm.getListOfRules() if r.isAssignment()}
+    states = _changed_species(sm) | {r.getVariable() for r in sm.getListOfRules() if r.isRate()}
+    arithmetic = (libsbml.AST_PLUS, libsbml.AST_MINUS, libsbml.AST_TIMES, libsbml.AST_DIVIDE)
+
+    def signed(node, seen: frozenset = frozenset()) -> bool:
+        if node.getType() == libsbml.AST_NAME:
+            name = node.getName()
+            return name in states or (
+                name in ruled and name not in seen and signed(ruled[name], seen | {name})
+            )
+        if node.getType() in arithmetic:
+            return any(signed(node.getChild(i), seen) for i in range(node.getNumChildren()))
+        return False
+
+    def reads_estimated(node) -> bool:
+        names, todo = set(), _ast_names(node)
+        while todo:
+            name = todo.pop()
+            if name not in names:
+                names.add(name)
+                todo |= _ast_names(ruled.get(name))
+        return bool(names & estimated)
+
+    said = {}  # a Hill term writes its power twice
+    for where, math in _math_of(sm):
+        stack = [math] if math is not None else []
+        while stack:
+            node = stack.pop()
+            stack += [node.getChild(i) for i in range(node.getNumChildren())]
+            if node.getType() not in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+                continue
+            base, exponent = node.getChild(0), node.getChild(1)
+            if not (signed(base) and reads_estimated(exponent)):
+                continue
+            power = libsbml.formulaToL3String(exponent)
+            if exponent.getNumChildren():
+                power = f"({power})"
+            message = (
+                f"{where} raises a state to an estimated power, "
+                f"`{libsbml.formulaToL3String(node)}`: the integrator can take a state just below "
+                "0, as after a pulse, where a non-integer power is NaN and the simulation fails. "
+                f"Write `max({libsbml.formulaToL3String(base)}, 0)^{power}`."
+            )
+            said[message] = {"level": "warning", "message": message, "check": "power_of_state"}
+    return list(said.values())
+
+
+def _changed_species(sm) -> set[str]:
+    """The species some reaction changes: with more of it on one side than the other."""
+    changed = set()
+    for rxn in sm.getListOfReactions():
+        net: dict[str, float] = {}
+        for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
+            for ref in refs:
+                net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
+        changed |= {sid for sid, n in net.items() if n != 0}
+    return changed
+
+
 def _constant_noise_species_issues(problem) -> list[dict[str, Any]]:
     """One error per species a noise formula reads that no reaction changes (it takes part in none,
     or with as much on each side) and no rule sets. AMICI holds such a species as a constant total
@@ -581,13 +656,7 @@ def _constant_noise_species_issues(problem) -> list[dict[str, Any]]:
     sm = getattr(problem.model, "sbml_model", None)
     if sm is None or not has_dynamics(sm):
         return []
-    changed = {r.getVariable() for r in sm.getListOfRules()}
-    for rxn in sm.getListOfReactions():
-        net: dict[str, float] = {}
-        for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
-            for ref in refs:
-                net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
-        changed |= {sid for sid, n in net.items() if n != 0}
+    changed = {r.getVariable() for r in sm.getListOfRules()} | _changed_species(sm)
     constant = {s.getId() for s in sm.getListOfSpecies() if not s.getConstant()} - changed
     readers: dict[str, set[str]] = {}
     odf, mdf = problem.observable_df, problem.measurement_df
@@ -920,6 +989,7 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
         _first_period_only_issues(problem)
         + _unread_input_issues(problem)
         + _sourceless_species_issues(problem)
+        + _power_of_state_issues(problem)
     )
     issues += advisory
     n_warnings += len(advisory)
