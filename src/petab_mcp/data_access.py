@@ -63,6 +63,7 @@ from petab.v2.C import (
 from .errors import MissingDependencyError, ValidationError
 from .formatting import _clean
 from .problem import PARAMETER_SCALE
+from .progress_signals import signal
 
 # Canonical (minimal) column schema for each FIXED PEtab table. Used only as a FALLBACK when
 # the live table is absent (an optional table petab loaded as ``None``) or empty with no
@@ -802,9 +803,7 @@ def fit_diagnosis(
         noise_sigma["fitted_over_data_noise"] = signals["fitted_over_data_noise"][:_SIGNALS_KEEP]
     caveat = structure_tests_caveat(session.problem)
     total_chi2 = float((d["_rw"] * d["_rw"]).sum())
-    chi2_note = math.isclose(total_chi2, len(d), rel_tol=1e-3) and _sigma_estimated_everywhere(
-        session.problem, d
-    )
+    chi2_note = _chi2_pinned(session.problem, d)
 
     return {
         "n_points": int(len(d)),
@@ -838,11 +837,12 @@ def fit_diagnosis(
 #: How many sigmas each ranked list in :func:`fit_diagnosis` keeps, worst first.
 _SIGNALS_KEEP = 5
 
-#: :func:`fit_diagnosis`'s ``total_chi2_note``, where :func:`_sigma_estimated_everywhere` holds.
+#: :func:`fit_diagnosis`'s ``total_chi2_note`` and a fit result's ``chi2_note``, where
+#: :func:`_chi2_pinned` holds.
 _CHI2_BY_CONSTRUCTION = (
-    "total_chi2 equals n_points by construction: the fit estimates every noise sigma, and at its "
-    "optimum an estimated sigma sets the chi2 of the points it covers to their count, so it says "
-    "nothing about the model."
+    "chi2 equals the number of points by construction: the fit estimates every noise sigma, and at "
+    "its optimum an estimated sigma sets the chi2 of the points it covers to their count, so chi2 "
+    "says nothing about the model" + signal(", and neither does its goodness-of-fit p") + "."
 )
 
 #: A ``per_observable`` row's ``by_construction``, on an observable of
@@ -868,6 +868,28 @@ def _offset_note(group) -> str:
     noise = group["noise"].dropna().astype(float)
     varies = len(noise) > 1 and not math.isclose(noise.min(), noise.max(), rel_tol=1e-6)
     return _OFFSET_CENTRED_PRECISION_WEIGHTED if varies else _OFFSET_CENTRED
+
+
+def chi2_by_construction_note(problem, records) -> str | None:
+    """:data:`_CHI2_BY_CONSTRUCTION` where a fit's per-point ``records`` hold :func:`_chi2_pinned`,
+    else ``None``, also on any failure. Read by every fit result and ``get_fit_summary``."""
+    import pandas as pd
+
+    try:
+        df = pd.DataFrame(records or [], columns=SIMULATION_COLUMNS)
+        d = df[df["residual_weighted"].notna()]
+        return _CHI2_BY_CONSTRUCTION if len(d) and _chi2_pinned(problem, d) else None
+    except Exception:  # noqa: BLE001 - advisory; never break a fit result
+        return None
+
+
+def _chi2_pinned(problem, d) -> bool:
+    """Whether the chi2 of ``d`` (weighted records) equals its row count because
+    :func:`_sigma_estimated_everywhere` holds."""
+    rw = d["residual_weighted"].astype(float)
+    return math.isclose(float((rw * rw).sum()), len(d), rel_tol=1e-3) and (
+        _sigma_estimated_everywhere(problem, d)
+    )
 
 
 def _sigma_estimated_everywhere(problem, d) -> bool:
@@ -1689,49 +1711,60 @@ def _residual_structure(group, centred: bool = False) -> dict[str, Any]:
     """Sign-test + runs-test summary for one observable's residuals (see
     :mod:`petab_mcp.residual_tests`).
 
-    BOTH tests are per (experiment) SERIES, then Fisher-combined across experiments into one
-    p-value each. The runs test must be per-series (a runs test across experiments would invent
-    spurious runs at the boundaries); the SIGN test is per-series too, so that opposite biases
-    in different experiments — an over-shoot in one, an under-shoot in another — do not cancel
-    into a spuriously balanced pooled count and hide a real systematic bias. Replicate points
-    sharing an (experiment, time) are AVERAGED to one residual first: replicates are not an
-    independent draw of the residual's sign, and leaving them in would let a high-replicate
-    timepoint dominate.
+    Each test is per (experiment) SERIES, Fisher-combined across the series that can reach
+    ``_STRUCTURE_ALPHA`` on their own (``min_p``): a series that cannot always gives p near 1 and
+    only dilutes the combination (a one-point series gives exactly 1). The runs test must be
+    per-series, since runs across experiments would invent spurious runs at the boundaries. The
+    SIGN test is stratified: a series long enough is its own stratum, so that opposite biases in
+    different experiments do not cancel, and the shorter series are pooled into one stratum,
+    where a common bias shows (one-point series on steady-state data, PEtab-MCP#329). Replicate
+    points sharing an (experiment, time) are AVERAGED to one residual first: replicates are not an
+    independent draw of the residual's sign.
 
     ``group`` is the observable's rows from :func:`fit_diagnosis`, already restricted to points
     with a weighted residual; the raw ``residual`` (same sign, sigma being positive) is the sign
-    source. Experiments are iterated once, collecting both per-series p-values and the usable
-    (non-zero) point count that gauges power. ``centred`` (an observable of
+    source. ``n_series`` counts the series a test's ``p`` rests on, and ``low_power`` is set below
+    ``residual_tests.MIN_POWER_N`` usable points among them. ``centred`` (an observable of
     :func:`_offset_centred_observables`) marks the sign test low-power whatever its count.
     """
     from . import residual_tests as rt
+
+    def reaches(res: dict[str, Any]) -> bool:
+        return res["p"] is not None and res["min_p"] < _STRUCTURE_ALPHA
 
     g = group.copy()
     g["_r"] = g["residual"].astype(float)
     # Average replicates to one residual per (experiment, time), then order by time per series.
     collapsed = g.groupby(["experiment_id", "time"], dropna=False)["_r"].mean().reset_index()
 
-    sign_ps: list[float] = []
-    runs_ps: list[float] = []
+    sign: dict[str, Any] = {"ps": [], "n": 0, "series": 0}
+    runs: dict[str, Any] = {"ps": [], "n": 0, "series": 0}
+    short: list[float] = []
+    short_series = 0
     n_pos = n_neg = 0
-    usable = 0  # total non-zero, finite points across series — the real power denominator
     for _exp, s in collapsed.groupby("experiment_id", dropna=False):
         vals = s.sort_values("time")["_r"].tolist()
         st = rt.sign_test(vals)
         n_pos += st["n_pos"]
         n_neg += st["n_neg"]
-        usable += st["n"]
-        if st["p"] is not None:
-            sign_ps.append(st["p"])
-        rres = rt.runs_test(vals)
-        if rres["p"] is not None:
-            runs_ps.append(rres["p"])
+        for res, acc in ((st, sign), (rt.runs_test(vals), runs)):
+            if reaches(res):
+                acc["ps"].append(res["p"])
+                acc["n"] += res["n"]
+                acc["series"] += 1
+        if st["n"] and not reaches(st):
+            short.extend(vals)
+            short_series += 1
+    pooled = rt.sign_test(short)
+    if reaches(pooled):
+        sign["ps"].append(pooled["p"])
+        sign["n"] += pooled["n"]
+        sign["series"] += short_series
 
-    sign_p = rt.fisher_combine(sign_ps)
-    runs_p = rt.fisher_combine(runs_ps)
-    # Power is the usable-point count, not raw len (which counts exact-zero timepoints the tests
-    # drop). A runs test additionally needs a computable series (both signs present somewhere).
-    low_power = usable < rt.MIN_POWER_N
+    sign_p = rt.fisher_combine(sign["ps"])
+    runs_p = rt.fisher_combine(runs["ps"])
+    sign_low = sign["n"] < rt.MIN_POWER_N or centred
+    runs_low = runs["n"] < rt.MIN_POWER_N
     sig_bias = sign_p is not None and sign_p < _STRUCTURE_ALPHA
     sig_trend = runs_p is not None and runs_p < _STRUCTURE_ALPHA
     return {
@@ -1739,16 +1772,16 @@ def _residual_structure(group, centred: bool = False) -> dict[str, Any]:
             "n_pos": n_pos,
             "n_neg": n_neg,
             "p": _round_p(sign_p),
-            "n_series": len(sign_ps),
-            "low_power": low_power or centred,
+            "n_series": sign["series"],
+            "low_power": sign_low,
         },
         "runs_test": {
             "p": _round_p(runs_p),
-            "n_series": len(runs_ps),
-            "low_power": low_power or not runs_ps,
+            "n_series": runs["series"],
+            "low_power": runs_low,
         },
         "structure_flag": bool(sig_bias or sig_trend),
-        "structure_low_power": bool(low_power or centred or not runs_ps),
+        "structure_low_power": bool(sign_low or runs_low),
     }
 
 
