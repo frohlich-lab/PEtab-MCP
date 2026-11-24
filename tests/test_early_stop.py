@@ -285,6 +285,9 @@ def test_inflated_sigma_streak_cap_reason_carries_sigma_advice(session):
     assert p["should_stop"] is True
     reason = p["stop_reason"].lower()
     assert "structural" in reason and "sigma" in reason and "inflated" in reason
+    # #333: not "only looks statistically adequate" beside a GoF p of 3e-102, nor a residual verdict
+    # the checkpoint never read
+    assert "statistically adequate" not in reason and "residual_structure" not in reason
 
 
 def _fitsim_collapsed_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2) -> dict:

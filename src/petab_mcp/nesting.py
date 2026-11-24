@@ -45,7 +45,7 @@ from .provenance import model_diff
 _NLL_WORSE_TOLERANCE = 1e-3
 
 # Agent-facing text, hoisted like the other server-side advisories (see
-# ``fitting.NOISE_SIGMA_INFLATED_ADVICE``) so what the agent reads is greppable and reviewable
+# ``session._STRUCTURAL_PLATEAU_ADVICE``) so what the agent reads is greppable and reviewable
 # without stepping through the logic. What an outstanding invalid comparison means for a
 # `finish` is a client's side of this signal, not this server's; a client that says so can quote
 # this string verbatim.

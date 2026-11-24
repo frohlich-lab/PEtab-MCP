@@ -84,17 +84,13 @@ _UNSCORED_STALL_ADVICE = (
     "unbounded rate) before drawing any conclusion about the structure."
 )
 
-# Appended to the structural nudge when the best model's chi2 GoF only looks adequate because an
-# ESTIMATED noise sigma inflated to absorb the misfit (see fitting.noise_sigma_inflated / constants.
-# NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD). The chi2 GoF test is then powerless — it rescales to
-# whatever sigma makes chi2/dof ~= 1 — so an underfit model reads as "adequate" and the session
-# would stop early on it. The fix is mechanistic, not noise-side.
+# Appended to the structural nudge when the best model's ESTIMATED noise sigma is inflated (see
+# fitting.noise_sigma_inflated). A checkpoint keeps only the flag, so the specifics are that
+# version's own noise_sigma_advice, which reads its fit (PEtab-MCP#333).
 _SIGMA_INFLATED_ADVICE = (
-    " NOTE: the best model's fit only looks statistically adequate because its ESTIMATED noise "
-    "sigma is inflated above its data-driven cap, absorbing the misfit — the chi2 goodness-of-fit "
-    "is not real adequacy here. Do NOT widen or lean on the noise; fix the mechanism so the "
-    "residuals shrink at a plausible sigma (the fit result's residual_structure verdict still "
-    "flags the structure)."
+    " NOTE: the best model's ESTIMATED noise sigma is inflated above its data-driven cap, absorbing "
+    "misfit, so its chi2 goodness-of-fit is no evidence of adequacy. That version's "
+    "noise_sigma_advice names the sigma, its cap and what to change."
 )
 
 # The other tail: the best model's ESTIMATED noise sigma collapsed implausibly small, so the fit
