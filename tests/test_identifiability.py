@@ -117,6 +117,31 @@ def test_collinear_pair_flagged_via_singular_fim():
     assert any("collinear_with:b" in r for r in reasons_a)
 
 
+def test_a_flat_direction_names_no_parameter_pinned_at_a_bound():
+    """Issue #338: a pinned parameter's zero-curvature axis was named as a flat direction, and
+    agents spent 6-11 h remapping it; the rank it dropped refused true models at the finish. Its
+    bound holds it, so the rank and the directions are those of the parameters inside their
+    bounds; `at_bound` still names it as a candidate."""
+    meta = _meta("a", "b", "c")
+    meta[0]["at_bound"] = True
+    # a pinned with no curvature at all; b and c collinear
+    fim = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 1.0], [0.0, 1.0, 1.0]])
+    out = _identifiability_stats(meta, fim, {})
+    assert [{p["id"] for p in d["participants"]} for d in out["flat_directions"]] == [{"b", "c"}]
+    assert out["fim"] == {
+        "rank": 1,
+        "n_estimated": 3,
+        "n_at_bound": 1,
+        "condition": out["fim"]["condition"],
+        "rank_deficient": True,
+    }
+    assert "at_bound" in next(c["reasons"] for c in out["candidates"] if c["id"] == "a")
+    # ...and a pinned parameter alone leaves no direction to name and no rank deficiency
+    out = _identifiability_stats(meta, np.diag([0.0, 4.0, 4.0]), {})
+    assert out["flat_directions"] == []
+    assert out["fim"]["rank"] == 2 and out["fim"]["rank_deficient"] is False
+
+
 def test_well_identified_has_no_flags():
     fim = np.diag([4.0, 4.0, 4.0])
     out = _identifiability_stats(_meta("a", "b", "c"), fim, {})
