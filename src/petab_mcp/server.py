@@ -42,6 +42,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 from fastmcp.tools import ToolResult
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import ValidationError as PydanticValidationError
 from pydantic.json_schema import SkipJsonSchema
 from petab.v2.C import EXPERIMENT_ID, OBSERVABLE_ID
 
@@ -411,6 +412,52 @@ def _unwrap_listish(v: Any) -> Any:
     return v
 
 
+def _model_ops(edits: Any) -> list[dict[str, Any]] | None:
+    """``model_edits`` as the operations take them, or an :class:`OperationError` naming what is
+    malformed. Pydantic's own error, its input echoed and a link to its docs, was the reply to an
+    edit sent without `op`, with an op that does not exist or with a bound in it, in five runs of
+    the 2026-11 trace review (PEtab-MCP#341)."""
+    if edits is None:
+        return None
+    if not isinstance(edits, list):
+        raise ops_mod.OperationError(
+            "make_changes: `model_edits` is a list of edits, each an object like "
+            "{op: 'rename', old: 'k2', new: 'k1'}. NOTHING was applied.",
+            cause="malformed_edit",
+        )
+    out = []
+    for i, op in enumerate(edits):
+        try:
+            out.append(ModelOp.model_validate(op).model_dump(exclude_none=True))
+        except PydanticValidationError as exc:
+            said = []
+            for e in exc.errors():
+                field = ".".join(str(p) for p in e["loc"])
+                if not field:
+                    said.append("it is not an object")
+                elif e["type"] == "missing":
+                    said.append(f"`{field}` is missing")
+                elif e["type"] == "extra_forbidden":
+                    said.append(f"`{field}` is no field of an edit")
+                elif e["type"] == "literal_error":
+                    said.append(f"{e['input']!r} is no op")
+                else:
+                    said.append(f"`{field}` must be a string")
+            bound = any(
+                e["type"] == "extra_forbidden" and e["loc"][0] in ParameterChange.model_fields
+                for e in exc.errors()
+            )
+            raise ops_mod.OperationError(
+                f"make_changes: model_edits[{i}]: {'; '.join(said)}. An edit has `op` (one of "
+                f"{', '.join(model_edits_mod.OPS)}) and the fields that op takes: `id`, "
+                "`antimony`, `old`, `new`."
+                + (" A parameter's bounds go in `parameters`." if bound else "")
+                + " NOTHING was applied.",
+                cause="malformed_edit",
+            ) from None
+    return out or None
+
+
 def _unwrap_objectish(v: Any) -> Any:
     """An object sent as a JSON string, back to the object; anything else untouched. The same
     serialiser artefact as a list sent as a string (``_unwrap_listish``): clients send `amounts`
@@ -431,7 +478,12 @@ def _unwrap_objectish(v: Any) -> Any:
 #: ``make_changes``' list and object arguments, typed once for its three registrations (see
 #: ``_register_model_tools``), each tolerating the encodings ``_unwrap_listish`` and
 #: ``_unwrap_objectish`` undo.
-_ModelOps = Annotated[list[ModelOp] | None, BeforeValidator(_unwrap_listish)]
+#: ``model_edits`` takes any value its schema does not describe too, so a malformed edit reaches
+#: :func:`_model_ops` and is refused naming its field rather than with pydantic's dump.
+_ModelOps = Annotated[
+    list[ModelOp | SkipJsonSchema[Any]] | SkipJsonSchema[Any] | None,
+    BeforeValidator(_unwrap_listish),
+]
 _ParameterChanges = Annotated[list[ParameterChange] | None, BeforeValidator(_unwrap_listish)]
 _References = Annotated[list[str] | None, BeforeValidator(_unwrap_listish)]
 _StatementRows = Annotated[list[StatementRow | str] | None, BeforeValidator(_unwrap_listish)]
@@ -1575,7 +1627,8 @@ def _get_model_doc(statements: bool) -> str:
         f"version's record and parameter table. `format` is {formats}. For the "
         "structure alone `get_model_structure` is the cheaper read.\n\n"
         "The trailing `const ...;` line is DERIVED (a parameter is constant unless declared "
-        "`var`): read past it; no operation addresses it."
+        "`var`): read past it; no operation addresses it. In the Antimony an estimated "
+        "parameter's value is the one its version's fit found, not the one it was written with."
     )
 
 
@@ -1650,6 +1703,9 @@ def _register_model_tools(
                 text = session.provenance.get_model_source(
                     int(version)
                 ) or session.provenance.get_model_antimony(int(version))
+                text = model_mod.at_fitted_values(
+                    text, session.provenance.get_parameter_df(int(version))
+                )
             except UnknownEntityError:
                 have = [m.get("version") for m in session.provenance.list_versions()]
                 exc = ValidationError(
@@ -1708,10 +1764,14 @@ def _register_model_tools(
         # dicts too, for the same reason _parameter_entries does it: an in-process caller (the
         # tests, another tool) should not have to construct the pydantic model.
         parameters = _parameter_entries(parameters)
-        ops = [
-            o.model_dump(exclude_none=True) if isinstance(o, ModelOp) else o
-            for o in (model_edits or [])
-        ] or None
+        try:
+            ops = _model_ops(
+                [o.model_dump() if isinstance(o, ModelOp) else o for o in model_edits]
+                if isinstance(model_edits, list)
+                else model_edits
+            )
+        except ops_mod.OperationError as exc:
+            return ctx.reject_operation("make_changes", str(exc), cause=exc.cause)
         rows = [
             r.model_dump() if isinstance(r, StatementRow) else r for r in (statements or [])
         ] or None

@@ -17,13 +17,49 @@ MODEL_FORMATS = ("antimony", "sbml")
 
 
 def get_model(session, fmt: str = "antimony") -> str:
-    """Return the current model as Antimony (canonical) or SBML (read-only view)."""
+    """Return the current model as Antimony (canonical, :func:`at_fitted_values`) or SBML
+    (read-only view)."""
     fmt = fmt.lower()
     if fmt == "antimony":
-        return session.model.to_antimony()
+        return at_fitted_values(session.model.to_antimony(), session.problem.parameter_df)
     if fmt == "sbml":
         return session.model.to_sbml_str()
     raise ModelUpdateError(f"Unknown model format {fmt!r}; use one of {MODEL_FORMATS}.")
+
+
+_NUMBER = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+def at_fitted_values(text: str, parameter_df) -> str:
+    """``text``, a model's Antimony, with each ESTIMATED parameter's ``id = <number>`` at its row's
+    nominal value, which a fit sets to the value it found; a species written ``X = 5`` shows its
+    estimated ``X_init``'s. The value a model is written with is only where the fit starts:
+    progress_off alkan 18 froze `Kc` at a value read off the model text, and alkan 15 froze
+    authoring values in place of fitted ones (PEtab-MCP#341).
+
+    Shown to 6 significant digits, more where that would round to 0 or 1, which a species' initial
+    value declares fixed (:func:`reconcile.sync_parameter_table`)."""
+    from petab.v2.C import NOMINAL_VALUE
+
+    from .model_edits import _value_assignments, assigned_symbols
+    from .parameters import estimated_ids
+
+    estimated = set(estimated_ids(parameter_df))
+    edits = []
+    for sid in assigned_symbols(text):
+        row = sid if sid in estimated else f"{sid}_init"
+        if row not in estimated:
+            continue
+        v = float(parameter_df.loc[row, NOMINAL_VALUE])
+        for m in _value_assignments(text, sid):
+            value = re.search(r"=\s*(.*?)\s*;?\s*$", m[0])
+            if _NUMBER.fullmatch(value[1]) and float(value[1]) != v:
+                shown = f"{v:.6g}"
+                shown = repr(v) if float(shown) in (0.0, 1.0) else shown
+                edits.append((m.start() + value.start(1), m.start() + value.end(1), shown))
+    for start, end, shown in sorted(edits, reverse=True):
+        text = text[:start] + shown + text[end:]
+    return text
 
 
 def model_structure(

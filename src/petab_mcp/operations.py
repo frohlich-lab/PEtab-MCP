@@ -932,9 +932,12 @@ def set_model(
     )
     notes = [_merge_note(current, old, kept, moves) for old, kept in merged.items()]
     if dropped:
+        # Worded for both routes: a `remove_reaction` or `set_rate_law` drops a parameter as a
+        # re-author does, by leaving nothing that reads it, and "re-declare them" would be pruned.
         notes.append(
-            f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
-            "values are gone. Re-declare them in the Antimony if that was unintended."
+            f"nothing in the model reads previously-estimated parameter(s) "
+            f"{', '.join(f'`{p}`' for p in dropped)} any more, so their rows and fitted values are "
+            "gone. If that was unintended, keep a rate law or rule that reads them."
         )
     if notes:
         result["warnings"] = list(result.get("warnings") or []) + notes

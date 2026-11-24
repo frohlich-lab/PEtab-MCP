@@ -103,9 +103,10 @@ def test_a_forks_dropped_parameter_warning_is_against_its_base(session):
     res = O.set_model(
         session, _antimony(), justification="fork the base without k3", restore_parameter_df=base
     )
-    assert [w for w in res["warnings"] if "dropped previously-estimated" in w] == [
-        "the re-author dropped previously-estimated parameter(s) ['k3']: their fitted values are "
-        "gone. Re-declare them in the Antimony if that was unintended."
+    assert [w for w in res["warnings"] if "previously-estimated" in w] == [
+        "nothing in the model reads previously-estimated parameter(s) `k3` any more, so their "
+        "rows and fitted values are gone. If that was unintended, keep a rate law or rule that "
+        "reads them."
     ]
 
 
@@ -3109,4 +3110,63 @@ def test_a_merge_hint_names_its_rename_and_taking_it_merges_the_pair(tmp_path):
     assert res["committed"] is True, res["message"]
     texts = [m["message"] for m in res["messages"]]
     assert any(t.startswith(f"rename merged `{old}` into `{new}`") for t in texts), texts
-    assert not any("dropped previously-estimated" in t for t in texts), texts
+    assert not any("previously-estimated" in t for t in texts), texts
+
+
+@pytest.mark.parametrize(
+    ("edits", "said"),
+    [
+        ([{"old": "k2", "new": "k1"}], ["model_edits[0]: `op` is missing."]),
+        ([{"op": "remove_species", "id": "A"}], ["model_edits[0]: 'remove_species' is no op."]),
+        (
+            [{"op": "rename", "old": "k2", "new": "k1", "lower_bound": 1e-3}],
+            ["`lower_bound` is no field of an edit.", "A parameter's bounds go in `parameters`."],
+        ),
+        ("garbage", ["`model_edits` is a list of edits"]),
+    ],
+)
+def test_a_malformed_edit_is_refused_naming_what_is_wrong(tmp_path, edits, said):
+    """Pydantic's own error, its input echoed and a docs link, answered an edit sent without `op`,
+    with an op that does not exist or with a bound in it: crauste, luna raimundez 18, sneyd 28/29,
+    pointers_off raimundez 6 (PEtab-MCP#341)."""
+    out = _call(_server(tmp_path), "make_changes", {"justification": "x", "model_edits": edits})
+    assert out["applied"] is False and out["error_cause"] == "malformed_edit", out
+    assert all(s in out["error"] for s in said) and "pydantic" not in out["error"], out["error"]
+
+
+def test_a_stored_versions_model_text_shows_its_fitted_values(tmp_path):
+    """progress_off alkan 18 froze `Kc` at the value the model text showed, the one it was written
+    with, taking it for the fitted one (PEtab-MCP#341). A version's table holds its fitted
+    values, and `get_model(version=N)` shows them in its source."""
+    import pandas as pd
+
+    mcp = _server(tmp_path)
+    _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0"})
+    stored = tmp_path / "prov" / "versions" / "v0" / "parameters.tsv"
+    df = pd.read_csv(stored, sep="\t", index_col=0)
+    df.loc["k1", "nominalValue"] = 3.214567891
+    df.to_csv(stored, sep="\t")
+    text = _call(mcp, "get_model", {"version": 0})["result"]
+    assert "k1 = 3.21457;" in text and "k2 = 0.1;" in text
+
+
+def test_the_working_model_text_shows_its_fitted_values(session):
+    """The same for the working model, whose table a fit writes its values into."""
+    from petab_mcp import model as model_mod
+
+    session.problem.parameter_df.loc["k1", "nominalValue"] = 3.214567891
+    assert re.search(r"\bk1 = 3\.21457;", model_mod.get_model(session))
+
+
+def test_a_fitted_value_near_0_or_1_is_not_shown_as_either():
+    """A species' initial value written 0 or 1 is held FIXED there, so a fitted 0.9999996 shown as
+    `1` would fix it for an agent that copies the text back."""
+    from petab_mcp import model as model_mod
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {"nominalValue": [0.9999996, 7.0], "estimate": [True, False]}, index=["X_init", "k"]
+    )
+    df.index.name = "parameterId"
+    text = model_mod.at_fitted_values("model m\n  X = 5; k = 2;\n  r: X => ; k*X;\nend\n", df)
+    assert "X = 0.9999996; k = 2;" in text

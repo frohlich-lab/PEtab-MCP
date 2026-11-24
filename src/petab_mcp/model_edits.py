@@ -827,12 +827,30 @@ def _op_add_reaction(text, op, where):
     return text + f"{sep}  {body}{comment}\n", f"added reaction {rid}"
 
 
+def _removed_id(op) -> tuple[str, str]:
+    """The reaction a ``remove_reaction`` names, and the id ``antimony`` gives, if any. Agents
+    sent the id there, alone or as the reaction's statement, and were refused for it, a call each
+    (runs 63612603_15, _52, _54 and _95; PEtab-MCP#341)."""
+    sent = (op.get("antimony") or "").strip().rstrip(";").strip()
+    found = _reactions(sent) if _ARROW.search(sent) else []
+    named = found[0].group("id") if len(found) == 1 else sent
+    return (op.get("id") or "").strip() or named, named
+
+
 def _op_remove_reaction(text, op, where):
-    rid = _reaction_id(op, where, "remove_reaction")
+    rid, named = _removed_id(op)
+    if named and named != rid:
+        raise OperationError(
+            f"{where}: `antimony` names {named!r}, but `id` is {rid!r}. remove_reaction takes "
+            "the reaction's id alone, in `id`. NOTHING was applied.",
+            cause="id_mismatch",
+        )
+    rid = _reaction_id({"id": rid}, where, "remove_reaction")
     m = _find_reaction(text, rid)
     if m is None:
         raise _unknown_reaction(where, rid, text)
-    return _cut(text, m.start(), m.end()), f"removed reaction {rid}"
+    how = " (its id read from `antimony`)" if named and not (op.get("id") or "").strip() else ""
+    return _cut(text, m.start(), m.end()), f"removed reaction {rid}{how}"
 
 
 def _law_of(law: str, rid: str, rxn: re.Match, where: str) -> tuple[str, str]:
@@ -1229,6 +1247,34 @@ def carried_renames(names, pairs: "list[tuple[str, str]]") -> tuple[dict[str, st
     return {name: origin for name, origin in held.items() if name != origin}, merged
 
 
+def _refuse_existing_ids(text: str, edits: "list[Any]", where: str) -> None:
+    """Every ``add_reaction`` of the batch whose id a reaction already has, refused at once: the
+    batch stops at its first failure, so each one cost a call of its own (PEtab-MCP#341). One alone
+    gets its op's own refusal, whose remedy reads its statement."""
+    ids = set(reaction_ids(text))
+    clashes = []
+    for i, op in enumerate(edits):
+        name = (op.get("op") or "").strip() if isinstance(op, dict) else ""
+        if name == "remove_reaction":
+            ids.discard(_removed_id(op)[0])
+        elif name == "rename" and (op.get("old") or "").strip() in ids:
+            ids |= {(op.get("new") or "").strip()}
+            ids.discard((op.get("old") or "").strip())
+        elif name == "add_reaction":
+            found = _reactions((op.get("antimony") or "").strip())
+            rid = found[0].group("id") if len(found) == 1 else (op.get("id") or "").strip()
+            if rid in ids:
+                clashes.append(f"{rid!r} (model_edits[{i}])")
+            ids.add(rid)
+    if len(clashes) > 1:
+        raise OperationError(
+            f"{where}: reactions {', '.join(clashes)} already exist. To change a rate law use "
+            "set_rate_law; to change reactants or products put remove_reaction before the "
+            "add_reaction; or pick other ids. NOTHING was applied.",
+            cause="duplicate_reaction_id",
+        )
+
+
 def apply_model_edits(
     source: str,
     edits: "list[dict[str, Any]]",
@@ -1251,6 +1297,7 @@ def apply_model_edits(
         )
     text = source or ""
     summary: list[str] = []
+    _refuse_existing_ids(text, edits, where)
     for i, op in enumerate(edits):
         label = f"{where}: model_edits[{i}]"
         if not isinstance(op, dict):
