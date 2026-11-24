@@ -19,7 +19,14 @@ from __future__ import annotations
 from typing import Any
 
 import libsbml
-from petab.v2.C import ESTIMATE, NOMINAL_VALUE, TARGET_ID, TARGET_VALUE
+from petab.v2.C import (
+    CONDITION_ID,
+    ESTIMATE,
+    LOWER_BOUND,
+    NOMINAL_VALUE,
+    TARGET_ID,
+    TARGET_VALUE,
+)
 from petab.v2.lint import ValidationIssueSeverity
 
 from .problem import as_bool, later_changes
@@ -574,15 +581,10 @@ def _sourceless_species_issues(problem) -> list[dict[str, Any]]:
         }
     )
 
-    def starts_at_zero(sp) -> bool:
-        assignment = sm.getInitialAssignmentBySymbol(sp.getId())
-        if assignment is not None:
-            return vanishes(assignment.getMath())
-        value, _ = _declared_initial(sm, sp)
-        return value is None or value == 0
-
     zero |= {
-        sp.getId() for sp in sm.getListOfSpecies() if sp.getId() not in held and starts_at_zero(sp)
+        sp.getId()
+        for sp in sm.getListOfSpecies()
+        if sp.getId() not in held and _starts_at_zero(sm, sp, zero, ruled)
     }
     reactions = []
     for rxn in sm.getListOfReactions():
@@ -623,6 +625,144 @@ def _sourceless_species_issues(problem) -> list[dict[str, Any]]:
     ]
 
 
+def _power_issues(problem) -> list[dict[str, Any]]:
+    """One warning per power with an estimated exponent that a base near 0 makes fail, in either
+    of two ways.
+
+    * ``power_of_state``: the base can go negative with a state, and the exponent reads an
+      estimated row. The integrator lets a state dip just below 0, after a pulse, where a
+      non-integer power is NaN and the simulation fails: 11 of 25 fujita runs scored no held-out
+      data for it, while the one whose powers read ``abs()`` of the state scored best
+      (PEtab-MCP#323). A state is a species a reaction or rate rule changes; the base reads one
+      through sums, differences, products, quotients and assignment rules alone, and any function
+      of it (``max``, ``abs``, ``exp``) is taken to guard it.
+    * ``power_of_zero``: the base is exactly 0 at the start or in a condition
+      (:func:`_zero_at`), and the exponent is an estimated row whose lower bound is below 1. Below
+      1 the power's slope at 0 is infinite: AMICI's sensitivities there are NaN, and in a rate the
+      simulation fails, guarded by ``max`` or ``abs`` or not (lun 63612603_109, PEtab-MCP#341).
+    """
+    sm = getattr(problem.model, "sbml_model", None)
+    pdf = getattr(problem, "parameter_df", None)
+    if sm is None or pdf is None or ESTIMATE not in pdf.columns:
+        return []
+    lower = pdf[LOWER_BOUND] if LOWER_BOUND in pdf.columns else [None] * len(pdf)
+    estimated, steep = set(), set()
+    for pid, estimate, bound in zip(pdf.index, pdf[ESTIMATE], lower):
+        try:
+            if as_bool(estimate):
+                estimated.add(str(pid))
+                if bound is not None and float(bound) < 1:
+                    steep.add(str(pid))
+        except ValueError:
+            continue
+    ruled = {r.getVariable(): r.getMath() for r in sm.getListOfRules() if r.isAssignment()}
+    states = _changed_species(sm) | {r.getVariable() for r in sm.getListOfRules() if r.isRate()}
+    arithmetic = (libsbml.AST_PLUS, libsbml.AST_MINUS, libsbml.AST_TIMES, libsbml.AST_DIVIDE)
+    zero_at = _zero_at(problem, sm, ruled) if steep else []
+
+    def signed(node, seen: frozenset = frozenset()) -> bool:
+        if node.getType() == libsbml.AST_NAME:
+            name = node.getName()
+            return name in states or (
+                name in ruled and name not in seen and signed(ruled[name], seen | {name})
+            )
+        if node.getType() in arithmetic:
+            return any(signed(node.getChild(i), seen) for i in range(node.getNumChildren()))
+        return False
+
+    def reads_estimated(node) -> bool:
+        names, todo = set(), _ast_names(node)
+        while todo:
+            name = todo.pop()
+            if name not in names:
+                names.add(name)
+                todo |= _ast_names(ruled.get(name))
+        return bool(names & estimated)
+
+    said = {}  # a Hill term writes its power twice
+    for where, math in _math_of(sm):
+        stack = [math] if math is not None else []
+        while stack:
+            node = stack.pop()
+            stack += [node.getChild(i) for i in range(node.getNumChildren())]
+            if node.getType() not in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+                continue
+            base, exponent = node.getChild(0), node.getChild(1)
+            text, base_text = libsbml.formulaToL3String(node), libsbml.formulaToL3String(base)
+            power = libsbml.formulaToL3String(exponent)
+            found = []
+            if signed(base) and reads_estimated(exponent):
+                guarded = (
+                    f"max({base_text}, 0)^{f'({power})' if exponent.getNumChildren() else power}"
+                )
+                found.append(
+                    (
+                        "power_of_state",
+                        f"{where} raises a state to an estimated power, `{text}`: the integrator "
+                        "can take a state just below 0, as after a pulse, where a non-integer "
+                        f"power is NaN and the simulation fails. Write `{guarded}`.",
+                    )
+                )
+            if exponent.isName() and exponent.getName() in steep:
+                when = next((w for w, zero in zero_at if _vanishes_at(base, zero, ruled)), None)
+                if when is not None:
+                    found.append(
+                        (
+                            "power_of_zero",
+                            f"{where} raises `{base_text}`, which {when}, to `{power}`, whose "
+                            "lower bound is below 1, where the power's slope at 0 is infinite: "
+                            f"the fit's gradient there is NaN. Give `{power}` a lower bound of 1.",
+                        )
+                    )
+            for check, message in found:
+                said[message] = {"level": "warning", "message": message, "check": check}
+    return list(said.values())
+
+
+def _zero_at(problem, sm, ruled) -> list[tuple[str, set[str]]]:
+    """``(when, names)``: the names that are 0 together at the start, then in each condition, with
+    ``when`` as a message says it. At the start: the parameters the table fixes at 0 and the species
+    that start at 0 (:func:`_starts_at_zero`) that no condition sets to another value. In a
+    condition: those parameters, the targets it sets to 0, and the species starting at 0 it does
+    not set."""
+    fixed = _fixed_zero_parameters(problem)
+    start = {sp.getId() for sp in sm.getListOfSpecies() if _starts_at_zero(sm, sp, fixed, ruled)}
+    conditions: dict[str, dict[str, Any]] = {}
+    cdf = problem.condition_df
+    if cdf is not None and {CONDITION_ID, TARGET_ID, TARGET_VALUE} <= set(cdf.columns):
+        for cid, target, value in zip(cdf[CONDITION_ID], cdf[TARGET_ID], cdf[TARGET_VALUE]):
+            conditions.setdefault(str(cid), {})[str(target)] = value
+    moved = {t for targets in conditions.values() for t, v in targets.items() if not _is_zero(v)}
+    out = [("starts at 0", fixed | (start - moved))]
+    for cid, targets in sorted(conditions.items()):
+        zeroed = {t for t, v in targets.items() if _is_zero(v)}
+        out.append((f"is 0 in condition `{cid}`", fixed | zeroed | (start - targets.keys())))
+    return out
+
+
+def _starts_at_zero(sm, sp, zero: set[str], ruled: dict) -> bool:
+    """Whether species ``sp`` starts at 0: its initial assignment vanishes where every name in
+    ``zero`` is 0 (:func:`_vanishes_at`), or it has none and declares 0 or nothing."""
+    assignment = sm.getInitialAssignmentBySymbol(sp.getId())
+    if assignment is not None:
+        math = assignment.getMath()
+        return math is not None and _vanishes_at(math, zero, ruled)
+    value, _ = _declared_initial(sm, sp)
+    return value is None or value == 0
+
+
+def _changed_species(sm) -> set[str]:
+    """The species some reaction changes: with more of it on one side than the other."""
+    changed = set()
+    for rxn in sm.getListOfReactions():
+        net: dict[str, float] = {}
+        for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
+            for ref in refs:
+                net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
+        changed |= {sid for sid, n in net.items() if n != 0}
+    return changed
+
+
 def _constant_noise_species_issues(problem) -> list[dict[str, Any]]:
     """One error per species a noise formula reads that no reaction changes (it takes part in none,
     or with as much on each side) and no rule sets. AMICI holds such a species as a constant total
@@ -635,13 +775,7 @@ def _constant_noise_species_issues(problem) -> list[dict[str, Any]]:
     sm = getattr(problem.model, "sbml_model", None)
     if sm is None or not has_dynamics(sm):
         return []
-    changed = {r.getVariable() for r in sm.getListOfRules()}
-    for rxn in sm.getListOfReactions():
-        net: dict[str, float] = {}
-        for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
-            for ref in refs:
-                net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
-        changed |= {sid for sid, n in net.items() if n != 0}
+    changed = {r.getVariable() for r in sm.getListOfRules()} | _changed_species(sm)
     constant = {s.getId() for s in sm.getListOfSpecies() if not s.getConstant()} - changed
     readers: dict[str, set[str]] = {}
     odf, mdf = problem.observable_df, problem.measurement_df
@@ -672,8 +806,9 @@ def _vanishes_at(node, zero: set[str], ruled: dict, seen: frozenset = frozenset(
     """Whether the math ``node`` is 0 wherever every name in ``zero`` is 0, read off its shape: such
     a name, or an assignment rule's target whose math vanishes (``ruled``); a literal 0; a product
     with a vanishing factor; a quotient with a vanishing numerator; a sum or difference of vanishing
-    terms; a vanishing base to a positive literal power. Anything else is taken not to vanish, so a
-    rate law this cannot read counts as one that runs and nothing is warned about."""
+    terms; a vanishing base to a positive literal power; ``abs`` of a vanishing term, ``max`` or
+    ``min`` of vanishing terms. Anything else is taken not to vanish, so a rate law this cannot read
+    counts as one that runs and nothing is warned about."""
 
     def at(child) -> bool:
         return _vanishes_at(child, zero, ruled, seen)
@@ -693,8 +828,15 @@ def _vanishes_at(node, zero: set[str], ruled: dict, seen: frozenset = frozenset(
         return any(map(at, children))
     if kind == libsbml.AST_DIVIDE:
         return at(children[0])
-    if kind in (libsbml.AST_PLUS, libsbml.AST_MINUS):
+    if kind in (
+        libsbml.AST_PLUS,
+        libsbml.AST_MINUS,
+        libsbml.AST_FUNCTION_MAX,
+        libsbml.AST_FUNCTION_MIN,
+    ):
         return all(map(at, children))
+    if kind == libsbml.AST_FUNCTION_ABS:
+        return at(children[0])
     if kind in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
         base, exponent = children
         return exponent.isNumber() and exponent.getValue() > 0 and at(base)
@@ -981,6 +1123,7 @@ def validate_problem(
         _first_period_only_issues(problem)
         + _unread_input_issues(problem, inputs_read_before)
         + _sourceless_species_issues(problem)
+        + _power_issues(problem)
     )
     issues += advisory
     n_warnings += len(advisory)
