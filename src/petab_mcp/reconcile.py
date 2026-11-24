@@ -15,6 +15,8 @@ Enforces the invariants:
   observable/noise formulas (e.g. ``sigma_*``).
 * **Orphan pruning** — species/parameters left unreferenced by any reaction, rule,
   initial assignment, event, or fixed table are dropped.
+* **Declared inputs** — a condition target the model does not declare becomes a constant parameter
+  at 0 (:func:`declare_inputs`).
 """
 
 from __future__ import annotations
@@ -2716,9 +2718,31 @@ def ensure_one_species(sm) -> bool:
     return True
 
 
+def declare_inputs(problem) -> list[str]:
+    """Declare each condition target the model does not, as a constant parameter at 0, and return
+    their ids. Every target must be a model entity, and a target was declared only by a reader: on
+    froehlich each of about 145 had to be written by hand, most runs lost their first edit to
+    "invalid targets", and removing an input's last reader was refused with no op to re-declare it
+    (PEtab-MCP#332). A target the model declares, as a species or otherwise, is left as it is. It
+    has no row (:func:`sync_parameter_table`), so it costs nothing in k; one nothing reads is named
+    by the unread-input lint (:func:`validation._unread_input_issues`)."""
+    sm = problem.model.sbml_model
+    declared = []
+    for tid in sorted(condition_target_symbols(problem)):
+        if sm.getElementBySId(tid) is not None:
+            continue
+        parameter = sm.createParameter()
+        parameter.setId(tid)
+        parameter.setValue(0.0)
+        parameter.setConstant(True)
+        declared.append(tid)
+    return declared
+
+
 def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) -> dict[str, Any]:
-    """Full reconciliation after a structural edit: promote local parameters, prune, parametric
-    ICs, table sync.
+    """Full reconciliation after a structural edit: promote local parameters, prune, declare the
+    condition inputs the model leaves out (:func:`declare_inputs`, returned as ``inputs``),
+    parametric ICs, table sync.
 
     Initial conditions are estimated by default; an IC of exactly 1 is held FIXED and an IC of
     exactly 0 gets no parameter at all (see :func:`ensure_parametric_initial_conditions`). ``shipped`` is the problem's original parameter table, so a
@@ -2736,6 +2760,7 @@ def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) 
     pruned = prune_orphans(problem)
     # AFTER the prune, or it would be pruned as the orphan it deliberately is.
     ensure_one_species(sm)
+    inputs = declare_inputs(problem)
     # Species whose IC is set per-condition (a condition target) are driven by the condition
     # table, not estimated — skip parametrising them (see ensure_parametric_initial_conditions).
     # `protect_ids` is the SHIPPED table's own ids: if the problem author shipped a `<sid>_init`
@@ -2749,4 +2774,4 @@ def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) 
             protect_ids=set(shipped.index) if shipped is not None else None,
         )
     synced = sync_parameter_table(problem, shipped=shipped, carried=carried)
-    return {"pruned": pruned, "parameters": synced}
+    return {"pruned": pruned, "parameters": synced, "inputs": inputs}

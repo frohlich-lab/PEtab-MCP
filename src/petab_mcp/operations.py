@@ -43,11 +43,11 @@ from .provenance import binding_of
 from .references import resolve_references
 from .reconcile import _ast_names
 from .validation import (
-    INPUT_UNREAD,
     _math_of,
     estimated_assignment_issues,
     frozen_parametric_stoichiometry_issues,
     piecewise_order_issues,
+    read_inputs,
     validate_problem,
 )
 
@@ -500,23 +500,7 @@ def _rejection_summary(issues: list[str]) -> str:
     more = len(issues) - len(shown)
     tail = f" (+{more} more in `issues`)" if more > 0 else ""
     joined = " | ".join(shown)
-    hints = "".join(
-        hint for pattern, hint in _ISSUE_HINTS if any(pattern in str(m) for m in issues)
-    )
-    return f"the resulting problem is invalid: {joined}{tail}{hints}"
-
-
-#: A fix the agent can act on, for an issue libpetab states without one. "Condition table
-#: contains invalid targets" means the model does not declare an input the condition table sets,
-#: and the message names the targets without saying that the model has to.
-_ISSUE_HINTS = (
-    (
-        "Condition table contains invalid targets",
-        " — each named target is an input the condition table SETS per experiment, so the model "
-        "must declare it under its id: a parameter (`dose = 0;`) or, on the statements route, a "
-        f'seed at its id alone (`{{"agent": "dose", "amount": "dose"}}`). {INPUT_UNREAD}',
-    ),
-)
+    return f"the resulting problem is invalid: {joined}{tail}"
 
 
 def _commit_change(
@@ -616,6 +600,8 @@ def _commit_change(
                 )
         else:
             recon = None
+        # The version this edit changes, read before the swap below replaces the working model.
+        base = _parent(session) if recon is not None else None
 
         def lint() -> dict:
             # A parameter that ships FIXED and is a mechanistic/structural constant (a
@@ -630,6 +616,7 @@ def _commit_change(
                 protected_fixed_ids=protected_fixed,
                 # A statements call reads its remedies in its own vocabulary (`readouts`).
                 statements=getattr(session, "submitted_statements", None) is not None,
+                inputs_read_before=read_inputs(problem, base[1].sbml_model) if base else None,
             )
             if not report["valid"]:
                 hard = [i["message"] for i in report["issues"] if i["level"] in ("error", "critical")]
@@ -670,8 +657,8 @@ def _commit_change(
         report = lint()
 
         warnings = []
-        if recon is not None:
-            version, parent, parent_df = _parent(session)
+        if base is not None:
+            version, parent, parent_df = base
             added = recon["parameters"]["added"]
             warnings = [
                 *_pruned_warnings(recon["pruned"]["species"], names),

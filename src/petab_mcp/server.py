@@ -1114,10 +1114,10 @@ def _register_read_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         it sets (a model parameter, species or compartment) to that row's value — a dose, an input
         level, a switch; blank where the condition does not set the target. A table too large for
         one reply comes back as one row per target instead: how many conditions set it and the
-        range of its values. Your model declares every target under its id and reads one only
-        where it has an effect: leaving an input unread is allowed. A condition-set initial is an
-        experimental input to reproduce, not a value to fit. WHEN a condition applies is
-        `list_experiments`."""
+        range of its values. Your model reads a target only where it has an effect: leaving an
+        input unread is allowed, and one the model leaves out is declared for it, at 0. No rule
+        may assign a target. A condition-set initial is an experimental input to reproduce, not a
+        value to fit. WHEN a condition applies is `list_experiments`."""
         ctx = route()
         session = ctx.session
         return conditions_tsv(session.problem.condition_df)
