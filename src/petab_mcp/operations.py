@@ -38,16 +38,16 @@ from .constants import (
     WIDENING_NEGLIGIBLE_BIC_GAIN,
 )
 from .errors import ModelUpdateError, ParameterError, PetabMcpError, ValidationError
-from .parameters import estimated_mask
+from .parameters import estimated_ids, estimated_mask
 from .provenance import binding_of
 from .references import resolve_references
 from .reconcile import _ast_names
 from .validation import (
-    INPUT_UNREAD,
     _math_of,
     estimated_assignment_issues,
     frozen_parametric_stoichiometry_issues,
     piecewise_order_issues,
+    read_inputs,
     validate_problem,
 )
 
@@ -438,6 +438,42 @@ def _minted_warnings(problem, added: list[str], parent_df, shipped_df) -> list[s
     return [f"New estimated parameter(s): {', '.join(f'`{p}`' for p in minted)}."]
 
 
+def _direct_starts(sm) -> dict[str, str]:
+    """Each parameter that is a species' whole initial amount (``STAT5 = STAT5_init``), to that
+    species."""
+    starts = {}
+    for ia in sm.getListOfInitialAssignments():
+        names = _ast_names(ia.getMath())
+        if sm.getSpecies(ia.getSymbol()) is not None and len(names) == 1:
+            starts.setdefault(next(iter(names)), ia.getSymbol())
+    return starts
+
+
+#: Why the reconcile holds an initial amount fixed (:func:`reconcile._ic_convention`).
+_HELD_FIXED = (
+    "An initial amount of exactly 0 or 1 is held fixed (an empty pool, a unit normalisation); "
+    "declare any other value to estimate it."
+)
+
+
+def _held_fixed_warnings(problem, fixed: list[str]) -> list[str]:
+    """The initial amounts the reconcile holds FIXED by the 0/1 convention (``fixed`` of
+    :func:`reconcile.sync_parameter_table`), in one line, each with its value and species. Nothing
+    said so when bachmann 10 changed an estimated start to 1 and its k dropped by one
+    (PEtab-MCP#325)."""
+    if not fixed:
+        return []
+    starts = _direct_starts(problem.model.sbml_model)
+    shown = ", ".join(
+        f"`{p}` = {R._finite_nominal(problem.parameter_df, p):g}"
+        + (f" (the start of `{starts[p]}`)" if p in starts else "")
+        for p in fixed[:_FOLDED_NAMES_SHOWN]
+    )
+    if len(fixed) > _FOLDED_NAMES_SHOWN:
+        shown += f" (+{len(fixed) - _FOLDED_NAMES_SHOWN} more)"
+    return [f"Held FIXED, not estimated: {shown}. {_HELD_FIXED}"]
+
+
 def _still_read_warnings(parent: SbmlModel, problem) -> list[str]:
     """One warning per estimated parameter a species' initial assignment in ``parent`` read and
     no longer reads, naming the expressions that keep it estimated. oliveira 59 set the exposed
@@ -500,23 +536,7 @@ def _rejection_summary(issues: list[str]) -> str:
     more = len(issues) - len(shown)
     tail = f" (+{more} more in `issues`)" if more > 0 else ""
     joined = " | ".join(shown)
-    hints = "".join(
-        hint for pattern, hint in _ISSUE_HINTS if any(pattern in str(m) for m in issues)
-    )
-    return f"the resulting problem is invalid: {joined}{tail}{hints}"
-
-
-#: A fix the agent can act on, for an issue libpetab states without one. "Condition table
-#: contains invalid targets" means the model does not declare an input the condition table sets,
-#: and the message names the targets without saying that the model has to.
-_ISSUE_HINTS = (
-    (
-        "Condition table contains invalid targets",
-        " — each named target is an input the condition table SETS per experiment, so the model "
-        "must declare it under its id: a parameter (`dose = 0;`) or, on the statements route, a "
-        f'seed at its id alone (`{{"agent": "dose", "amount": "dose"}}`). {INPUT_UNREAD}',
-    ),
-)
+    return f"the resulting problem is invalid: {joined}{tail}"
 
 
 def _commit_change(
@@ -616,6 +636,8 @@ def _commit_change(
                 )
         else:
             recon = None
+        # The version this edit changes, read before the swap below replaces the working model.
+        base = _parent(session) if recon is not None else None
         # The text this change stores as its source, without what the reconcile pruned: a source
         # that still declared it was pruned again on every later edit, and a fold of the prune's
         # warning named nothing (PEtab-MCP#328).
@@ -639,6 +661,7 @@ def _commit_change(
                 protected_fixed_ids=protected_fixed,
                 # A statements call reads its remedies in its own vocabulary (`readouts`).
                 statements=getattr(session, "submitted_statements", None) is not None,
+                inputs_read_before=read_inputs(problem, base[1].sbml_model) if base else None,
             )
             if not report["valid"]:
                 hard = [i["message"] for i in report["issues"] if i["level"] in ("error", "critical")]
@@ -679,12 +702,13 @@ def _commit_change(
         report = lint()
 
         warnings = []
-        if recon is not None:
-            version, parent, parent_df = _parent(session)
+        if base is not None:
+            version, parent, parent_df = base
             added = recon["parameters"]["added"]
             warnings = [
                 *_pruned_warnings(recon["pruned"]["species"], names),
                 *_minted_warnings(problem, added, parent_df, session.shipped_parameter_df),
+                *_held_fixed_warnings(problem, recon["parameters"]["fixed"]),
                 *_orphan_warnings(session, recon["parameters"]["seeded"], version, parent),
                 *_still_read_warnings(parent, problem),
                 *_parsimony_warnings(problem, set(R.species_ids(parent.sbml_model))),
@@ -1862,12 +1886,30 @@ def _require_positive_for_log(problem, parameter_id: str, scale: str | None = No
                     hint = (
                         " `nominalValue` is not settable here (allowed keys: parameter_id, "
                         "lower_bound, upper_bound, scale) — a parameter's VALUE comes from the "
-                        "model text or the fit. An initial-condition row follows the initial "
-                        "value the model declares: 0 (or no initial value) means FIXED at 0, 1 "
-                        "means FIXED at 1, any other positive value means ESTIMATED on log10. So "
-                        "either drop this scale entry (a species that starts empty is correctly "
-                        "fixed at 0), or declare a positive initial value."
+                        "model text or the fit."
                     )
+                    sm = problem.model.sbml_model
+                    declared = sm.getParameter(parameter_id)
+                    declared = declared.getValue() if declared is not None else None
+                    if declared is not None and declared == declared and declared != fval:
+                        # haiku lucarelli 4 re-declared `aCxcl15 = 0.5` and was given the
+                        # initial-condition advice below for its fitted -0.03 (PEtab-MCP#325).
+                        hint += (
+                            f" {fval:g} is its row's fitted value, not the {declared:g} the model "
+                            "declares: an existing row keeps its value when the model re-declares "
+                            "it. Keep `scale: lin`, or declare it under a new name, whose new row "
+                            "starts at the declared value (a `rename` carries the old row)."
+                        )
+                    elif parameter_id in R._direct_ic_parameter_ids(sm):
+                        hint += (
+                            " An initial-condition row follows the initial value the model "
+                            "declares: 0 (or no initial value) means FIXED at 0, 1 means FIXED at "
+                            "1, any other positive value means ESTIMATED on log10. So either drop "
+                            "this scale entry (a species that starts empty is correctly fixed at "
+                            "0), or declare a positive initial value."
+                        )
+                    else:
+                        hint += " Declare a positive value, or keep `scale: lin`."
                 raise OperationError(
                     f"Cannot use {scale} scale for {parameter_id!r}: {field}={val} must be > 0."
                     + hint
@@ -2201,7 +2243,10 @@ def _restore_parameter_edit(
     still has. A fork that removes a reaction drops that reaction's parameters, and a strict
     `parameters` entry for a now-absent id would reject the whole call — turning a working fork
     into a failed one. Ids the stored table lacks (introduced by this call's operations) keep
-    whatever the reconcile minted.
+    whatever the reconcile minted, and so does a row either table holds FIXED: its nominal is the
+    value the model declares (:func:`reconcile.sync_parameter_table`), which the stored value would
+    override. bachmann 10 re-declared an estimated start at 1 on a fork, and it was simulated
+    fixed at the base's fitted 79.75 (PEtab-MCP#325).
 
     The widening backstops are deliberately NOT applied: restoring a state that already existed and
     was already fit is not a widening request, and `_reject_repeated_widening` would refuse it.
@@ -2242,11 +2287,14 @@ def _restore_parameter_edit(
 
     def edit(problem):
         live = problem.parameter_df
+        free = set(estimated_ids(live)) & set(estimated_ids(stored_df))
         updates, restored, skipped, point_only = [], [], [], []
         for pid in stored_df.index:
             pid = str(pid)
             if pid not in live.index:
                 skipped.append(pid)
+                continue
+            if pid not in free:
                 continue
             # theirs wins on the columns they named; the point is restored either way
             withheld = (skip or {}).get(pid, set())
@@ -2409,6 +2457,17 @@ def _parameter_edit(
             # Positive-box check reads the NEW scale + bounds (a bound alone: against the row's
             # scale), so it runs AFTER the update.
             _require_positive_for_log(problem, pid, scale)
+        # A fixed row the problem did not ship is one the 0/1 convention holds: bachmann 23 sent
+        # bounds for a fold fixed at 1 and read the unchanged fit as evidence (PEtab-MCP#325).
+        shipped = {str(p) for p in session.shipped_parameter_df.index}
+        for ch in normalized:
+            pid = ch["parameter_id"]
+            if pid not in shipped and not R.is_parameter_estimated(problem, pid):
+                value = R._finite_nominal(problem.parameter_df, pid)
+                warnings.append(
+                    f"`{pid}` is FIXED{f' at {value:g}' if value is not None else ''}, so the "
+                    f"bounds and scale sent for it do not change the fit. {_HELD_FIXED}"
+                )
         out: dict[str, Any] = {"changed": changed}
         if warnings:
             out["warnings"] = warnings  # advisory only; the edit was applied

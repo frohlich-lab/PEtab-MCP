@@ -15,6 +15,8 @@ Enforces the invariants:
   observable/noise formulas (e.g. ``sigma_*``).
 * **Orphan pruning** — species/parameters left unreferenced by any reaction, rule,
   initial assignment, event, or fixed table are dropped.
+* **Declared inputs** — a condition target the model does not declare becomes a constant parameter
+  at 0 (:func:`declare_inputs`).
 """
 
 from __future__ import annotations
@@ -2488,11 +2490,34 @@ def _ic_convention(v0: float) -> tuple[str, bool]:
     return (LOG10 if v0 > 0.0 else LIN), True  # a guess: estimated, on log10 when it can be
 
 
+def _row_defaults(pid: str, value, direct: set[str], ic_params: set[str], exp_params: set[str]):
+    """The ``(scale, lower bound, upper bound, estimate)`` a row for ``pid`` declared at ``value``
+    takes. A direct initial condition follows :func:`_ic_convention`; an exponent outside one gets
+    a tight linear bracket, so it cannot run off to a step function on the wide log10 box; anything
+    else is estimated, on log10 when ``value`` is positive (a non-positive bound fails the lint).
+
+    A participant of a COMPOUND initial condition (``CIS = CIS_tot*cis_oe``) is in that last group:
+    one declared at 1 is a fold the author means to fit. The add-loop used to fix it, with no
+    message, and bachmann 23 dropped a right hypothesis on that false negative (PEtab-MCP#325)."""
+    try:
+        v0 = float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        v0 = 0.0
+    if pid in direct:
+        scale, estimate = _ic_convention(v0)
+        return (scale, *_default_bounds(value), estimate)
+    if pid in exp_params and pid not in ic_params:
+        return (LIN, *_exponent_bounds(value), True)
+    return ((LOG10 if v0 > 0.0 else LIN), *_default_bounds(value), True)
+
+
 def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff, and ``seeded``: the
     parameters nothing gives a value (no assignment in the model, no row, no shipped row), each
-    started at the seed. :func:`operations._orphan_warnings` names those the parent defined.
+    started at the seed. :func:`operations._orphan_warnings` names those the parent defined. And
+    ``fixed``: the rows this sync holds FIXED by the 0/1 convention below, minted so or moved there,
+    which :func:`operations._held_fixed_warnings` names.
 
     ``carried`` maps a ``rename``'s new id to the row its old id had (:func:`operations.set_model`).
     A new id the table may hold takes that row, fitted value, bounds and scale, unless the problem
@@ -2511,9 +2536,12 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
     Initial conditions are ESTIMATED by default -- a declared t=0 is only a guess and must never
     be silently frozen (issue #90). Two leak-free VALUE conventions stay FIXED: an IC of exactly
     ``0`` (an empty pool -- nothing to estimate) and an IC of exactly ``1`` (a unit normalization,
-    e.g. a conserved-total set to 1). A row follows the value the model declares on every sync, so
-    re-declaring an IC moves it. A caller that needs some other IC fixed ships it as a fixed
-    parameter row, which reconcile never re-touches."""
+    e.g. a conserved-total set to 1). Fixing it BY VALUE names no species, so unlike a shipped fixed
+    row it leaks no hidden structure to the agent building the model. Only a DIRECT initial
+    condition (``<sid> = <param>``) is held so (:func:`_row_defaults`). A row follows the value the
+    model declares on every sync, so re-declaring an IC moves it, and a row the convention fixed
+    that is no longer a direct IC is estimated again. A caller that needs some other IC fixed ships
+    it as a fixed parameter row, which reconcile never re-touches."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     # A parameter that is a CONDITION TARGET is set per condition (a PEtab condition change),
@@ -2533,6 +2561,7 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
             moved.append(pid)
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
+    direct = _direct_ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
     keep_table = table_referenced_symbols(problem)  # observable/noise params etc.
     # ...but NOT a symbol PEtab forbids outright. An assignment-/rate-rule TARGET is computed by
@@ -2558,7 +2587,7 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
     keep_table -= species_ids(sm)
     keep_table -= mappings
 
-    added, removed, seeded = [], [], []
+    added, removed, seeded, fixed = [], [], [], []
 
     # A parameter the model uses but never assigns (`deg: A -> ; k*A;` with no `k = …`) loads
     # with no SBML value: NaN to anything that reads the model without this table, and `k = ;`
@@ -2593,86 +2622,62 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
             added.append(pid)
             continue
         value = problem.model.get_parameter_value(pid)
-        if pid in ic_params:
-            # Initial conditions are ESTIMATED by default (issue #90): a declared t=0 is only a
-            # guess, and freezing it hands the optimizer a value it can never correct (measured: a
-            # ~460 guess frozen where the truth is ~8090). A seeded/guessed IC is a
-            # strictly-positive concentration, so it is estimated on LOG10 with the usual wide
-            # bracketing bounds — exactly like a positive kinetic parameter — resolving seeds that
-            # span many orders (a receptor pool ~1e7 beside a kinase ~1e-2).
-            #   TWO leak-free VALUE conventions stay FIXED instead:
-            #     v0 == 0.0  -> an empty pool: nothing to estimate, and it cannot live on log10.
-            #     v0 == 1.0  -> a unit normalization: a conserved-total / normalization convention
-            #                   set to 1. Fixing it BY VALUE names no species, so — unlike shipping
-            #                   it as a fixed param — it leaks no hidden structure to the agent
-            #                   building the model.
-            # Any OTHER IC that must stay fixed is shipped as a fixed parameter row (which this sync
-            # never re-touches). A nonzero non-positive nominal can't live on log10 -> linear.
-            try:
-                v0 = float(value) if value is not None else 0.0
-            except (TypeError, ValueError):
-                v0 = 0.0
-            lb, ub = _default_bounds(value)
-            scale, estimate = _ic_convention(v0)
-        elif pid in exp_params:
-            # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
-            # cannot run off to a near-step-function on the wide default log10 range.
-            lb, ub = _exponent_bounds(value)
-            scale, estimate = LIN, True
-        else:
-            # A generic rate constant: estimate on log10 when the nominal is positive (the usual
-            # case for a kinetic parameter). A non-positive nominal cannot live on a log scale,
-            # so fall back to linear, avoiding an invalid log10 row (a non-positive bound) that
-            # the lint would then reject.
-            lb, ub = _default_bounds(value)
-            try:
-                positive = value is not None and float(value) > 0
-            except (TypeError, ValueError):
-                positive = False
-            scale, estimate = (LOG10 if positive else LIN), True
+        # Initial conditions are ESTIMATED by default (issue #90): a declared t=0 is only a guess,
+        # and freezing it hands the optimizer a value it can never correct (measured: a ~460 guess
+        # frozen where the truth is ~8090).
+        scale, lb, ub, estimate = _row_defaults(pid, value, direct, ic_params, exp_params)
         # One assignment, not one per column: a row added a column at a time is NaN in the rest,
         # which makes `estimate` float64, and pandas 3.1 refuses a bool there.
         problem.parameter_df.loc[
             pid, [PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]
         ] = [scale, lb, ub, value, estimate]
         added.append(pid)
+        if not estimate:
+            fixed.append(pid)
 
-    # Re-derive the convention on IC rows that ALREADY EXIST, from the value the model declares
-    # now — the add-loop above only reaches params in `valid - table_ids`. That covers a start
-    # re-declared at another value (e.g. states x_0..x_4 re-authored at 1), which the agent could
-    # not move: a parameters-arg edit sets bounds/scale only. A shipped row is left as the problem defined it, and an estimated
-    # row whose value is still neither 0 nor 1 keeps its fitted nominal and bounds. Restricted to
-    # DIRECT ICs (`<sid> = <param>`): a participant of a COMPOUND parametric IC (`Rec =
-    # ini_R1*ini_R2fold`) valued 1 is a fold / normalisation seed to estimate, not a
-    # unit-normalisation IC to fix.
+    # Re-derive the rows that ALREADY EXIST from the value the model declares now; the add-loop
+    # above only reaches params in `valid - table_ids`. A direct IC re-declared at another value
+    # (states x_0..x_4 re-authored at 1) moves, since a parameters-arg edit sets bounds/scale only.
+    # A row the convention fixed that is no longer a direct IC (a start folded into a compound one)
+    # is estimated again. A shipped row is left as the problem defined it, and an estimated row
+    # that stays estimated keeps its fitted nominal and bounds.
     df = problem.parameter_df
-    for pid in sorted((_direct_ic_parameter_ids(sm) & table_ids) - shipped_ids):
-        if pid not in df.index:
+    for pid in sorted((valid & table_ids) - shipped_ids):
+        estimated = is_parameter_estimated(problem, pid)
+        if estimated and pid not in direct:
             continue
         try:
             v0 = float(problem.model.get_parameter_value(pid))
         except (TypeError, ValueError):
             continue
-        scale, estimate = _ic_convention(v0)
-        estimated = is_parameter_estimated(problem, pid)
+        scale, lb, ub, estimate = _row_defaults(pid, v0, direct, ic_params, exp_params)
         if estimate and estimated:
             continue  # still a guess: its fitted nominal and bounds stand
         if not estimate and not estimated and df.get(NOMINAL_VALUE, {}).get(pid) == v0:
             continue
         # Bounds bracket the new nominal, as in the add-loop: stale positive-log10 seed bounds left
         # an empty-pool IC fixed at 0.0 with a lowerBound of 1e-4 ABOVE it.
-        lb, ub = _default_bounds(v0)
-        df.loc[pid, PARAMETER_SCALE] = scale
-        df.loc[pid, LOWER_BOUND] = lb
-        df.loc[pid, UPPER_BOUND] = ub
-        df.loc[pid, NOMINAL_VALUE] = v0
-        df.loc[pid, ESTIMATE] = estimate
+        df.loc[pid, [PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]] = [
+            scale,
+            lb,
+            ub,
+            v0,
+            estimate,
+        ]
+        if not estimate:
+            fixed.append(pid)
 
     for pid in sorted(table_ids - valid - keep_table):
         problem.parameter_df = problem.parameter_df.drop(index=pid)
         removed.append(pid)
 
-    return {"added": added, "removed": removed, "seeded": seeded, "carried": moved}
+    return {
+        "added": added,
+        "removed": removed,
+        "seeded": seeded,
+        "carried": moved,
+        "fixed": fixed,
+    }
 
 
 #: The species minted when a model would otherwise have none. Named to be obviously not the
@@ -2716,9 +2721,31 @@ def ensure_one_species(sm) -> bool:
     return True
 
 
+def declare_inputs(problem) -> list[str]:
+    """Declare each condition target the model does not, as a constant parameter at 0, and return
+    their ids. Every target must be a model entity, and a target was declared only by a reader: on
+    froehlich each of about 145 had to be written by hand, most runs lost their first edit to
+    "invalid targets", and removing an input's last reader was refused with no op to re-declare it
+    (PEtab-MCP#332). A target the model declares, as a species or otherwise, is left as it is. It
+    has no row (:func:`sync_parameter_table`), so it costs nothing in k; one nothing reads is named
+    by the unread-input lint (:func:`validation._unread_input_issues`)."""
+    sm = problem.model.sbml_model
+    declared = []
+    for tid in sorted(condition_target_symbols(problem)):
+        if sm.getElementBySId(tid) is not None:
+            continue
+        parameter = sm.createParameter()
+        parameter.setId(tid)
+        parameter.setValue(0.0)
+        parameter.setConstant(True)
+        declared.append(tid)
+    return declared
+
+
 def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) -> dict[str, Any]:
-    """Full reconciliation after a structural edit: promote local parameters, prune, parametric
-    ICs, table sync.
+    """Full reconciliation after a structural edit: promote local parameters, prune, declare the
+    condition inputs the model leaves out (:func:`declare_inputs`, returned as ``inputs``),
+    parametric ICs, table sync.
 
     Initial conditions are estimated by default; an IC of exactly 1 is held FIXED and an IC of
     exactly 0 gets no parameter at all (see :func:`ensure_parametric_initial_conditions`). ``shipped`` is the problem's original parameter table, so a
@@ -2736,6 +2763,7 @@ def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) 
     pruned = prune_orphans(problem)
     # AFTER the prune, or it would be pruned as the orphan it deliberately is.
     ensure_one_species(sm)
+    inputs = declare_inputs(problem)
     # Species whose IC is set per-condition (a condition target) are driven by the condition
     # table, not estimated — skip parametrising them (see ensure_parametric_initial_conditions).
     # `protect_ids` is the SHIPPED table's own ids: if the problem author shipped a `<sid>_init`
@@ -2749,4 +2777,4 @@ def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) 
             protect_ids=set(shipped.index) if shipped is not None else None,
         )
     synced = sync_parameter_table(problem, shipped=shipped, carried=carried)
-    return {"pruned": pruned, "parameters": synced}
+    return {"pruned": pruned, "parameters": synced, "inputs": inputs}

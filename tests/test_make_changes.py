@@ -110,6 +110,66 @@ def test_a_forks_dropped_parameter_warning_is_against_its_base(session):
     ]
 
 
+def _with_c(c_init: float) -> str:
+    """The toy model with a species `C` started at its own `C_init`, declared at ``c_init``."""
+    return _antimony(
+        "species C in compartment_;", "C = C_init;", f"C_init = {c_init};", "r3: B => C; k1 * B;"
+    )
+
+
+def test_a_start_held_fixed_by_value_is_named(session):
+    """REGRESSION (PEtab-MCP#325): a start re-declared at 1 was held fixed with no message, and
+    bounds sent for it were taken with none either (bachmann 10, 23). Both edits now say so."""
+    res = O.set_model(session, _with_c(1.0), justification="C starts normalised")
+    assert [w for w in res["warnings"] if w.startswith("Held FIXED")] == [
+        f"Held FIXED, not estimated: `C_init` = 1 (the start of `C`). {O._HELD_FIXED}"
+    ]
+    bounded = O.set_model(
+        session,
+        _with_c(1.0),
+        justification="box C's start",
+        parameters=[{"parameter_id": "C_init", "lower_bound": 0.1, "upper_bound": 10}],
+    )
+    assert any(w.startswith("`C_init` is FIXED at 1, so the bounds") for w in bounded["warnings"])
+    assert not any(w.startswith("Held FIXED") for w in bounded["warnings"])  # not moved again
+
+
+def test_a_fork_keeps_a_start_its_model_now_fixes(session):
+    """REGRESSION (PEtab-MCP#325): a fork restored its base's nominal over a row the reconcile had
+    just fixed, so bachmann 10's start re-declared at 1 was simulated fixed at the base's fitted
+    79.75, one parameter off k for free."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+
+    O.set_model(session, _with_c(5.0), justification="C starts at a guess")
+    session.problem.parameter_df.loc["C_init", NOMINAL_VALUE] = 79.75  # as the fit leaves it
+    base = session.problem.parameter_df.copy()
+    O.set_model(
+        session, _with_c(1.0), justification="fork: C normalised", restore_parameter_df=base
+    )
+    row = session.problem.parameter_df.loc["C_init"]
+    assert (float(row[NOMINAL_VALUE]), bool(row[ESTIMATE])) == (1.0, False)
+
+
+def test_a_log_scale_refusal_names_the_kept_fitted_value(session):
+    """REGRESSION (PEtab-MCP#325): a kept row's fitted value refused log10 with advice for an
+    initial condition, on a rate constant the model re-declared at 0.5 (haiku lucarelli 4)."""
+    from petab.v2.C import NOMINAL_VALUE
+
+    O.set_model(session, _antimony("r3: A => ; k3 * A;", "k3 = -0.1;"), justification="k3")
+    session.problem.parameter_df.loc["k3", NOMINAL_VALUE] = -0.03  # as the fit leaves it
+    with pytest.raises(OperationError) as err:
+        O.set_model(
+            session,
+            _antimony("r3: A => ; k3 * A;", "k3 = 0.5;"),
+            justification="k3 on log10",
+            parameters=[
+                {"parameter_id": "k3", "scale": "log10", "lower_bound": 1e-3, "upper_bound": 10}
+            ],
+        )
+    assert "-0.03 is its row's fitted value, not the 0.5 the model declares" in str(err.value)
+    assert "initial-condition" not in str(err.value)
+
+
 def test_parameters_can_target_a_newly_introduced_parameter(session):
     """The parameter edit runs AFTER the reconcile, so it can bound a symbol this very re-author
     introduced — the whole point of taking both in one call."""
@@ -1835,15 +1895,15 @@ def test_a_condition_input_stated_as_an_agent_is_told_to_move_to_the_binding(
     assert 'drop it from the statement and read it in the binding, `k="k*EGF"`' in out["error"]
 
 
-def test_an_unread_condition_input_is_reported_before_an_unknown_bound(tmp_path, add_condition):
-    """The bounds block's "Unknown parameter id" masked the unread condition target behind it,
-    3 calls in one isensee run (#193)."""
+def test_a_condition_input_no_row_reads_blocks_nothing(tmp_path, add_condition):
+    """`EGF`, read by no row, was refused as an invalid target, ahead of an unknown bound (#193).
+    The reconcile declares it now (PEtab-MCP#332), so the bound is the one error."""
     out = _call(_input_server(tmp_path, add_condition), "make_changes", {
         "justification": "A becomes B", "statements": [_statement_row()],
         "bindings": {"conv": "mass_action"},
         "parameters": [{"parameter_id": "nope", "lower_bound": 1e-3, "upper_bound": 1e3}]})
     assert out["applied"] is False
-    assert "invalid targets" in out["error"] and "Unknown parameter id" not in out["error"]
+    assert "Unknown parameter id 'nope'" in out["error"] and "invalid targets" not in out["error"]
 
 
 def _serum_call(mcp, amount, rows=()):
@@ -2381,18 +2441,6 @@ def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
     description = next(t for t in tools if t.name == "make_changes").description
     assert "NOTHING is bound" in description and "`statement_edits`" in description
     assert "statement_edits" in _make_changes_schema(mcp)
-
-
-def test_an_unread_condition_target_is_explained():
-    """The hint said the model "must have it: read it as …", which froehlich leads took for a
-    refusal of every unread input: it must be declared, and need not be read (PEtab-MCP#290)."""
-    from petab_mcp.operations import _rejection_summary
-    from petab_mcp.validation import INPUT_UNREAD
-
-    text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
-    assert "{'rit'}" in text and "input the condition table SETS" in text
-    assert "must declare it under its id" in text and text.endswith(INPUT_UNREAD)
-    assert "SETS" not in _rejection_summary(["something else"])
 
 
 # -- readouts, bindings and written mechanisms -------------------------------------------
