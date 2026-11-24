@@ -1245,7 +1245,8 @@ switch-like term), not more starts. Starts multiply the fit's wall time, and do 
 that run out of the per-start time limit (`ExitFlag.MAXTIME`).
 
 A REFIT is a call with no model route: `parameters` and/or `n_starts` alone fit the current \
-model again (version N's with `base_version=N`) as a new version. One with neither new bounds nor more starts than that model ran is refused.
+model again (version N's with `base_version=N`) as a new version. One with neither new bounds nor more starts than that model ran is refused, and so is \
+one with more starts but no new bounds after that model's fit warned that more starts will not help (a needle, or most starts out of time).
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
 working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \

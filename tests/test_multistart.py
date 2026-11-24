@@ -462,6 +462,10 @@ def test_a_fit_whose_starts_mostly_run_out_of_time_says_more_starts_will_not_hel
     assert any(
         "3 of 3 starts ran out of the 0s" in w and "More starts" in w for w in out["warnings"]
     )
+    # ... and the de-dup holds it to that: the same model at more starts is not refit (gemot#165).
+    assert fit_session.provenance.get_meta(out["version"])["more_starts_futile"] == "maxtime"
+    again = fit_session.fit(n_starts=4)
+    assert again["no_change"] is True and "per-start time limit" in again["message"]
 
 
 def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
@@ -470,7 +474,7 @@ def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
     """dessauges raised `n_starts` step by step to 8000, each fit with 1 start at the best
     (PEtab-MCP#287): a raised fit that still leaves 1 or 2 there says the optimum is a needle. One
     at the default does not, since there a raise is still the advice, and neither does one where
-    those are half the starts or more."""
+    those are half the starts or more. A needle is not refit with more starts (gemot#165)."""
     real, at_best = fitting.fit_and_simulate, {"n": 1}
 
     def forced_at_best(*args, **kwargs):
@@ -480,10 +484,13 @@ def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
 
     monkeypatch.setattr(fitting, "fit_and_simulate", forced_at_best)
     assert not any("needle" in w for w in fit_session.fit()["warnings"])
-    raised = fit_session.fit(n_starts=3)
-    assert any("1 of 3 starts reached" in w and "needle" in w for w in raised["warnings"])
     at_best["n"] = 2
     assert not any("needle" in w for w in fit_session.fit(n_starts=4)["warnings"])
+    at_best["n"] = 1
+    raised = fit_session.fit(n_starts=5)
+    assert any("1 of 5 starts reached" in w and "needle" in w for w in raised["warnings"])
+    again = fit_session.fit(n_starts=6)
+    assert again["no_change"] is True and "needle" in again["message"]
 
 
 def test_a_refit_at_the_cap_is_not_offered_more_starts(fit_session):

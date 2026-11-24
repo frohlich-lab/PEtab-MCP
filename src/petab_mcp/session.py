@@ -1610,8 +1610,10 @@ class PetabSession:
         current fitted version the refit is skipped and the stored metrics are returned
         (``committed: false, no_change: true``); a model identical to an EARLIER fitted version is
         refused, naming it, and HEAD stays put — in both cases unless this fit runs MORE
-        multistarts than that version did, which is a more thorough search and does run; and the
-        same structure fitted too many times is refused, to break an unproductive loop.
+        multistarts than that version did, which is a more thorough search and does run, except
+        where that version's fit warned that more starts will not help (most of its starts out of
+        time, or a raised fit's needle); and the same structure fitted too many times is refused,
+        to break an unproductive loop.
         """
         from . import fitting, identifiability
         from .operations import _compile_fit_failure_message
@@ -1664,11 +1666,15 @@ class PetabSession:
                     f"cap: {killed} of {starts}. They count as failed starts, and the fit is "
                     f"scored from the other {starts - killed}.",
                 ]
-            # Most starts out of time: Fides' MAXTIME, or stopped past the cap.
+            # Most starts out of time: Fides' MAXTIME, or stopped past the cap. Either warning
+            # below is also recorded on the version (`more_starts_futile`), so the de-dup refuses
+            # this model a refit with more starts (dedup.MORE_STARTS_FUTILE).
+            futile = None
             timed_out = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.MAXTIME", 0) + (
                 killed or 0
             )
             if 2 * timed_out > starts:
+                futile = "maxtime"
                 warnings = [
                     *warnings,
                     f"{timed_out} of {starts} starts ran out of the "
@@ -1684,6 +1690,7 @@ class PetabSession:
                 and (at_best := fitsim.get("n_starts_at_best")) in (1, 2)
                 and 2 * at_best < starts - (killed or 0)
             ):
+                futile = "needle"
                 warnings = [
                     *warnings,
                     f"{fitsim['n_starts_at_best']} of {starts} starts reached the best value, "
@@ -1794,9 +1801,11 @@ class PetabSession:
             version = self._snapshot_version(
                 model_ant=child_model_ant,
                 meta={  # Recorded so a later fit can tell whether it would search HARDER than this
-                    # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
+                    # one did, and whether that could help (see `_fit_dedup`) — the
+                    # structure/setup hashes both ignore it.
                     "n_starts": fitsim.get("n_starts"),
                     "n_starts_killed": fitsim.get("n_starts_killed"),
+                    "more_starts_futile": futile,
                     "fit_status": fitsim.get("status"),
                     "neg_log_likelihood": nllh,
                     "chi2": fitsim.get("chi2"),

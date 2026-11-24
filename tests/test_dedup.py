@@ -266,6 +266,21 @@ def test_decide_refits_an_earlier_version_to_search_harder():
     assert any("identical to v1" in w and "against its 2" in w for w in d["warnings"])
 
 
+@pytest.mark.parametrize("futile", sorted(D.MORE_STARTS_FUTILE))
+def test_decide_refuses_more_starts_where_the_fit_said_they_will_not_help(futile):
+    """REGRESSION (gemot#165): leads refit a model at 300 starts right after its fit said most
+    starts ran out of time and more would not fix that, and got the same nll for 113 CPU-h. A
+    version whose fit said so stands for a raise as for a repeat: the skip and the refusal say why
+    and offer new bounds only, and new bounds still refit it."""
+    reg = _reg((1, "X", 1.0), (2, "Y", 1.0))
+    reg[0]["more_starts_futile"] = futile
+    for head_version, action in ((1, "skip"), (2, "refuse")):
+        d = _decide(reg, starts=20, head_version=head_version)
+        assert d["action"] == action and d["duplicate_of"] == 1
+        assert D.MORE_STARTS_FUTILE[futile] in d["message"] and "`n_starts`" not in d["message"]
+    assert _decide(reg, setup=NEW_SETUP, starts=20, head_version=2)["action"] == "proceed"
+
+
 def test_decide_warns_on_worse_family():
     # Structure X's best bic (20) is far worse than the global best (1, at v2).
     d = _decide(_reg((1, "X", 20.0), setup=NEW_SETUP) + _reg((2, "Y", 1.0)), head_version=2)

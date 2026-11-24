@@ -42,9 +42,24 @@ MAX_IDENTICAL_REAUTHORS = 3
 WORSE_SCORE_MARGIN = 5.0
 
 
-def _refit(ran: int | None, max_starts: int) -> str:
-    """How the refusals below say a model that ran ``ran`` starts is refitted (``make_changes``
-    with no model route): new bounds, or more starts unless it already ran the cap."""
+#: Why a version's fit said more starts will not help, keyed by the ``more_starts_futile`` code
+#: :meth:`~petab_mcp.session.PetabSession.fit` records on it beside that warning. Such a version
+#: stands for a refit of its model with MORE starts, as every fitted version does for one with as
+#: many (:func:`decide`): leads refit a model at 300 starts right after its fit said that, and
+#: got the same nll for 113 CPU-h (gemot#165). New bounds still refit it.
+MORE_STARTS_FUTILE = {
+    "maxtime": "most of its starts ran out of the per-start time limit, which more starts hit too",
+    "needle": "its raised fit left only 1 or 2 starts at the best, so the optimum is a needle",
+}
+
+
+def _refit(twin: dict[str, Any], max_starts: int) -> str:
+    """How the refusals below say ``twin``'s model is refitted (``make_changes`` with no model
+    route): new bounds, or more starts unless it already ran the cap or its fit said more starts
+    will not help."""
+    if why := MORE_STARTS_FUTILE.get(twin.get("more_starts_futile")):
+        return f"give it new bounds (`parameters`): {why}"
+    ran = twin.get("n_starts")
     if isinstance(ran, int) and ran >= max_starts:
         return (
             f"give it new bounds (`parameters`): it ran {ran} starts, and `n_starts` is capped "
@@ -105,9 +120,10 @@ def reauthor_key(structure_hash: str, parameter_df, starts: int) -> str:
 
 
 def build_registry(session) -> list[dict[str, Any]]:
-    """Prior versions as ``{version, structure_hash, setup, fitted, n_starts,
+    """Prior versions as ``{version, structure_hash, setup, fitted, n_starts, more_starts_futile,
     neg_log_likelihood, score, criterion}`` dicts, read from each version's stored meta and
-    parameter table; ``n_starts`` counts the starts its fit completed (:func:`_completed`).
+    parameter table; ``n_starts`` counts the starts its fit completed (:func:`_completed`), and
+    ``more_starts_futile`` is a :data:`MORE_STARTS_FUTILE` code or ``None``.
 
     ``score`` is the version's value under the session's criterion (see
     :meth:`criteria.Criterion.score_of`) — ``None`` for a version stored without one, which just
@@ -146,6 +162,7 @@ def build_registry(session) -> list[dict[str, Any]]:
                 "setup": setup,
                 "fitted": meta.get("fit_status") == "fit",
                 "n_starts": _completed(meta),
+                "more_starts_futile": meta.get("more_starts_futile"),
                 "neg_log_likelihood": meta.get("neg_log_likelihood"),
                 "score": criterion.score_of(meta),
                 "criterion": criterion.name,
@@ -220,10 +237,14 @@ def decide(
     # the fit would reproduce it. Unless this fit searches HARDER than that one did — neither hash
     # sees the multistart count, and standing in for a bigger multistart would return the weaker
     # metrics for a deliberate "fit harder". A version with no int `n_starts` (a rollback
-    # snapshot, one written before it was recorded) is unknown rather than smaller, so it stands.
+    # snapshot, one written before it was recorded) is unknown rather than smaller, so it stands,
+    # and so does one whose fit said more starts will not help (MORE_STARTS_FUTILE).
     twins = [r for r in matches if r.get("fitted") and r.get("setup") == setup]
     standing = [
-        r for r in twins if not (isinstance(r.get("n_starts"), int) and starts > r["n_starts"])
+        r
+        for r in twins
+        if r.get("more_starts_futile")
+        or not (isinstance(r.get("n_starts"), int) and starts > r["n_starts"])
     ]
     if head := next((r for r in standing if r.get("version") == head_version), None):
         return {
@@ -233,7 +254,7 @@ def decide(
             "message": (
                 f"This model is identical to the current version (v{head_version}); the fit was "
                 "not re-run (its metrics are unchanged). To improve the fit, "
-                f"change the STRUCTURE, or {_refit(head.get('n_starts'), max_starts)}; an earlier "
+                f"change the STRUCTURE, or {_refit(head, max_starts)}; an earlier "
                 "model you already committed is kept regardless."
             ),
         }
@@ -246,7 +267,7 @@ def decide(
             "message": (
                 f"This model is identical to v{k}, which is fitted, kept and scored; it was not "
                 f"re-fitted and no version was made. To build on it, send your next change with "
-                f"`base_version={k}`; to refit it, {_refit(twin.get('n_starts'), max_starts)}."
+                f"`base_version={k}`; to refit it, {_refit(twin, max_starts)}."
             ),
         }
 
