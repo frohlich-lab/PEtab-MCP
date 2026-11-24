@@ -177,9 +177,9 @@ def test_a_duplicate_reaction_id_changing_the_stoichiometry_says_to_remove_it_fi
 
 
 def test_remove_reaction_without_an_id_says_it_needs_one():
-    """It answered "no reaction ''" (5 runs, #284)."""
+    """It answered "no reaction ''" (5 runs, #284). An id in `antimony` is taken (#341)."""
     with pytest.raises(OperationError, match="remove_reaction needs `id`"):
-        me.apply_model_edits(SRC, [{"op": "remove_reaction", "antimony": "fwd"}])
+        me.apply_model_edits(SRC, [{"op": "remove_reaction"}])
 
 
 def test_set_initial_writes_the_initial_value_of_a_reaction_species():
