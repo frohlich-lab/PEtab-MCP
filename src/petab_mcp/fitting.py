@@ -56,6 +56,7 @@ from .problem import (
     PARAMETER_SCALE,
     V1_PREEQUILIBRATION_CONDITION_ID,
     V1_SIMULATION_CONDITION_ID,
+    observable_transformation,
     scale,
     split_overrides,
     unscale,
@@ -1448,25 +1449,18 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
                 "every species in a ratio starts at 0) or a log of 0. "
                 "Define each readout so it holds at every measured time, t=0 included."
             )
+        if low := _log_readouts_not_positive(session, before.get("simulations") or []):
+            raise ModelUpdateError(
+                "the fit produced NO usable optimum: every multistart failed, and at the nominal "
+                f"values readouts with log noise are 0 or below where measured: {low}"
+            )
         where = (
             "The objective is finite at the nominal values, but no start ended on a finite one"
             if objective_before is not None
             else "The objective was non-finite at EVERY start"
         )
         raise ModelUpdateError(
-            "the fit produced NO usable optimum: every multistart failed, so the best result "
-            f"carries no parameter vector. {where} — a "
-            "property of the problem, not the optimizer. There are two causes and they need "
-            "OPPOSITE fixes, so check which one this is BEFORE editing — the fitting log tells "
-            "them apart (have it read if you cannot read it yourself): (a) the SIMULATION "
-            "fails — 'FORWARD_FAILURE' / 'AMICI simulation failed' appears in the log; the ODE "
-            "is non-integrable or extremely stiff, usually from the last structural change (a "
-            "new pool with no sink, a rate at an extreme default, or writing into a symbol the "
-            "observables use as a normalisation constant), and re-initialising species will NOT "
-            "help. (b) the simulation succeeds but the OBSERVABLE is undefined — a "
-            "log-transformed observable reaching 0 or negative at a measured time (a species "
-            "started at exactly 0 and measured at t=0 gives log10(0) = -inf); there, fixing the "
-            "initial value or the bound that admits it IS the fix."
+            _every_start_failed(session, where, *_failed_starts(session, engine, problem, result))
         )
     df = session.problem.parameter_df
     nllh = float(best["fval"])
@@ -1568,6 +1562,167 @@ def _undefined_points(session, records: list[dict[str, Any]]) -> str:
     return "; ".join(parts)
 
 
+def _every_start_failed(session, where: str, starts: str, shown: str | None) -> str:
+    """The refusal of a fit every start of which failed, for none of the named causes: ``where``
+    the objective was not finite, what the ``starts`` report, and the cause they show (``shown``,
+    see :func:`_failed_starts`). It names that cause, else both, whose fixes are opposite, and the
+    powers of states (:func:`state_powers`). The example of a species at 0 measured at t=0 is given
+    only where a log-noise observable is measured at t=0: elsewhere it sent blasi 63612603_5 to
+    re-initialise species (PEtab-MCP#327)."""
+    mdf, odf = session.problem.measurement_df, session.problem.observable_df
+    at_zero = any(
+        observable_transformation(odf, o) == LOG for o in mdf.loc[mdf[TIME] == 0, OBSERVABLE_ID]
+    )
+    simulation = (
+        "the SIMULATION fails: the ODE is non-integrable or extremely stiff, usually from the last "
+        "structural change (a new pool with no sink, a rate at an extreme default, or writing into "
+        "a symbol the observables use as a normalisation constant), and re-initialising species "
+        "will NOT help"
+    )
+    readout = (
+        "the simulation succeeds but a READOUT is undefined at a measured time: one with log noise "
+        "at 0 or below"
+        + (
+            " (a species started at exactly 0 and measured at t=0 gives log(0) = -inf)"
+            if at_zero
+            else ""
+        )
+        + ", or a 0/0; there, fixing the initial value, rate law or bound that admits it IS the fix"
+    )
+    if shown == "simulation":
+        which = f"That is the first of two causes: {simulation}."
+    elif shown == "readout":
+        which = f"That is the second of two causes: {readout}."
+    else:
+        which = (
+            f"There are two causes and they need OPPOSITE fixes: (a) {simulation}. (b) {readout}."
+        )
+    powers = state_powers(session)
+    return (
+        "the fit produced NO usable optimum: every multistart failed, so the best result carries "
+        f"no parameter vector. {where} — a property of the problem, not the optimizer. {starts} "
+        + which
+        + (f" {powers}" if powers else "")
+    )
+
+
+#: How many failed starts an all-failed fit's refusal re-simulates at their start points.
+FAILED_STARTS_RESIMULATED = 3
+
+
+def _failed_starts(session, engine, problem, result) -> tuple[str, str | None]:
+    """What the starts of an all-failed ``result`` report, and the cause that shows: ``(text,
+    cause)``, the cause ``"simulation"`` where AMICI failed at a start point, ``"readout"`` where
+    every experiment simulated there but a readout is not a number, else ``None``.
+
+    The text counts the starts by exit flag, with the first message of each, and re-simulates up to
+    :data:`FAILED_STARTS_RESIMULATED` distinct start points with the gradient, as Fides first
+    evaluated them: a start that ended with no value failed there. It names each experiment AMICI
+    failed in, with its status (:func:`amici_failures`), else the readouts that are not a number.
+    The fitting log holds none of this: AMICI writes to stderr, and on a fit pool the log held
+    nothing of the failed starts (blasi 63612603_5, PEtab-MCP#327)."""
+    import numpy as np
+    from pypesto.C import RDATAS
+
+    flags: dict[str, list] = {}
+    for start in result.optimize_result.list:
+        flag = start.get("exitflag")
+        key = "raised" if flag == -1 else str(flag).removeprefix("ExitFlag.")
+        flags.setdefault(key, [0, start.get("message")])[0] += 1
+    text = "Its starts: " + "; ".join(
+        f"{n} ended {key}" + (f" ({str(message)[:120]})" if message else "")
+        for key, (n, message) in flags.items()
+    )
+    free = getattr(problem, "x_free_indices", None)
+    seen: set[tuple] = set()
+    failed: list[str] = []
+    readouts: list[str] = []
+    for start in result.optimize_result.list:
+        if len(seen) == FAILED_STARTS_RESIMULATED:
+            break
+        x = start.get("x0")
+        if x is None:
+            continue
+        x = np.asarray(x, dtype=float)
+        if free is not None and len(x) == problem.dim_full:
+            x = x[list(free)]
+        if (key := tuple(np.round(x, 10))) in seen:
+            continue
+        seen.add(key)
+        try:
+            rdatas = problem.objective(x, sensi_orders=(0, 1), return_dict=True)[RDATAS]
+        except Exception:  # noqa: BLE001 - the refusal stands without this start's evidence
+            continue
+        if found := amici_failures(rdatas):
+            failed += [f for f in found if f not in failed]
+            continue
+        records = engine._simulation_records(problem.objective, rdatas)
+        if low := _log_readouts_not_positive(session, records):
+            readouts.append(f"readouts with log noise are 0 or below where measured: {low}")
+        elif undefined := _undefined_points(session, records):
+            readouts.append(f"readouts are not a number at measured points: {undefined}.")
+    at = f"Re-simulated at {len(seen)} of their start points"
+    if failed:
+        shown = "; ".join(failed[:3]) + ("; ..." if len(failed) > 3 else "")
+        return f"{text}. {at}, AMICI fails: {shown}.", "simulation"
+    if readouts:
+        return f"{text}. {at}, every experiment simulates, but {readouts[0]}", "readout"
+    return f"{text}.", None
+
+
+def amici_failures(rdatas) -> list[str]:
+    """Each experiment of ``rdatas`` whose simulation failed, as "`id` ends STATUS (AMICI's last
+    message)". AMICI writes these to its own logger, on stderr, which on a fit pool's worker
+    reaches no log the agent can read (PEtab-MCP#327)."""
+    from amici.sim.sundials import AMICI_SUCCESS, simulation_status_to_str
+
+    out = []
+    for rd in rdatas:
+        if rd.status == AMICI_SUCCESS:
+            continue
+        said = [m.message for m in rd.messages]
+        detail = f" ({said[-1][:160]})" if said else ""
+        out.append(f"`{rd.id}` ends {simulation_status_to_str(rd.status)}{detail}")
+    return out
+
+
+def _log_readouts_not_positive(session, records: list[dict[str, Any]]) -> str:
+    """The measured points of an observable with log noise whose readout is 0 or below, by
+    observable with the lowest value and the times, and the likely origin of each; ``""`` when
+    there are none. Its likelihood takes the readout's log, which is not a number there: blasi
+    63612603_5 lost five fits to readouts its zero-order rate laws drove below 0 (PEtab-MCP#327)."""
+    obs = session.problem.observable_df
+    low = [
+        r
+        for r in records
+        if r.get("measurement") is not None
+        and r.get("simulation") is not None
+        and r["simulation"] <= 0
+        and observable_transformation(obs, r["observable_id"]) == LOG
+    ]
+    if not low:
+        return ""
+    parts = []
+    for obs_id in sorted({str(r["observable_id"]) for r in low}):
+        mine = [r for r in low if str(r["observable_id"]) == obs_id]
+        times = sorted({r["time"] for r in mine})
+        shown = ", ".join(f"t={t:g}" for t in times[:4]) + (", ..." if len(times) > 4 else "")
+        parts.append(f"`{obs_id}` (down to {min(r['simulation'] for r in mine):g}, at {shown})")
+    origins = []
+    if any(r["time"] == 0 and r["simulation"] == 0 for r in low):
+        origins.append("a readout of 0 at t=0 reads a species that starts at 0")
+    if any(r["simulation"] < 0 for r in low):
+        origins.append(
+            "one below 0 reads a species a rate consumes without reading it (`A -> ; k`, not "
+            "`A -> ; k*A`)"
+        )
+    origin = "; ".join(origins)
+    return (
+        f"{'; '.join(parts)}: under log noise the likelihood takes the readout's log, which is not "
+        "a number at 0 or below." + (f" {origin[:1].upper()}{origin[1:]}." if origin else "")
+    )
+
+
 def _non_finite(session, rdatas) -> str:
     """What AMICI's check for values that are not finite caught in ``rdatas``: the expression as
     written (an assignment rule, or a reaction's rate), else the state whose rate of change, with
@@ -1612,13 +1767,10 @@ def _non_finite(session, rdatas) -> str:
 
 def _non_finite_gradient(session, problem) -> str:
     """Where the objective is finite at the nominal point and its gradient is not, what the
-    gradient fails on: each power of a state that reaches 0 or below there to an estimated exponent,
-    else the parameters whose derivative is not finite; ``""`` when the gradient is finite. Below 0
-    a power with a non-integer exponent is not a number, and at 0 one with an exponent below 1 has
-    an infinite slope (AMICI writes the derivative in the exponent as 0 at a base of exactly 0).
-    bachmann 78 lost every start on a finite objective, was told the objective was non-finite at
-    every start, and read that as the mechanism refuted (PEtab-MCP#285)."""
-    import libsbml
+    gradient fails on: each power of a state that reaches 0 or below there to an estimated exponent
+    (:func:`state_powers`), else the parameters whose derivative is not finite; ``""`` when the
+    gradient is finite. bachmann 78 lost every start on a finite objective, was told the objective
+    was non-finite at every start, and read that as the mechanism refuted (PEtab-MCP#285)."""
     import numpy as np
     from pypesto.C import FVAL, GRAD, RDATAS
 
@@ -1633,32 +1785,63 @@ def _non_finite_gradient(session, problem) -> str:
             states = np.vstack([np.atleast_2d(rd.x0), np.atleast_2d(rd.x)])
             for sid, col in zip(rd.state_ids, states.T):
                 lowest[sid] = min(lowest.get(sid, np.inf), float(np.nanmin(col)))
-    low = {sid for sid, value in lowest.items() if value <= 0}
-    wp = session.problem
-    estimated = {str(p) for p in wp.parameter_df.index if _reconcile.is_parameter_estimated(wp, p)}
-    found = []
-    for node in _reconcile._math_nodes(wp.model.sbml_model):
-        if node.getType() not in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
-            continue
-        base = sorted(_reconcile._ast_names(node.getChild(0)) & low)
-        exponent = sorted(_reconcile._ast_names(node.getChild(1)) & estimated)
-        if base and exponent:
-            reaches = ", ".join(f"`{b}` reaches {lowest[b]:g}" for b in base)
-            found.append(
-                f"`{libsbml.formulaToL3String(node)}` raises a base that is not above 0 ({reaches})"
-                f" to the estimated `{'`, `'.join(exponent)}`"
-            )
-    if found:
-        return (
-            "; ".join(dict.fromkeys(found)) + ". Below 0 a power with a non-integer exponent is "
-            "not a number, and at 0 one with an exponent below 1 has no finite slope: keep that "
-            "base above 0, or write the exponent as a number."
-        )
+    if found := state_powers(session, {s: v for s, v in lowest.items() if v <= 0}):
+        return found
     free = [problem.x_names[i] for i in getattr(problem, "x_free_indices", range(len(grad)))]
     if len(free) == len(grad) and np.isfinite(grad).any():
         bad = [name for name, g in zip(free, grad) if not np.isfinite(g)]
         return f"Its derivative in `{'`, `'.join(bad)}` is not a number there."
     return "The simulation with sensitivities fails there."
+
+
+def state_powers(session, low: dict[str, float] | None = None) -> str:
+    """Each power in the model whose base reads a state and whose exponent an estimated
+    parameter, and what to send instead; ``""`` when there is none. ``low`` (a state's lowest
+    value, where it reached 0 or below) keeps only the powers of those states, saying how low.
+    Below 0 a power with a non-integer exponent is not a number, and at 0 one with an exponent below
+    1 has an infinite slope (AMICI writes the derivative in the exponent as 0 at a base of exactly
+    0). Read for a fit any of whose starts ended NOT_FINITE (``PetabSession.fit``), and where every
+    start failed on a gradient (:func:`_non_finite_gradient`)."""
+    import libsbml
+
+    wp = session.problem
+    sm = wp.model.sbml_model
+    states = (
+        set(low)
+        if low is not None
+        else {s.getId() for s in sm.getListOfSpecies() if not s.getConstant()}
+        | {r.getVariable() for r in sm.getListOfRules() if r.isRate()}
+    )
+    estimated = {str(p) for p in wp.parameter_df.index if _reconcile.is_parameter_estimated(wp, p)}
+    found = []
+    for node in _reconcile._math_nodes(sm):
+        if node.getType() not in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+            continue
+        base = sorted(_reconcile._ast_names(node.getChild(0)) & states)
+        exponent = sorted(_reconcile._ast_names(node.getChild(1)) & estimated)
+        if base and exponent:
+            what = (
+                f"a base that is not above 0 ({', '.join(f'`{b}` reaches {low[b]:g}' for b in base)})"
+                if low is not None
+                else f"the state{'s' if len(base) > 1 else ''} {_names(base)}"
+            )
+            found.append(
+                f"`{libsbml.formulaToL3String(node)}` raises {what} to the estimated "
+                f"{_names(exponent)}"
+            )
+    if not found:
+        return ""
+    return (
+        "; ".join(dict.fromkeys(found)) + ". Below 0 a power with a non-integer exponent is "
+        "not a number, and at 0 one with an exponent below 1 has no finite slope: keep that "
+        "base above 0, or write the exponent as a number."
+    )
+
+
+def _names(ids: list[str], limit: int = 3) -> str:
+    """``ids`` in backticks, comma-separated, the first ``limit`` and how many more."""
+    shown = ", ".join(f"`{i}`" for i in ids[:limit])
+    return shown + (f" and {len(ids) - limit} more" if len(ids) > limit else "")
 
 
 def _reconcile_objective(

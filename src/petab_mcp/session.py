@@ -35,6 +35,7 @@ from .constants import (
 )
 from .data_access import residual_flag, residual_structure_rollup
 from .errors import (
+    FitBackendError,
     FitCancelledError,
     InfrastructureError,
     ModelUpdateError,
@@ -1651,7 +1652,7 @@ class PetabSession:
                     error = disk_full_error(exc, build_root) or ModelUpdateError(
                         _compile_fit_failure_message(exc)
                     )
-                if isinstance(error, (InfrastructureError, FitCancelledError)):
+                if isinstance(error, (InfrastructureError, FitCancelledError, FitBackendError)):
                     self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
                 if error is exc:
                     raise
@@ -1690,18 +1691,32 @@ class PetabSession:
                     f"though this fit ran more than the default {self.auto_fit_starts}: "
                     f"{_NEEDLE_ADVICE}.",
                 ]
-            # Most starts stopped on a value that is not a number (PEtab-MCP#285).
+            # Starts stopped on a value that is not a number (PEtab-MCP#285), and the powers of
+            # states that make one, at any share: fujita's ran 6-25% NOT_FINITE with nothing said,
+            # and the same powers went NaN in its held-out pulses (PEtab-MCP#323).
             not_finite = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.NOT_FINITE", 0)
-            if 2 * not_finite > starts:
-                warnings = [
-                    *warnings,
+            if not_finite:
+                most = 2 * not_finite > starts
+                text = (
                     f"{not_finite} of {starts} starts ended NOT_FINITE: the objective or its "
-                    "gradient was not a number where they went, so this score comes from the "
-                    f"other {starts - not_finite} and need not be the best this structure fits. "
+                    "gradient was not a number where they went"
+                )
+                if most:
+                    text += (
+                        f", so this score comes from the other {starts - not_finite} and need "
+                        "not be the best this structure fits"
+                    )
+                causes = fitting.state_powers(self) or (
                     "Usual causes: a power with an estimated exponent of a state that goes "
-                    "below 0, a rate that is 0/0 somewhere in the bounds, or bounds wide enough to "
-                    "blow the ODE up. Fix that before judging the structure on this fit.",
-                ]
+                    "below 0, a rate that is 0/0 somewhere in the bounds, or bounds wide enough "
+                    "to blow the ODE up."
+                    if most
+                    else ""
+                )
+                text = f"{text}. {causes}".strip()
+                if most:
+                    text += " Fix that before judging the structure on this fit."
+                warnings = [*warnings, text]
 
             staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")
