@@ -800,10 +800,23 @@ def test_an_unscored_fit_under_a_source_that_breaks_a_total_names_it(dosed_sessi
     nllh, note = fitting._reconcile_objective(dosed_session, {"neg_log_likelihood": 10.0}, sim)
     assert nllh is None
     if sink:
-        assert "fault in how the server evaluates" in note
+        assert "Neither value judges the structure" in note and "server" not in note
     else:
         assert "pre-equilibration has no steady state to reach: `r3` (`-> B; kb * A`)" in note
         assert "server" not in note
+
+
+def _without_steady_state(session, build_root) -> None:
+    """``session`` holds ``_SOURCED`` without a sink, fitting 2 starts, with only ``kb`` free. Its
+    total then grows at no less than ``kb * k2 / (k1 + k2)`` >= 1.7e-4 from every start, which
+    no pre-equilibration converges on; with ``k1`` and ``k2`` free, a start at ``k2`` ~ 1e-4 and
+    ``k1`` ~ 80 grew slowly enough for one to (CI on PEtab-MCP#358)."""
+    from petab_mcp.engine import AmiciEngine
+
+    O.set_model(session, _SOURCED.format(sink=""), justification="basal flux")
+    session.problem.parameter_df.loc[["k1", "k2"], "estimate"] = False
+    session.engine = AmiciEngine(session, build_root=str(build_root))
+    session.auto_fit_starts = 2
 
 
 def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
@@ -811,13 +824,33 @@ def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
 ):
     """#285: the same source fails every start where no pre-equilibration converges, which the
     refusal read as an ODE that will not integrate or an undefined readout."""
-    from petab_mcp.engine import AmiciEngine
-
-    O.set_model(dosed_session, _SOURCED.format(sink=""), justification="basal flux")
-    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
-    dosed_session.auto_fit_starts = 2
+    _without_steady_state(dosed_session, amici_build_root)
     with pytest.raises(ModelUpdateError, match="no steady state to reach: `r3` "):
         dosed_session.fit()
+
+
+@pytest.mark.parametrize(
+    ("sink", "named"),
+    [
+        ("kd * dose * B", "`r3` (`-> B; kb * A`, where condition `pre` stops `r4`)"),
+        ("kd * (1 + dose) * B", None),
+    ],
+)
+def test_a_sink_a_pre_equilibration_condition_stops_leaves_no_steady_state(
+    dosed_session, sink, named
+):
+    """#335: raimundez 86's receptor had a sink, but a pre-equilibration condition switched it
+    off, so its source grew there with no steady state. The static check saw the sink; this one
+    reads each pre-equilibration's conditions (`pre` sets `dose` to 0)."""
+    from petab_mcp import fitting
+
+    model = _SOURCED.format(sink=f"  kd = 0.1;\n  r4: B => ; {sink};\n")
+    O.set_model(dosed_session, model, justification="gated sink")
+    assert fitting._sources_breaking_totals(dosed_session.problem) == ([named] if named else [])
+    if named:
+        sim = {"neg_log_likelihood": 12.0, "n_missing_simulations": 0, "n_expected_points": 6}
+        _, note = fitting._reconcile_objective(dosed_session, {"neg_log_likelihood": 10.0}, sim)
+        assert f"no steady state to reach: {named} makes a species from nothing" in note
 
 
 def test_a_power_of_a_state_to_an_estimated_exponent_is_named(dosed_session):
@@ -1012,11 +1045,8 @@ def test_every_failed_start_is_re_simulated_and_its_amici_status_named(
     of them. Without the source check (see the test above), the refusal reaches its general form,
     which now carries AMICI's status where the starts began and names the one cause it shows."""
     from petab_mcp import fitting
-    from petab_mcp.engine import AmiciEngine
 
-    O.set_model(dosed_session, _SOURCED.format(sink=""), justification="basal flux")
-    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
-    dosed_session.auto_fit_starts = 2
+    _without_steady_state(dosed_session, amici_build_root)
     monkeypatch.setattr(fitting, "_sources_breaking_totals", lambda problem: [])
     with pytest.raises(ModelUpdateError) as refused:
         dosed_session.fit()
@@ -1041,3 +1071,28 @@ def test_a_readout_at_0_under_log_noise_at_the_nominal_values_is_named(fit_sessi
     assert "`obs_B` (down to 0, at t=0)" in text, text
     assert "A readout of 0 at t=0 reads a species that starts at 0." in text
     assert "Re-simulated" not in text  # the nominal values' check, before any start's
+
+
+def test_a_gap_a_tighter_resimulation_closes_is_scored(fit_session, monkeypatch):
+    """#335: a fit whose optimum the first re-simulation does not reproduce is re-simulated once
+    more at tighter tolerances, and scored on that one where it does."""
+    from petab_mcp import fitting
+    from petab_mcp.engine import AmiciEngine
+
+    residuals, atols = AmiciEngine.residuals, []
+
+    def off_once(self, solve_inner=True, gradient=False):
+        sim = residuals(self, solve_inner=solve_inner, gradient=gradient)
+        solver = fitting.estimation_problem(self.session, self)[0].objective.amici_solver
+        atols.append(solver.get_absolute_tolerance())
+        if len(atols) == 1:
+            return {**sim, "neg_log_likelihood": sim["neg_log_likelihood"] + 50.0}
+        return sim
+
+    monkeypatch.setattr(AmiciEngine, "residuals", off_once)
+    out = fit_session.fit()
+    assert atols[:2] == [pytest.approx(1e-10), pytest.approx(1e-13)]
+    assert out["neg_log_likelihood"] is not None
+    assert not any("not scored" in w for w in out.get("warnings", []))
+    solver = fitting.estimation_problem(fit_session, fit_session.engine)[0].objective.amici_solver
+    assert solver.get_absolute_tolerance() == pytest.approx(1e-10)
