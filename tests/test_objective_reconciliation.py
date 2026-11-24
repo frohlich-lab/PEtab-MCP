@@ -62,6 +62,7 @@ def test_a_persistent_gap_leaves_the_fit_unscored(sess):
     )
     assert nllh is None
     assert "not scored" in note and "2426.61" in note and "2857.15" in note
+    assert "Neither value judges the structure" in note and "server" not in note
     imp = fitting.compute_improvement(
         sess, nllh, fitsim={"neg_log_likelihood": nllh, "n_data_points": 2700, "n_estimated": 10}
     )
@@ -69,12 +70,28 @@ def test_a_persistent_gap_leaves_the_fit_unscored(sess):
 
 
 def test_a_resimulation_with_no_value_leaves_the_fit_unscored(sess):
-    """Not the optimizer's value: it can count only the points that simulated (pyPESTO#1794)."""
+    """Not the optimizer's value, though not because it counted only the points that simulated:
+    bachmann 77's matched the full-data nll of an equivalent version (PEtab-MCP#335)."""
     nllh, note = fitting._reconcile_objective(
         sess, {"neg_log_likelihood": 266.62}, _sim(float("nan"), missing=5)
     )
     assert nllh is None
-    assert "not scored" in note and "5 of 21" in note
+    assert "not scored" in note and "5 of 21" in note and "gave 266.62" in note
+    assert "counts only" not in note
+
+
+def test_an_unscored_fit_names_the_failed_experiments_and_the_tighter_resimulation(sess):
+    """raimundez 86 was told its unscored fit was a server fault: the note names which experiments
+    the re-simulation failed in, with AMICI's status, and what tighter tolerances gave (#335)."""
+    failed = [f"`e{i}` ends AMICI_ERROR (steady state not reached)" for i in range(4)]
+    sim = {**_sim(None, missing=21), "failed_experiments": failed, "tightened": _sim(None)}
+    _, note = fitting._reconcile_objective(sess, {"neg_log_likelihood": 266.62}, sim)
+    assert "(`e0` ends AMICI_ERROR (steady state not reached); `e1` ends" in note
+    assert "`e3`" not in note and "; ...)" in note
+    assert "At 1000 times tighter tolerances it gives no value either." in note
+    sim = {**_sim(2857.15), "tightened": _sim(2850.0)}
+    _, note = fitting._reconcile_objective(sess, {"neg_log_likelihood": 2426.61}, sim)
+    assert "At 1000 times tighter tolerances it gives 2850." in note
 
 
 @pytest.mark.parametrize("nll_sim", [float("nan"), 263.28])

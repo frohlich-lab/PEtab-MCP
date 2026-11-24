@@ -16,6 +16,7 @@ than being swallowed into a degraded "committed but not fitted" state.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import logging
 import math
@@ -1527,6 +1528,40 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
 #: tolerance means the two evaluations differ in substance, not in rounding.
 OBJECTIVE_AGREEMENT_RTOL = 1e-3
 
+#: The factor on each of the fit's AMICI tolerances at which a fit's optimum is re-simulated once
+#: more when the first re-simulation does not reproduce the optimizer's value (:func:`_tightened`).
+RESIMULATION_TIGHTENING = 1e-3
+
+#: The solver tolerances :func:`_tightened` tightens, by their AMICI getter/setter stem.
+_TOLERANCES = (
+    "absolute_tolerance",
+    "relative_tolerance",
+    "absolute_tolerance_steady_state",
+    "relative_tolerance_steady_state",
+)
+
+
+@contextlib.contextmanager
+def _tightened(problem):
+    """``problem``'s AMICI solver with each of :data:`_TOLERANCES` at
+    :data:`RESIMULATION_TIGHTENING` times its value, restored on exit."""
+    solver = problem.objective.amici_solver
+    held = {name: getattr(solver, f"get_{name}")() for name in _TOLERANCES}
+    try:
+        for name, value in held.items():
+            getattr(solver, f"set_{name}")(value * RESIMULATION_TIGHTENING)
+        yield
+    finally:
+        for name, value in held.items():
+            getattr(solver, f"set_{name}")(value)
+
+
+def _unreproduced(fit: dict[str, Any], sim: dict[str, Any]) -> bool:
+    """Whether re-simulating ``fit``'s optimum (``sim``) leaves the optimizer's finite value
+    unreproduced: no value, or one :func:`_disagree` with it."""
+    nll_opt, nll_sim = _flt(fit.get("neg_log_likelihood")), _flt(sim.get("neg_log_likelihood"))
+    return nll_opt is not None and (nll_sim is None or _disagree(nll_opt, nll_sim))
+
 
 def _undefined_points(session, records: list[dict[str, Any]]) -> str:
     """The measured points a simulation that otherwise ran leaves without a value, by observable,
@@ -1861,8 +1896,12 @@ def _reconcile_objective(
     then not scored: ``None``, which no gate ranks (see :func:`compute_improvement`). Scoring it
     on the optimizer's value ranked a model on a number nothing reproduced, beside a ``chi2``
     from the re-simulation that contradicted it, and its agent refit it for 116 min into the same
-    gap (#265). Where a pre-equilibrated model has no steady state
-    (:func:`_sources_breaking_totals`), the note says so instead of blaming the evaluation.
+    gap (#265). The note names the experiments the re-simulation failed in, with AMICI's status,
+    and what a second re-simulation at tighter tolerances gave (``sim["tightened"]``, see
+    :func:`fit_and_simulate`). Where a pre-equilibrated model has no steady state
+    (:func:`_sources_breaking_totals`), it says so; otherwise it names what makes two evaluations of
+    one point differ, without blaming either: told it was the server's fault, agents abandoned
+    whole mechanism families whose real fault was a sink a condition switched off (#335).
 
     A pass with no fit has only the simulated value, which is then its score.
     """
@@ -1874,26 +1913,38 @@ def _reconcile_objective(
         return nll_opt, None
     if nll_opt is None:
         note = "This fit is not scored: the optimizer reached no finite objective."
-    elif nll_sim is None:
+        session.logger.warning("fit: %s", note)
+        return None, note
+    tight = sim.get("tightened")
+    nll_tight = _flt((tight or {}).get("neg_log_likelihood"))
+    again = ""
+    if tight is not None:
+        again = f" At {1 / RESIMULATION_TIGHTENING:g} times tighter tolerances it gives " + (
+            f"{_fmt(nll_tight)}." if nll_tight is not None else "no value either."
+        )
+    if nll_sim is None:
+        failed = sim.get("failed_experiments") or []
         note = (
             f"This fit is not scored: re-simulating its optimum leaves "
             f"{sim.get('n_missing_simulations')} of {sim.get('n_expected_points')} measured points "
-            f"without a value, so its likelihood is undefined there, and the optimizer's "
-            f"{_fmt(nll_opt)} counts only the points that simulated. Make the model reach every "
-            "measured point with a defined readout."
-        )
-    elif sources := _sources_breaking_totals(session.problem):
-        note = (
-            f"This fit is not scored: the optimizer reached {_fmt(nll_opt)}, but re-simulating "
-            f"its optimum gives {_fmt(nll_sim)} at the same parameters, because "
-            + _no_steady_state(sources)
+            "without a value"
+            + (f" ({'; '.join(failed[:3])}{'; ...' if len(failed) > 3 else ''})" if failed else "")
+            + f", where the optimizer's evaluation of the same point gave {_fmt(nll_opt)}."
         )
     else:
         note = (
             f"This fit is not scored: the optimizer reached {_fmt(nll_opt)}, but re-simulating "
-            f"its optimum gives {_fmt(nll_sim)} at the same parameters. That is a fault in how the "
-            "server evaluates this model, not a verdict on it, and a refit returns the same gap: "
-            "make a different change."
+            f"its optimum gives {_fmt(nll_sim)} at the same parameters."
+        )
+    note += again
+    if sources := _sources_breaking_totals(session.problem):
+        note += " That is because " + _no_steady_state(sources)
+    else:
+        note += (
+            " Two evaluations of one point differ when its simulation depends on more than the "
+            "parameters, as a pre-equilibration does that has no single steady state, or reaches "
+            "one only from near it. Neither value judges the structure: check that whatever a "
+            "reaction makes, a sink that keeps up with it removes in every pre-equilibration."
         )
     session.logger.warning("fit: %s", note)
     return None, note
@@ -1905,9 +1956,10 @@ def _no_steady_state(sources: list[str]) -> str:
     return (
         f"pre-equilibration has no steady state to reach: {', '.join(sources)} "
         f"{'makes' if len(sources) == 1 else 'make'} a species from nothing that the other "
-        "reactions only pass around, so their total grows for as long as the source runs, and pre-equilibration stops where its convergence check gives out, if at "
-        "all. Write the species a source converts as its reactant (`A -> B`, not `-> B; k*A`), "
-        "or give what it makes a sink."
+        "reactions only pass around, so their total grows for as long as the source runs, and "
+        "pre-equilibration stops where its convergence check gives out, if at all. Write the "
+        "species a source converts as its reactant (`A -> B`, not `-> B; k*A`), or give what it "
+        "makes a sink that runs in every pre-equilibration."
     )
 
 
@@ -1917,9 +1969,19 @@ def _sources_breaking_totals(problem) -> list[str]:
     That total grows for as long as such a source runs, so the model has no steady state, and the
     pre-equilibration stops where its convergence check happens to give out: brannmark 42 wrote
     ``IRS1_bas: -> IRS1p; k_basal*IRS1`` under one, and its fits went unscored as a server fault
-    (PEtab-MCP#285)."""
+    (PEtab-MCP#285).
+
+    Checked again under each pre-equilibration's conditions. A reaction whose rate law is 0 there
+    (:func:`validation._vanishes_at`, given the targets those conditions set to 0 that no reaction
+    changes, and the parameters the table fixes at 0) does not run, so a sink a condition switches
+    off leaves the total growing in that pre-equilibration alone. Such a source is named with the
+    conditions and the reactions they stop that consume what it makes: in raimundez 86 a condition
+    switched off a receptor's only sink, and the static check missed it (PEtab-MCP#335)."""
     import libsbml
     import numpy as np
+    from petab.v2.C import CONDITION_ID, TARGET_ID, TARGET_VALUE
+
+    from .validation import _fixed_zero_parameters, _is_zero, _vanishes_at
 
     edf = problem.experiment_df
     sm = getattr(problem.model, "sbml_model", None)
@@ -1927,26 +1989,81 @@ def _sources_breaking_totals(problem) -> list[str]:
         return []
     species = [s.getId() for s in sm.getListOfSpecies() if not s.getBoundaryCondition()]
     row = {sid: i for i, sid in enumerate(species)}
-    sources, columns = [], []
+    reactions = []
     for rxn in sm.getListOfReactions():
         column = np.zeros(len(species))
         for sign, refs in ((-1.0, rxn.getListOfReactants()), (1.0, rxn.getListOfProducts())):
             for ref in refs:
                 if ref.getSpecies() in row:
                     column[row[ref.getSpecies()]] += sign * ref.getStoichiometry()
-        (sources if not rxn.getNumReactants() and column.any() else columns).append((rxn, column))
-    if not sources:
-        return []
-    stoichiometry = np.array([c for _, c in columns]).reshape(len(columns), len(species))
-    _, singular, vh = np.linalg.svd(stoichiometry)
-    totals = vh[int((singular > 1e-9).sum()) :]  # the left null space: what they conserve
+        reactions.append((rxn, column))
+    changed = {sid for sid, i in row.items() if any(c[i] for _, c in reactions)}
+    ruled = {r.getVariable(): r.getMath() for r in sm.getListOfRules() if r.isAssignment()}
+    fixed = _fixed_zero_parameters(problem)
+
+    def stopped_at(zero: set[str]) -> set[str]:
+        return {
+            rxn.getId()
+            for rxn, _ in reactions
+            if (law := rxn.getKineticLaw()) is not None
+            and law.getMath() is not None
+            and _vanishes_at(law.getMath(), zero, ruled)
+        }
+
+    def breaking(stopped: set[str]) -> set[str]:
+        running = [(rxn, c) for rxn, c in reactions if rxn.getId() not in stopped]
+        sources = [(rxn, c) for rxn, c in running if not rxn.getNumReactants() and c.any()]
+        columns = [c for rxn, c in running if rxn.getNumReactants() or not c.any()]
+        if not sources:
+            return set()
+        stoichiometry = np.array(columns).reshape(len(columns), len(species))
+        _, singular, vh = np.linalg.svd(stoichiometry)
+        totals = vh[int((singular > 1e-9).sum()) :]  # the left null space: what they conserve
+        return {
+            rxn.getId() for rxn, c in sources if totals.size and np.abs(totals @ c).max() > 1e-9
+        }
+
+    zeroed: dict[str, set[str]] = {}
+    cdf = problem.condition_df
+    if cdf is not None and {CONDITION_ID, TARGET_ID, TARGET_VALUE} <= set(cdf.columns):
+        for cid, target, value in zip(cdf[CONDITION_ID], cdf[TARGET_ID], cdf[TARGET_VALUE]):
+            if _is_zero(value) and str(target) not in changed:
+                zeroed.setdefault(str(cid), set()).add(str(target))
+    base_stopped = stopped_at(fixed)
+    base = breaking(base_stopped)
+    gated: dict[str, tuple[list[str], set[str]]] = {}
+    preeq = edf[edf[TIME] == TIME_PREEQUILIBRATION]
+    groups = (
+        {tuple(sorted(map(str, g[CONDITION_ID].dropna()))) for _, g in preeq.groupby(EXPERIMENT_ID)}
+        if CONDITION_ID in preeq.columns
+        else set()
+    )
+    for group in sorted(groups):
+        zero = fixed.union(*(zeroed.get(c, set()) for c in group))
+        stopped = stopped_at(zero) - base_stopped
+        for rid in breaking(base_stopped | stopped) - base:
+            entry = gated.setdefault(rid, ([], stopped))
+            entry[0].append(group)
+    columns = {rxn.getId(): c for rxn, c in reactions}
     named = []
-    for rxn, column in sources:
-        if totals.size and np.abs(totals @ column).max() > 1e-9:
-            law = rxn.getKineticLaw()
-            rate = libsbml.formulaToL3String(law.getMath()) if law is not None else ""
-            products = " + ".join(p.getSpecies() for p in rxn.getListOfProducts())
-            named.append(f"`{rxn.getId()}` (`-> {products}; {rate}`)")
+    for rxn, column in reactions:
+        rid = rxn.getId()
+        if rid not in base and rid not in gated:
+            continue
+        law = rxn.getKineticLaw()
+        rate = libsbml.formulaToL3String(law.getMath()) if law is not None else ""
+        products = " + ".join(p.getSpecies() for p in rxn.getListOfProducts())
+        where = ""
+        if rid in gated:
+            groups_, stopped = gated[rid]
+            consumers = [r for r in stopped if (columns[r][column > 0] < 0).any()]
+            sinks = sorted(consumers or stopped)
+            conditions = sorted({c for g in groups_ for c in g if c in zeroed})
+            where = (
+                f", where condition{'s' if len(conditions) > 1 else ''} "
+                f"{_names(conditions)} stop{'' if len(conditions) > 1 else 's'} {_names(sinks)}"
+            )
+        named.append(f"`{rid}` (`-> {products}; {rate}`{where})")
     return named
 
 
@@ -2012,6 +2129,12 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
         # A pass with no fit scores the table's sigmas and scalings as they stand; a fit's point
         # is re-scored as its optimizer scored it, gradient included.
         sim = engine.residuals(solve_inner=do_fit, gradient=do_fit)
+        if fit is not None and _unreproduced(fit, sim):
+            # Once more at tighter tolerances: a gap the fit's own tolerances open closes there,
+            # and that re-simulation is then the one scored (PEtab-MCP#335).
+            with _tightened(estimation_problem(session, engine)[0]):
+                tight = engine.residuals(solve_inner=True, gradient=True)
+            sim = tight if not _unreproduced(fit, tight) else {**sim, "tightened": tight}
         records = sim["records"]
         nllh, nll_note = _reconcile_objective(session, fit, sim)
         if fit is None:
