@@ -238,9 +238,11 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     ties = I.identifiability(sess)["merge_candidates"]["ties"]
     fields = ("parameters", "dnll", "dscore", "move_scaled")
     assert {k: ties[0][k] for k in fields} == {k: hint[k] for k in fields}
-    # ~110 B on every fit, and the rename that takes it on a text-route server (#283)
-    assert set(hint) == {*fields, "take"}
-    assert hint["take"] == {"op": "rename", "old": "k2", "new": "k1"}
+    # ~130 B on every fit: the version that priced it (#336) and the rename that takes it on a
+    # text-route server (#283)
+    assert set(hint) == {*fields, "priced_at_version", "take"}
+    assert hint["priced_at_version"] == res["version"]
+    assert hint["take"] == [{"op": "rename", "old": "k2", "new": "k1"}]
     # ...and the SCORE read carries the same one, so a caller that did not run the fit (another
     # agent, a client's finish gate, a final scoring) sees the tie the agent was shown.
     from petab_mcp import fitting
@@ -249,8 +251,9 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
 
 
 def test_a_change_lists_the_ties_new_since_its_parent_and_counts_the_rest(fit_session, monkeypatch):
-    """PEtab-MCP#208: a tie the parent's own fit result already carried is counted in
-    `n_merge_hints`, not repeated, however it was re-priced; the score read keeps every one."""
+    """PEtab-MCP#208: a tie the parent's own fit result already carried at the same price is counted
+    in `n_merge_hints`, not repeated; the score read keeps every one. PEtab-MCP#336: a tie RE-PRICED
+    is listed again, or the agent acts on the parent's price (bruno, gemot_pools_20261107)."""
     from petab_mcp import fitting
     from petab_mcp import operations as O
 
@@ -273,6 +276,11 @@ def test_a_change_lists_the_ties_new_since_its_parent_and_counts_the_rest(fit_se
     again = widened_fit(1e4)
     assert again["merge_hints"] == [] and again["n_merge_hints"] == 1
     assert fitting.fit_summary(sess, sess.engine)["merge_hints"][0]["parameters"] == ["k1", "k2"]
+    _stub_fim(monkeypatch, 1e-5)
+    repriced = widened_fit(1e5)
+    (hint,) = repriced["merge_hints"]
+    assert hint["parameters"] == ["k1", "k2"] and hint["dnll"] != new["merge_hints"][0]["dnll"]
+    assert hint["priced_at_version"] == repriced["version"] and "n_merge_hints" not in repriced
 
 
 def test_no_hints_when_no_tie_beats_the_parameter_charge(fit_session, monkeypatch):
@@ -440,7 +448,7 @@ def test_a_restore_diagnoses_the_version_it_restored_not_the_last_fit(fit_sessio
     diagnosis = I.identifiability(sess)
     assert diagnosis["available"] is True and "stale" not in diagnosis
     assert (
-        I.merge_hints(diagnosis, rename=True)
+        I.merge_hints(diagnosis, version=first["version"], model=I.edit_surface(sess))
         == fitting.fit_summary(sess, sess.engine)["merge_hints"]
     )
 

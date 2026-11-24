@@ -2280,9 +2280,10 @@ def _since_parent(session, out: dict, parent_v: int, parent_df: Any) -> None:
     moved; an earlier result named every other one. A pin is listed unless the parent sat at the
     same side and bound, so a re-pin after a
     widening still shows; ``n_parameters_at_bound`` counts every pin when any is left out. A hint is
-    listed unless the parent's fit priced the same pair as a hint too, re-priced or not;
-    ``n_merge_hints`` counts every hint when any is left out, beside a possibly empty list.
-    Best-effort, like the slimming before it."""
+    listed unless the parent's fit hinted the same pair at the same price; a re-priced one is listed
+    again, or the agent acts on the parent's price (PEtab-MCP#336). ``n_merge_hints`` counts every
+    hint when any is left out, beside a possibly empty list. Best-effort, like the slimming before
+    it."""
     _new_merge_hints(session, out, parent_v)
     try:
         parent_fitted = table_fitted_values(parent_df)
@@ -2307,23 +2308,21 @@ def _since_parent(session, out: dict, parent_v: int, parent_df: Any) -> None:
 
 
 def _new_merge_hints(session, out: dict, parent_v: int) -> None:
-    """:func:`_since_parent`'s ``merge_hints`` cut. The parent's hints are re-derived from its
-    stored diagnosis (see :func:`identifiability.fit_diagnosis_block`), so they are the ones its own
-    fit result carried, and a parent without one leaves every hint new."""
-    from .identifiability import STORED_DIAGNOSIS_KEY, merge_hints
+    """:func:`_since_parent`'s ``merge_hints`` cut, against the parent's own
+    (:func:`identifiability.version_merge_hints`): a parent without any leaves every hint new."""
+    from .identifiability import version_merge_hints
+
+    def price(h):
+        return frozenset(h["parameters"]), h.get("dnll"), h.get("dscore"), h.get("move_scaled")
 
     hints = out.get("merge_hints")
     if not hints:
         return
     try:
-        stored = (session.provenance.get_version_simulation(parent_v) or {}).get(
-            STORED_DIAGNOSIS_KEY
-        )
-        prior = merge_hints(stored.get("diagnosis") if isinstance(stored, dict) else None) or []
-        seen = {frozenset(h["parameters"]) for h in prior}
+        seen = {price(h) for h in version_merge_hints(session.provenance, parent_v)}
     except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
         return
-    new = [h for h in hints if frozenset(h["parameters"]) not in seen]
+    new = [h for h in hints if price(h) not in seen]
     out["merge_hints"] = new
     if len(new) < len(hints):
         out["n_merge_hints"] = len(hints)

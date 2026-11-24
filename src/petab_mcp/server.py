@@ -1220,7 +1220,8 @@ k*u*X1'}`, `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: 'k
 `id := expr` rule holding at ALL times — how a `readout_*` symbol an observable formula \
 references is defined in terms of YOUR states), `{op: 'remove_assignment', id}`, `{op: 'rename', \
 old, new}` (`new` keeps `old`'s fitted value, bounds and scale; onto an existing parameter it \
-MERGES the two in one op, keeping `new`'s: a `merge_hints` row's `take`). Nothing to quote; they \
+MERGES the two in one op, keeping `new`'s; a `merge_hints` row's `take` is the ops that tie its \
+pair). Nothing to quote; they \
 apply in order, all or nothing, and a bad id is rejected with the valid ids listed. Put the WHOLE \
 change in ONE call: one call is one fit. What they cannot express (an event, a compartment) is a \
 re-author with `antimony`.
@@ -1904,6 +1905,7 @@ def _register_model_tools(
                     raise
             op_summary: list[str] = []
             base_parameter_df = None
+            tie_warnings: list[dict[str, str]] = []
             if ops:
                 # STRUCTURED edits apply to the model SOURCE — the text the caller last authored
                 # or last edited — not to the reconciled re-render. That is the whole point: no
@@ -1931,6 +1933,16 @@ def _register_model_tools(
                     )
                     antimony, op_summary = model_edits_mod.apply_model_edits(
                         base_src, ops, fixed=fixed
+                    )
+                    tie_warnings = msg_mod.warnings_from(
+                        msg_mod.SOURCE_EDIT,
+                        identifiability_mod.unhinted_ties(
+                            session,
+                            ops,
+                            session.provenance.current_version
+                            if base_version is None
+                            else int(base_version),
+                        ),
                     )
                     # Read INSIDE the guard, next to the source read above: a version dir whose
                     # parameters.tsv is truncated raises EmptyDataError and the legacy json path
@@ -2014,7 +2026,11 @@ def _register_model_tools(
                     )
                 if not result.get("applied"):
                     return result
-                result["messages"] = statement_warnings + (result.get("messages") or [])
+                result["messages"] = [
+                    *statement_warnings,
+                    *tie_warnings,
+                    *(result.get("messages") or []),
+                ]
                 out = ctx.edit_then_fit(result, n_starts, justification, before)
             finally:
                 session.derived_from = None
@@ -2236,7 +2252,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         UNIDENTIFIABLE, not under-explored), `noise_sigma_report` with `noise_sigma_inflated` /
         `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise: fix
         the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
-        (parameter pairs the data cannot separate whose merge the criterion would pay for).⦃ With
+        (parameter pairs whose merge the criterion would pay for, by a local estimate at the
+        optimum of `priced_at_version`; a refit decides).⦃ With
         estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
         fit and say nothing about adequacy.⦄
         """
@@ -2427,7 +2444,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         PARAMETERS (`identifiability`), from the Fisher information at the optimum and the
         multistart spread: per-parameter standard error and fold uncertainty, marginal and partial
         correlations, the near-flat eigen-directions (the parameter COMBINATIONS the data cannot
-        pin), and a ranked `candidates` list. `merge_candidates` prices giving a pair ONE SHARED
+        pin), and a ranked `candidates` list. `merge_candidates` estimates giving a pair ONE SHARED
         value: `dnll`, cheapest first; `dscore`, NEGATIVE when the merge lowers the score;
         `move_scaled`, how far the tie moves a parameter. Only same-role, same-scale pairs with
         neither member at a bound are priced (`n_ties_skipped` counts the rest), and the fit
