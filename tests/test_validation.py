@@ -11,7 +11,7 @@ from petab_mcp.validation import (
     INPUT_UNREAD,
     _constant_noise_species_issues,
     _fixed_constant_role_issues,
-    _power_of_state_issues,
+    _power_issues,
     frozen_parametric_stoichiometry_issues,
     validate_problem,
 )
@@ -349,7 +349,7 @@ def test_a_state_raised_to_an_estimated_power_is_warned_with_its_guard(rate, est
     pdf = pd.DataFrame(
         {"estimate": [i == estimated for i in ids]}, index=pd.Index(ids, name="parameterId")
     )
-    issues = _power_of_state_issues(types.SimpleNamespace(model=model, parameter_df=pdf))
+    issues = _power_issues(types.SimpleNamespace(model=model, parameter_df=pdf))
     said = [i["message"] for i in issues]
     assert len(said) == (fix is not None), said
     if fix is not None:
@@ -374,3 +374,54 @@ def test_a_power_of_a_state_reaches_the_edits_messages(session):
             "and the simulation fails. Write `max(A, 0)^h`.",
         }
     ]
+
+
+_ZERO = """model zero
+  species P = 0, Q = 0
+  r1: -> P; k
+  r2: -> Q; k*{rate}
+  B := c*exp(s)
+  k = 1; h = 2; s = 0.3; c = 1
+end
+"""
+
+
+@pytest.mark.parametrize(
+    ("rate", "lower", "when"),
+    [
+        ("B^h", 0.5, "is 0 in condition `ctrl`"),  # an input the condition switches off
+        ("P^h", 0.5, "starts at 0"),
+        ("max(P, 0)^h", 0.5, "starts at 0"),  # the guard against a dip below 0 does not help
+        ("B^h", 1.0, None),
+        ("(B + 1)^h", 0.5, None),
+    ],
+)
+def test_a_base_at_zero_raised_to_an_exponent_that_may_go_below_one_is_warned(rate, lower, when):
+    """#341 (lun 63612603_109): `M2d^hM2`, its base an input the non-MAP2K2 conditions set to 0,
+    fitted hM2 to 0.998 and left the gradient NaN at that optimum. Below 1 the power's slope at 0 is
+    infinite: in AMICI 1.2 a readout's sensitivities there are NaN, and a rate reading `P^h` with
+    P(0) = 0 fails to simulate (AMICI_FIRST_SRHSFUNC_ERR), with or without `max`/`abs` on the base;
+    h = 1.5 runs clean."""
+    import types
+
+    import pandas as pd
+
+    model = SbmlModel.from_antimony(_ZERO.format(rate=rate))
+    pdf = pd.DataFrame(
+        {"estimate": [True, True], "lowerBound": [lower, 1e-3]},
+        index=pd.Index(["h", "k"], name="parameterId"),
+    )
+    cdf = pd.DataFrame(
+        {"conditionId": ["ctrl", "treat"], "targetId": ["c", "c"], "targetValue": [0.0, 1.0]}
+    )
+    problem = types.SimpleNamespace(model=model, parameter_df=pdf, condition_df=cdf)
+    said = [i["message"] for i in _power_issues(problem) if i["check"] == "power_of_zero"]
+    assert len(said) == (when is not None), said
+    if rate == "B^h" and when:
+        assert said == [
+            "reaction `r2` raises `B`, which is 0 in condition `ctrl`, to `h`, whose lower bound "
+            "is below 1, where the power's slope at 0 is infinite: the fit's gradient there is "
+            "NaN. Give `h` a lower bound of 1."
+        ]
+    elif when:
+        assert f"which {when}, to `h`" in said[0], said[0]
