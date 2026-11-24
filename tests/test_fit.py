@@ -806,16 +806,25 @@ def test_an_unscored_fit_under_a_source_that_breaks_a_total_names_it(dosed_sessi
         assert "server" not in note
 
 
+def _without_steady_state(session, build_root) -> None:
+    """``session`` holds ``_SOURCED`` without a sink, fitting 2 starts, with only ``kb`` free. Its
+    total then grows at no less than ``kb * k2 / (k1 + k2)`` >= 1.7e-4 from every start, which
+    no pre-equilibration converges on; with ``k1`` and ``k2`` free, a start at ``k2`` ~ 1e-4 and
+    ``k1`` ~ 80 grew slowly enough for one to (CI on PEtab-MCP#358)."""
+    from petab_mcp.engine import AmiciEngine
+
+    O.set_model(session, _SOURCED.format(sink=""), justification="basal flux")
+    session.problem.parameter_df.loc[["k1", "k2"], "estimate"] = False
+    session.engine = AmiciEngine(session, build_root=str(build_root))
+    session.auto_fit_starts = 2
+
+
 def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
     dosed_session, amici_build_root
 ):
     """#285: the same source fails every start where no pre-equilibration converges, which the
     refusal read as an ODE that will not integrate or an undefined readout."""
-    from petab_mcp.engine import AmiciEngine
-
-    O.set_model(dosed_session, _SOURCED.format(sink=""), justification="basal flux")
-    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
-    dosed_session.auto_fit_starts = 2
+    _without_steady_state(dosed_session, amici_build_root)
     with pytest.raises(ModelUpdateError, match="no steady state to reach: `r3` "):
         dosed_session.fit()
 
@@ -1036,11 +1045,8 @@ def test_every_failed_start_is_re_simulated_and_its_amici_status_named(
     of them. Without the source check (see the test above), the refusal reaches its general form,
     which now carries AMICI's status where the starts began and names the one cause it shows."""
     from petab_mcp import fitting
-    from petab_mcp.engine import AmiciEngine
 
-    O.set_model(dosed_session, _SOURCED.format(sink=""), justification="basal flux")
-    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
-    dosed_session.auto_fit_starts = 2
+    _without_steady_state(dosed_session, amici_build_root)
     monkeypatch.setattr(fitting, "_sources_breaking_totals", lambda problem: [])
     with pytest.raises(ModelUpdateError) as refused:
         dosed_session.fit()
