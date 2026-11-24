@@ -130,8 +130,14 @@ def _identifiability_stats(
         partials.sort(key=lambda d: -abs(d["pr"]))
         correlations = correlations[:top_n]
         partials = partials[:top_n]
-        # flat directions: eigenvectors with near-zero eigenvalue = non-identifiable combinations
-        evals, evecs = np.linalg.eigh(H)
+        # The rank, the conditioning and the flat directions (eigenvectors with near-zero
+        # eigenvalue = non-identifiable combinations) are those of the parameters inside their
+        # bounds. A pinned one is held by its bound, not the data, so the flat axis through it is
+        # no combination to remove: `at_bound` names it, and naming it here sent agents hours into
+        # remapping it, and the rank it dropped refused true models (issue #338).
+        inside = [i for i, p in enumerate(params_meta) if not p.get("at_bound")]
+        H_inside = H[np.ix_(inside, inside)]
+        evals, evecs = np.linalg.eigh(H_inside)
         emax = float(evals.max()) if evals.size else 0.0
         for idx in range(len(evals)):
             ev = float(evals[idx])
@@ -140,22 +146,23 @@ def _identifiability_stats(
                 vec = evecs[:, idx]
                 order = np.argsort(-np.abs(vec))
                 participants = [
-                    {"id": names[k], "weight": round(float(vec[k]), 3)}
+                    {"id": names[inside[k]], "weight": round(float(vec[k]), 3)}
                     for k in order[:4]
                     if abs(vec[k]) > 0.15
                 ]
                 flat_directions.append(
                     {"eigenvalue": round(ev, 6), "rel": round(rel, 6), "participants": participants}
                 )
-        rank = int(np.linalg.matrix_rank(H))
+        rank = int(np.linalg.matrix_rank(H_inside)) if inside else 0
         cond = float(
             emax / max(float(evals[evals > 0].min()) if (evals > 0).any() else emax, 1e-300)
         )
         fim_info = {
             "rank": rank,
             "n_estimated": m,
+            "n_at_bound": m - len(inside),
             "condition": round(cond, 1),
-            "rank_deficient": rank < m,
+            "rank_deficient": rank < len(inside),
         }
 
     # simplification candidates: rank estimated params by identifiability red flags
