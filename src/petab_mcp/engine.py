@@ -379,8 +379,8 @@ class AmiciEngine:
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted
-        ``residual_weighted`` (the chi2 term), and evaluated ``noise``. These records
-        back the ``simulations`` table exposed for SQL analysis via
+        ``residual_weighted`` (signed (m − s)/σ; its square is the chi2 term), and evaluated
+        ``noise``. These records back the ``simulations`` table exposed for SQL analysis via
         :mod:`petab_mcp.data_access`.
         """
         with self.session.lock:

@@ -91,10 +91,10 @@ INSIDE the aggregate's parentheses (`first(measurement ORDER BY time)`), `FILTER
 | spread | `stddev_samp`, `var_samp` (there is no `var`) |
 
 ```sql
-SELECT observableId, experimentId, count(*) AS n,
+SELECT observable_id, experiment_id, count(*) AS n,
        arg_min(measurement, time) AS y_at_t0, max(measurement) AS y_peak,
        arg_max(time, measurement) AS t_peak, regr_slope(measurement, time) AS slope
-FROM measurements GROUP BY observableId, experimentId
+FROM measurements GROUP BY observable_id, experiment_id
 
 SELECT observable_id, count(*) AS n, sum(residual_weighted * residual_weighted) AS chi2
 FROM simulations WHERE residual_weighted IS NOT NULL

@@ -2330,21 +2330,18 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """Run a DuckDB SQL query over the data, on a private copy (nothing it does reaches the
         session).
 
-        TWO NAMING CONVENTIONS, and they do not mix. The PEtab tables keep PEtab's camelCase:
-        `measurements(observableId, experimentId, time, measurement, observableParameters,
-        noiseParameters)`, `conditions(conditionId, targetId, targetValue)`,
-        `experiments(experimentId, time, conditionId)`, `observables(observableId, ...)`,
-        `parameters(parameterId, ...)`. The DERIVED tables use snake_case:
-        `simulations(observable_id, experiment_id, time, ...)`, `simulations_history` (the same
-        plus `version`), `state_trajectories(experiment_id, time, entity_id, value)`, and
-        `optimization_starts` / `optimization_trace`. The measurement table's key column is
-        `experimentId` — NOT `experiment_id` (that is `simulations`); an empty `experimentId`
-        ('') is a measurement of the model simulated as is. Do not carry a column list from a
-        `simulations` query onto `measurements`, or the reverse.
+        Every column is snake_case, the PEtab tables' too: `measurements(observable_id,
+        experiment_id, time, measurement, observable_parameters, noise_parameters)`,
+        `conditions(condition_id, target_id, target_value)`, `experiments(experiment_id, time,
+        condition_id)`, `observables(observable_id, ...)`, `parameters(parameter_id, lower_bound,
+        upper_bound, nominal_value, ...)`, `simulations(observable_id, experiment_id, time, ...)`,
+        `simulations_history` (the same plus `version`), `state_trajectories(experiment_id, time,
+        entity_id, value)`, and `optimization_starts` / `optimization_trace`. An empty
+        `experiment_id` ('') is a measurement of the model simulated as is.
 
         `simulations` has one row per point of the last fit: `measurement`, `simulation`,
-        `residual`, `residual_weighted`, `noise`, and the row's `noise_parameters` — residuals
-        live there, not on `measurements`. `state_trajectories` has the last fit's hidden states:
+        `residual`, `residual_weighted` (signed (m - s)/sigma: square it for chi2), `noise`, and
+        the row's `noise_parameters` — residuals live there, not on `measurements`. `state_trajectories` has the last fit's hidden states:
         each species and assignment rule (`entity_id`) at the times its experiment was measured.
         `simulations_history` is the only way to compare versions point by point, e.g.
         `SELECT observable_id, experiment_id, time,
@@ -2352,8 +2349,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         max(CASE WHEN version=4 THEN residual_weighted END) AS v4
         FROM simulations_history WHERE version IN (3, 4) GROUP BY 1, 2, 3
         ORDER BY abs(v4) - abs(v3) DESC`. A measurement reaches its inputs through its experiment:
-        `measurements.experimentId = experiments.experimentId`, then `experiments.conditionId =
-        conditions.conditionId`. `list_data_tables` has every table's columns.
+        `measurements.experiment_id = experiments.experiment_id`, then `experiments.condition_id =
+        conditions.condition_id`. `list_data_tables` has every table's columns.
 
         Aggregate only NUMERIC columns, filter `residual_weighted IS NOT NULL` for residual
         statistics, and prefer aggregations: rows are capped at `max_rows`. When `truncated` is

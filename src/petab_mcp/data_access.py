@@ -6,12 +6,12 @@ loop produces is queryable in one place:
 
 * the fixed experimental design — ``measurements``, ``conditions``, ``experiments``,
   ``observables``;
-* the ``parameters`` table (bounds, scale, fitted ``nominalValue``, ``estimate``, plus each
+* the ``parameters`` table (bounds, scale, fitted ``nominal_value``, ``estimate``, plus each
   parameter's ``role`` and ``status``);
 * the ``simulations`` dataframe from the last commit — one row per measurement point,
   carrying the ``simulation`` value and the **residuals** (``residual``,
-  ``residual_weighted`` — the chi2 term — and the evaluated ``noise``) next to the
-  ``measurement``;
+  ``residual_weighted``, the signed (m − s)/σ whose square is the point's chi2 term, and the
+  evaluated ``noise``) next to the ``measurement``;
 * ``simulations_history`` — those same per-point rows for EVERY stored version, with a
   ``version`` column, so model versions can be compared point-by-point in one query
   (assembled lazily from the version store; see :func:`_simulation_history_frame`);
@@ -19,6 +19,9 @@ loop produces is queryable in one place:
   times (see :meth:`engine.AmiciEngine._state_trajectories`), one row per value;
 * the last fit's pyPESTO multistart — ``optimization_starts`` (one row per start) and
   ``optimization_trace`` (one row per start/iteration, the objective over the run).
+
+Every table names its columns in snake_case: the PEtab tables' camelCase columns are renamed on
+the way in (``experimentId`` is ``experiment_id``, as in ``simulations``), see :func:`_snake`.
 
 Residual statistics, worst-fit points, per-observable / per-experiment / per-timepoint
 breakdowns, and bias or time-trend diagnostics are all just SQL over these tables now: the
@@ -135,11 +138,11 @@ OPTIMIZATION_TRACE_COLUMNS = ["start", "iteration", "fval", "time"]
 TABLE_DESCRIPTIONS: dict[str, str] = {
     "measurements": (
         "Fixed measurement data — one row per measured point, keyed by the experiment it was "
-        "measured in (experimentId '' = the model simulated as is)."
+        "measured in (experiment_id '' = the model simulated as is)."
     ),
     "conditions": (
-        "Fixed experimental conditions — one row per change a condition makes: conditionId, "
-        "targetId, targetValue."
+        "Fixed experimental conditions — one row per change a condition makes: condition_id, "
+        "target_id, target_value."
     ),
     "experiments": (
         "Fixed experiments — one row per (experiment, period start time, condition applied "
@@ -147,13 +150,14 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
     ),
     "observables": "Fixed observable definitions (formula, noise formula, noise distribution).",
     "parameters": (
-        "Parameter table: bounds, scale, nominalValue (fit-only), estimate, plus "
+        "Parameter table: bounds, scale, nominal_value (fit-only), estimate, plus "
         "role (kinetic/noise_sigma/observable_scaling/initial_condition/exponent/constant) "
         "and status (estimated/fixed)."
     ),
     "simulations": (
         "Per-point simulation dataframe from the last commit: measurement vs simulation "
-        "with residual, residual_weighted (the chi2 term), and noise (sigma). Empty until "
+        "with residual, residual_weighted (signed (measurement - simulation)/noise on the noise "
+        "model's scale; its square is the point's chi2 term), and noise (sigma). Empty until "
         "the first commit/fit."
     ),
     "simulations_history": (
@@ -203,6 +207,13 @@ def _promote_index(df):
     return df.reset_index() if named else df.copy()
 
 
+def _snake(name: Any) -> str:
+    """``observableId`` -> ``observable_id``: the PEtab tables' columns as ``query_data`` names
+    them. Mixed conventions cost binder errors in 49 of 310 transcripts, ``experimentId`` sent to
+    ``simulations`` and ``experiment_id`` to ``measurements`` (#337)."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name)).lower()
+
+
 def _with_schema(df, columns):
     """Guarantee a queryable schema so the frame can be registered into DuckDB.
 
@@ -224,23 +235,25 @@ def _with_schema(df, columns):
 def _frames(session) -> dict[str, Any]:
     """Build the ``{table_name: DataFrame}`` mapping registered for a query.
 
-    Reads the *current* problem tables and the stored simulation dataframe
-    (``session.simulation``); the ``simulations`` frame is empty (but well-typed) when no
-    commit has produced records yet. Every frame is guaranteed at least one column (see
-    :func:`_with_schema`) so registering it into DuckDB cannot fail on an empty table.
+    Reads the *current* problem tables, their columns renamed to snake_case (:func:`_snake`), and
+    the stored simulation dataframe (``session.simulation``); the ``simulations`` frame is empty
+    (but well-typed) when no commit has produced records yet. Every frame is guaranteed at least
+    one column (see :func:`_with_schema`) so registering it into DuckDB cannot fail on an empty
+    table.
     """
     import pandas as pd
 
     from .parameters import parameters_to_records
 
     problem = session.problem
-    frames: dict[str, Any] = {
+    petab = {
         "measurements": _with_schema(_promote_index(problem.measurement_df), MEASUREMENT_COLUMNS),
         "conditions": _with_schema(_promote_index(problem.condition_df), CONDITION_COLUMNS),
         "experiments": _with_schema(_promote_index(problem.experiment_df), EXPERIMENT_COLUMNS),
         "observables": _with_schema(_promote_index(problem.observable_df), OBSERVABLE_COLUMNS),
         "parameters": _with_schema(pd.DataFrame(parameters_to_records(problem)), PARAMETER_COLUMNS),
     }
+    frames: dict[str, Any] = {name: df.rename(columns=_snake) for name, df in petab.items()}
 
     sim = session.simulation or {}
     records = sim.get("records") or []
@@ -555,9 +568,11 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
                 remaining -= len(skipped)
             rows = rel.fetchmany(max_rows + 1)
         except duckdb.Error as exc:
-            raise ValidationError(
-                f"SQL error: {exc}. Call `list_data_tables` for the exact table/column names."
-            ) from exc
+            # Only a name the catalog or binder could not resolve is answered by the table list;
+            # a cast, a regex or a syntax error is not (#337).
+            names = isinstance(exc, (duckdb.BinderException, duckdb.CatalogException))
+            hint = " Call `list_data_tables` for the exact table/column names." if names else ""
+            raise ValidationError(f"SQL error: {exc}.{hint}") from exc
     finally:
         con.close()
 
