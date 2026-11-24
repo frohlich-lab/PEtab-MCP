@@ -975,43 +975,55 @@ def _commit(session):
     )
 
 
-def _orphaned(result):
-    return [m["message"] for m in result["messages"] if "defined nowhere" in m["message"]]
+def _orphaned(session, extra) -> list[str]:
+    """The issues of the refusal of re-authoring the base model with ``extra``."""
+    from petab_mcp.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="defined nowhere") as exc:
+        _set_model(session, extra)
+    return exc.value.issues
 
 
-def test_a_name_the_parent_defined_is_named_when_an_edit_mints_it(session):
+def test_a_name_the_parent_defined_is_refused_when_an_edit_mints_it(session):
     """fontaine 5 v7: `gli_on` was changed to make `GliF` while a rate law still read `GliS`, and
     `GliS` became an estimated constant (fitted to 53.5, 140 nll worse) with no warning
-    (PEtab-MCP#264). `k_new`, a new name a rate law reads, is a new rate constant: not named."""
+    (PEtab-MCP#264); named in a warning, such names were fitted anyway (PEtab-MCP#324). `k_new`, a
+    new name a rate law reads, is a new rate constant: not named."""
     _set_model(session, _GLI)
     v = _commit(session)
-    result = _set_model(
-        session,
-        [
-            "gli_on: B => GliF; k3*B;",
-            "gli_read: A => B; k4*GliS*A;",
-            "gli_off: GliF => ; k_new*GliF;",
-        ],
-    )
-    assert {"GliS", "k_new"} <= set(result["parameter_diff"]["added"])
-    assert _orphaned(result) == [
-        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
-        f"{v} had it as a species: define it again, or read the name that replaced it."
+    gli_off = "gli_off: GliF => ; k_new*GliF;"
+    assert _orphaned(
+        session, ["gli_on: B => GliF; k3*B;", "gli_read: A => B; k4*GliS*A;", gli_off]
+    ) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        "`gli_read`: define it again, or read the name that replaced it."
+    ]
+    result = _set_model(session, ["gli_on: B => GliF; k3*B;", gli_off])
+    assert "k_new" in result["parameter_diff"]["added"]
+
+
+def test_a_rule_another_version_had_is_refused_with_its_math(session):
+    """63612603_106: `RSK_un`, an assignment rule of version 6, was minted and fitted, 1735.61 nll
+    worse, beside a warning saying so (PEtab-MCP#324)."""
+    _set_model(session, ["f := k2*A;", "r3: B => ; f*B;"])
+    v = _commit(session)
+    assert _orphaned(session, ["r3: B => ; f*B;"]) == [
+        f"`f` is used but defined nowhere. Version {v} had it as the assignment rule "
+        "`f := k2 * A`: define it again, or read the name that replaced it."
     ]
 
 
 def test_a_fork_is_checked_against_the_version_it_forks(session):
     """A `base_version` fork changes that version, not HEAD: `GliS` is a species of the forked
-    version only, and `k4`, a parameter there, is no definition this warning names (#264)."""
+    version only, and `k4`, a parameter there, is no definition this refusal names (#264)."""
     _set_model(session, _GLI)
     v = _commit(session)
     _set_model(session)
     _commit(session)
     session.derived_from = v
-    result = _set_model(session, ["gli_read: A => B; k4*GliS*A;"])
-    assert _orphaned(result) == [
-        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
-        f"{v} had it as a species: define it again, or read the name that replaced it."
+    assert _orphaned(session, ["gli_read: A => B; k4*GliS*A;"]) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        "`gli_read`: define it again, or read the name that replaced it."
     ]
 
 
@@ -1037,12 +1049,45 @@ def test_a_name_another_version_defined_is_named(session):
     _set_model(session, _GLI)
     v = _commit(session)
     session.derived_from = base
-    result = _set_model(session, ["gli_read: A => B; k4*GliS*A;"])
-    assert _orphaned(result) == [
-        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
-        f"{v} had it as a species, and version {base}, which this edit changes, does not: define "
-        "it here too, or read the name that replaced it."
+    assert _orphaned(session, ["gli_read: A => B; k4*GliS*A;"]) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        f"`gli_read`, and version {base}, which this edit changes, does not: define it here too, "
+        "or read the name that replaced it."
     ]
+
+
+_E = ["species E in compartment_;", "E = 1;", "r4: E => ; k1*E;"]
+
+
+def _said_of(result, check):
+    return [m["message"] for m in result["messages"] if check in m["message"]]
+
+
+@pytest.mark.parametrize(
+    ("edited", "dropped"),
+    [
+        ("r3: A => B; k2*A;", True),
+        ("r3: A => B; k2*E*A;", False),
+        ("r3: A => B; k2*f; f := E*A;", False),  # read through a rule
+        ("r3: A => B; k2*E;", False),  # `A` is consumed: the reactant warning names it
+    ],
+)
+def test_a_rate_that_no_longer_reads_a_species_its_parent_read_is_named(session, edited, dropped):
+    """`set_rate_law` swaps the rate alone, and a law that lost what the old one read committed
+    with no word (PEtab-MCP#324)."""
+    _set_model(session, [*_E, "r3: A => B; k2*E*A;"])
+    v = _commit(session)
+    result = _set_model(session, [*_E, edited])
+    assert _said_of(result, "no longer reads") == (
+        [
+            f"the rate of reaction `r3` no longer reads `E`, which it read in version {v}, so it "
+            "no longer changes with it. If it still acts on this reaction, read it in its rate "
+            "again."
+        ]
+        if dropped
+        else []
+    )
+    assert len(_said_of(result, "consumes `A`")) == (edited == "r3: A => B; k2*E;")
 
 
 def _said(result, start):

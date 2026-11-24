@@ -26,10 +26,12 @@ from .problem import as_bool, later_changes
 from .reconcile import (
     _ast_names,
     _declared_initial,
+    _event_targets,
     _observable_and_measurement_symbols,
     condition_target_symbols,
     formula_symbols,
     input_species,
+    is_parameter_estimated,
     noise_sigma_ids,
     _model_math_names,
     _reaction_species,
@@ -447,6 +449,25 @@ def _first_period_only_issues(problem) -> list[dict[str, Any]]:
     ]
 
 
+def _live_reads(problem) -> tuple[set[str], dict[str, set[str]]]:
+    """The names the model's rates, rate rules, initial amounts, events, reactions and the
+    observable and measurement tables read, directly or through the assignment rules they read; and
+    each assignment rule nothing so reads, by its target, to the names its math reads."""
+    sm = problem.model.sbml_model
+    rules = {
+        r.getVariable(): _ast_names(r.getMath()) for r in sm.getListOfRules() if r.isAssignment()
+    }
+    read = (
+        _model_math_names(sm, assignments=False)
+        | _reaction_species(sm)
+        | _observable_and_measurement_symbols(problem)
+    )
+    while reached := read & rules.keys():
+        for target in reached:
+            read |= rules.pop(target)
+    return read, rules
+
+
 def _unread_input_issues(problem) -> list[dict[str, Any]]:
     """One warning naming each condition target the model declares and nothing reads: no rate,
     event, initial amount or observable, directly or through the assignment rules they read, so no
@@ -458,15 +479,7 @@ def _unread_input_issues(problem) -> list[dict[str, Any]]:
     if sm is None:
         return []
     declared = parameter_ids(sm) | species_ids(sm)
-    rules = {r.getVariable(): _ast_names(r.getMath()) for r in sm.getListOfRules() if r.isAssignment()}
-    read = (
-        _model_math_names(sm, assignments=False)
-        | _reaction_species(sm)
-        | _observable_and_measurement_symbols(problem)
-    )
-    while reached := read & rules.keys():
-        for target in reached:
-            read |= rules.pop(target)
+    read, _ = _live_reads(problem)
     unread = sorted((condition_target_symbols(problem) & declared) - read)
     if not unread:
         return []
@@ -479,6 +492,41 @@ def _unread_input_issues(problem) -> list[dict[str, Any]]:
                 f"their value. {INPUT_UNREAD}"
             ),
             "check": "input_unread",
+        }
+    ]
+
+
+def _dead_rule_parameter_issues(problem) -> list[dict[str, Any]]:
+    """One warning naming the estimated parameters read only by assignment rules nothing reads
+    (:func:`_live_reads`), and those rules: the fit cannot move them, yet each is charged in ``k``
+    (PEtab-MCP#324). A condition value that reads one is a reader."""
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None:
+        return []
+    read, dead = _live_reads(problem)
+    cdf = problem.condition_df
+    if cdf is not None and TARGET_VALUE in cdf.columns:
+        for value in cdf[TARGET_VALUE]:
+            read |= formula_symbols(value)
+    pairs = [
+        (pid, target)
+        for target, names in dead.items()
+        for pid in names - read
+        if is_parameter_estimated(problem, pid)
+    ]
+    if not pairs:
+        return []
+    params, rules = (sorted({pair[i] for pair in pairs}) for i in (0, 1))
+    return [
+        {
+            "level": "warning",
+            "message": (
+                f"estimated parameter(s) {', '.join(f'`{p}`' for p in params)} are read only by "
+                f"the rule(s) for {', '.join(f'`{t}`' for t in rules)}, which reach no rate, initial "
+                "amount, event or observable, so the fit cannot move them and each is still "
+                "charged in k. Read those rules where they should act, or remove them."
+            ),
+            "check": "parameter_read_only_by_dead_rules",
         }
     ]
 
@@ -532,12 +580,8 @@ def _sourceless_species_issues(problem) -> list[dict[str, Any]]:
     }
     reactions = []
     for rxn in sm.getListOfReactions():
-        net: dict[str, float] = {}
-        for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
-            for ref in refs:
-                net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
         law = rxn.getKineticLaw()
-        reactions.append((law.getMath() if law is not None else None, net))
+        reactions.append((law.getMath() if law is not None else None, net_change(rxn)))
     while (
         changed := {
             sid for math, net in reactions if not vanishes(math) for sid, n in net.items() if n != 0
@@ -583,11 +627,7 @@ def _constant_noise_species_issues(problem) -> list[dict[str, Any]]:
         return []
     changed = {r.getVariable() for r in sm.getListOfRules()}
     for rxn in sm.getListOfReactions():
-        net: dict[str, float] = {}
-        for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
-            for ref in refs:
-                net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
-        changed |= {sid for sid, n in net.items() if n != 0}
+        changed |= {sid for sid, n in net_change(rxn).items() if n != 0}
     constant = {s.getId() for s in sm.getListOfSpecies() if not s.getConstant()} - changed
     readers: dict[str, set[str]] = {}
     odf, mdf = problem.observable_df, problem.measurement_df
@@ -611,6 +651,143 @@ def _constant_noise_species_issues(problem) -> list[dict[str, Any]]:
             "check": "noise_reads_constant_species",
         }
         for sid in sorted(readers)
+    ]
+
+
+def net_change(rxn) -> dict[str, float]:
+    """Each species' net stoichiometry in the reaction ``rxn``: as a product less as a reactant."""
+    net: dict[str, float] = {}
+    for sign, refs in ((-1, rxn.getListOfReactants()), (1, rxn.getListOfProducts())):
+        for ref in refs:
+            net[ref.getSpecies()] = net.get(ref.getSpecies(), 0) + sign * ref.getStoichiometry()
+    return net
+
+
+def rate_reads(sm) -> dict[str, set[str]]:
+    """The names each reaction's rate law reads, by reaction id, directly or through the
+    assignment rules it reads."""
+    ruled = {
+        r.getVariable(): _ast_names(r.getMath()) for r in sm.getListOfRules() if r.isAssignment()
+    }
+    out = {}
+    for rxn in sm.getListOfReactions():
+        law = rxn.getKineticLaw()
+        read, unread = set(), list(_ast_names(law.getMath()) if law is not None else ())
+        while unread:
+            if (name := unread.pop()) not in read:
+                read.add(name)
+                unread += ruled.get(name, ())
+        out[rxn.getId()] = read
+    return out
+
+
+def unread_reactants(sm) -> dict[str, list[str]]:
+    """The species each reaction consumes (net stoichiometry below 0) that its rate law never reads
+    (:func:`rate_reads`), by reaction id. A constant, boundary or rule-driven species is changed by
+    no reaction, so none consumes it."""
+    held, reads = input_species(sm), rate_reads(sm)
+    out = {}
+    for rxn in sm.getListOfReactions():
+        rid = rxn.getId()
+        unread = sorted(
+            sid
+            for sid, n in net_change(rxn).items()
+            if n < 0 and sid not in held and sid not in reads[rid]
+        )
+        if unread and rxn.getKineticLaw() is not None:
+            out[rid] = unread
+    return out
+
+
+def _unread_reactant_issues(problem) -> list[dict[str, Any]]:
+    """One warning per species a reaction consumes without its rate law reading it
+    (:func:`unread_reactants`): the reaction runs on once the species is gone, which goes negative.
+    ``set_rate_law`` keeps the reactants, so brannmark 40's ``ir_autophos: IRi -> IRP;
+    k_act*f_occ*IR`` made IRP from an empty IRi pool, and stayed the best version for about 15
+    edits (PEtab-MCP#324)."""
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None:
+        return []
+    out = []
+    for rid, sids in unread_reactants(sm).items():
+        law = libsbml.formulaToL3String(sm.getReaction(rid).getKineticLaw().getMath())
+        out += [
+            {
+                "level": "warning",
+                "message": (
+                    f"reaction `{rid}` consumes `{sid}`, but its rate `{law}` never reads it, so "
+                    f"it runs on once `{sid}` is gone and `{sid}` goes negative. Read `{sid}` in "
+                    f"the rate (`k*{sid}`; a constant drain that stops at 0 is "
+                    f"`piecewise(v, {sid} > 0, 0)`), or, if the reaction is a source, take `{sid}` "
+                    "off its reactants."
+                ),
+                "check": "reactant_unread",
+            }
+            for sid in sids
+        ]
+    return out
+
+
+def _reads_time(math) -> bool:
+    """Whether the math ``math`` reads the simulation time."""
+    stack = [math] if math is not None else []
+    while stack:
+        node = stack.pop()
+        if node.getType() == libsbml.AST_NAME_TIME:
+            return True
+        stack += [node.getChild(i) for i in range(node.getNumChildren())]
+    return False
+
+
+def _constant_readout_issues(problem) -> list[dict[str, Any]]:
+    """One warning naming the measured observables that read no species, rate-rule or event
+    target, condition input or time, directly or through the assignment rules they read: each
+    predicts one value at every time point and condition. crauste 19's ``readout_Naive`` set to 0
+    passed with no word (PEtab-MCP#324). A model with no dynamics (the seed) is not checked: every
+    readout there is a constant until the model maps it (:func:`_undefined_readout_issues`)."""
+    from petab.v2.C import OBSERVABLE_FORMULA, OBSERVABLE_ID
+
+    sm = getattr(problem.model, "sbml_model", None)
+    odf, mdf = problem.observable_df, problem.measurement_df
+    if sm is None or odf is None or mdf is None or OBSERVABLE_FORMULA not in odf.columns:
+        return []
+    if not has_dynamics(sm):
+        return []
+    ruled = {r.getVariable(): r.getMath() for r in sm.getListOfRules() if r.isAssignment()}
+    varying = (
+        species_ids(sm)
+        | {r.getVariable() for r in sm.getListOfRules() if r.isRate()}
+        | _event_targets(sm)
+        | condition_target_symbols(problem)
+        | {"time"}
+    )
+    measured = {str(o) for o in mdf[OBSERVABLE_ID]}
+    flat = []
+    for obs_id, formula in odf[OBSERVABLE_FORMULA].items():
+        read, unread = set(), list(formula_symbols(formula))
+        while unread:
+            if (name := unread.pop()) in read:
+                continue
+            read.add(name)
+            if name in ruled:
+                unread += _ast_names(ruled[name]) | (
+                    {"time"} if _reads_time(ruled[name]) else set()
+                )
+        if str(obs_id) in measured and not read & varying:
+            flat.append(f"`{obs_id}`")
+    if not flat:
+        return []
+    return [
+        {
+            "level": "warning",
+            "message": (
+                f"observable(s) {', '.join(flat)} have measurements but read no species, state, "
+                "condition input or time, even through the rules they read, so each predicts one "
+                "value at every time point and condition. Write each readout over the species it "
+                "measures."
+            ),
+            "check": "readout_reads_no_state",
+        }
     ]
 
 
@@ -920,6 +1097,9 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
         _first_period_only_issues(problem)
         + _unread_input_issues(problem)
         + _sourceless_species_issues(problem)
+        + _unread_reactant_issues(problem)
+        + _constant_readout_issues(problem)
+        + _dead_rule_parameter_issues(problem)
     )
     issues += advisory
     n_warnings += len(advisory)

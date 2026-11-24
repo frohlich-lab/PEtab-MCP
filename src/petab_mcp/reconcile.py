@@ -2492,7 +2492,7 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff, and ``seeded``: the
     parameters nothing gives a value (no assignment in the model, no row, no shipped row), each
-    started at the seed. :func:`operations._orphan_warnings` names those the parent defined.
+    started at the seed. :func:`operations._orphans` names those a version defined.
 
     ``carried`` maps a ``rename``'s new id to the row its old id had (:func:`operations.set_model`).
     A new id the table may hold takes that row, fitted value, bounds and scale, unless the problem
