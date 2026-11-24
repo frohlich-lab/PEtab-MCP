@@ -115,6 +115,15 @@ _NEEDLE_ADVICE = (
     "`get_fit_diagnosis(sections='parameters')`)"
 )
 
+#: The same 1 or 2 starts at the best on a fit at the default count or below, for its warning:
+#: the optimizer may have missed this structure's optimum, so a raise comes before an edit.
+_LOW_CONVERGENCE_ADVICE = (
+    "so the optimizer may not have found this structure's optimum and its score may understate "
+    "the model. Refit it before changing the model: `make_changes` with `n_starts` above the "
+    "default {default} and no model route. If the raised fit still leaves 1 or 2 at the best, "
+    "the optimum is a needle"
+)
+
 #: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
 #: ``get_progress`` has the rest. ``streak_cap`` and ``plateau_window`` are constants the
 #: ``make_changes`` description states, ``criterion`` is on the fit block, and the best's score and
@@ -1677,18 +1686,22 @@ class PetabSession:
                     "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
                     "that allow extreme rates.",
                 ]
-            # A raise that still leaves 1 or 2 starts at the best, fewer than half of those that
-            # ran to the end (2 of 2 completed is no needle): more will not help (#287).
-            elif (
-                starts > self.auto_fit_starts
-                and (at_best := fitsim.get("n_starts_at_best")) in (1, 2)
-                and 2 * at_best < starts - (killed or 0)
+            # 1 or 2 starts at the best, fewer than half of those that ran to the end (2 of 2
+            # completed is no needle). After a raise, more will not help (#287); at the default or
+            # below, the score may understate the structure, so a raise comes before an edit.
+            elif (at_best := fitsim.get("n_starts_at_best")) in (1, 2) and 2 * at_best < starts - (
+                killed or 0
             ):
+                if starts > self.auto_fit_starts:
+                    advice = (
+                        f"though this fit ran more than the default {self.auto_fit_starts}: "
+                        f"{_NEEDLE_ADVICE}"
+                    )
+                else:
+                    advice = _LOW_CONVERGENCE_ADVICE.format(default=self.auto_fit_starts)
                 warnings = [
                     *warnings,
-                    f"{fitsim['n_starts_at_best']} of {starts} starts reached the best value, "
-                    f"though this fit ran more than the default {self.auto_fit_starts}: "
-                    f"{_NEEDLE_ADVICE}.",
+                    f"{at_best} of {starts} starts reached the best value, {advice}.",
                 ]
             # Most starts stopped on a value that is not a number (PEtab-MCP#285).
             not_finite = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.NOT_FINITE", 0)
