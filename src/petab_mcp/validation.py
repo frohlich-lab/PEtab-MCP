@@ -27,6 +27,7 @@ from .reconcile import (
     _ast_names,
     _declared_initial,
     _observable_and_measurement_symbols,
+    assignment_rule_targets,
     condition_target_symbols,
     formula_symbols,
     input_species,
@@ -400,8 +401,8 @@ INPUT_REMEDY = (
 )
 
 #: What a model may do with a condition target it declares, and :data:`INPUT_REMEDY` for one it
-#: means to read: the end of :func:`_unread_input_issues`' warning and of the invalid-targets hint
-#: (:mod:`operations`), which agents read as "every input must be read" (PEtab-MCP#290).
+#: means to read: the end of :func:`_unread_input_issues`' warning, which agents read as "every
+#: input must be read" (PEtab-MCP#290).
 INPUT_UNREAD = (
     "Leaving an input unread is allowed, and right for one with no effect on the data, such as a "
     "control: a term for it is a parameter the score charges. To give one an effect, "
@@ -447,18 +448,15 @@ def _first_period_only_issues(problem) -> list[dict[str, Any]]:
     ]
 
 
-def _unread_input_issues(problem) -> list[dict[str, Any]]:
-    """One warning naming each condition target the model declares and nothing reads: no rate,
-    event, initial amount or observable, directly or through the assignment rules they read, so no
-    period's value reaches the model. libpetab's invalid-target check passes it, as the target is
-    declared; the reconcile leaves it so when it prunes the seed whose initial amount read it
-    (PEtab-MCP#205), and an edit when it drops the last reader of a rule that reads it
-    (PEtab-MCP#264)."""
-    sm = getattr(problem.model, "sbml_model", None)
+def read_inputs(problem, sm=None) -> set[str]:
+    """The condition targets the model ``sm`` (the problem's own by default) reads: in a rate,
+    event, initial amount or observable, directly or through the assignment rules those read."""
+    sm = sm if sm is not None else getattr(problem.model, "sbml_model", None)
     if sm is None:
-        return []
-    declared = parameter_ids(sm) | species_ids(sm)
-    rules = {r.getVariable(): _ast_names(r.getMath()) for r in sm.getListOfRules() if r.isAssignment()}
+        return set()
+    rules = {
+        r.getVariable(): _ast_names(r.getMath()) for r in sm.getListOfRules() if r.isAssignment()
+    }
     read = (
         _model_math_names(sm, assignments=False)
         | _reaction_species(sm)
@@ -467,18 +465,74 @@ def _unread_input_issues(problem) -> list[dict[str, Any]]:
     while reached := read & rules.keys():
         for target in reached:
             read |= rules.pop(target)
-    unread = sorted((condition_target_symbols(problem) & declared) - read)
+    return condition_target_symbols(problem) & read
+
+
+#: Names of the inputs the model before an edit left unread too that :func:`_unread_input_issues`
+#: shows; the rest are counted.
+_UNREAD_BEFORE_SHOWN = 12
+
+
+def _unread_input_issues(problem, read_before: set[str] | None = None) -> list[dict[str, Any]]:
+    """One warning naming each condition target the model declares and does not read
+    (:func:`read_inputs`): the reconcile leaves one so when it prunes the seed whose initial amount
+    read it (PEtab-MCP#205), and an edit when it drops the last reader of a rule that reads it
+    (PEtab-MCP#264).
+
+    ``read_before`` is what the model before an edit read. Those it read lead, NEWLY UNREAD, and
+    the rest are capped: froehlich 91's re-author dropped Erlotinib and Lapatinib, and the two sat
+    unmarked among about 120 names (PEtab-MCP#332)."""
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None:
+        return []
+    declared = parameter_ids(sm) | species_ids(sm)
+    unread = sorted((condition_target_symbols(problem) & declared) - read_inputs(problem))
     if not unread:
         return []
+
+    def named(ids) -> str:
+        return ", ".join(f"`{t}`" for t in ids)
+
+    new = [t for t in unread if t in (read_before or ())]
+    why = (
+        "read by nothing in the model, or only by assignment rules nothing reads, so the model "
+        "never sees their value."
+    )
+    if new:
+        message = (
+            f"NEWLY UNREAD: condition target(s) {named(new)}, which the model before this edit "
+            f"read, are {why}"
+        )
+        if rest := [t for t in unread if t not in new]:
+            more = len(rest) - _UNREAD_BEFORE_SHOWN
+            message += f" Unread before it too: {named(rest[:_UNREAD_BEFORE_SHOWN])}" + (
+                f" (+{more} more)." if more > 0 else "."
+            )
+    else:
+        message = f"condition target(s) {named(unread)} are {why}"
+    return [{"level": "warning", "message": f"{message} {INPUT_UNREAD}", "check": "input_unread"}]
+
+
+def _ruled_input_issues(problem) -> list[dict[str, Any]]:
+    """One error naming each condition target an assignment rule computes. The condition table
+    sets a target per period and a rule computes it at every time, so AMICI refused the model at
+    compile, after the edit was accepted: froehlich 29's `set_assignment` on `Sorafenib`
+    (PEtab-MCP#332)."""
+    sm = getattr(problem.model, "sbml_model", None)
+    ruled = sorted(assignment_rule_targets(sm) & condition_target_symbols(problem)) if sm else []
+    if not ruled:
+        return []
+    named = ", ".join(f"`{t}`" for t in ruled)
     return [
         {
-            "level": "warning",
+            "level": "error",
             "message": (
-                f"condition target(s) {', '.join(f'`{t}`' for t in unread)} are read by nothing "
-                "in the model, or only by assignment rules nothing reads, so the model never sees "
-                f"their value. {INPUT_UNREAD}"
+                f"condition target(s) {named} are computed by an assignment rule, but the "
+                "condition table sets each per experiment, and a rule's value cannot be set. "
+                "Drop the rule: an input the model leaves out is declared for it, at 0. To give "
+                "one an effect, read it in a rate law."
             ),
-            "check": "input_unread",
+            "check": "input_ruled",
         }
     ]
 
@@ -863,7 +917,9 @@ def estimated_assignment_issues(problem) -> list[str]:
     return out
 
 
-def validate_problem(problem, protected_fixed_ids=None, statements: bool = False) -> dict[str, Any]:
+def validate_problem(
+    problem, protected_fixed_ids=None, statements: bool = False, inputs_read_before=None
+) -> dict[str, Any]:
     """Run PEtab v2 linting + libsbml SBML consistency and return a JSON-friendly report.
 
     Returns ``valid`` (no errors from either check), ``n_errors``/``n_warnings``, and the
@@ -873,7 +929,8 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
     :meth:`session.PetabSession.protected_fixed_parameter_ids`) enables the role check that
     rejects removing or estimating one (see :func:`_fixed_constant_role_issues`); omit it to
     skip that check. ``statements`` words the readout check's remedy for make_changes'
-    statements route.
+    statements route. ``inputs_read_before`` is :func:`read_inputs` of the model before an edit,
+    which the unread-input warning is diffed against (:func:`_unread_input_issues`).
     """
     lint = [
         i
@@ -916,9 +973,13 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
     issues += noise_issues
     n_errors += len(noise_issues)
 
+    ruled_issues = _ruled_input_issues(problem)
+    issues += ruled_issues
+    n_errors += len(ruled_issues)
+
     advisory = (
         _first_period_only_issues(problem)
-        + _unread_input_issues(problem)
+        + _unread_input_issues(problem, inputs_read_before)
         + _sourceless_species_issues(problem)
     )
     issues += advisory
@@ -932,6 +993,7 @@ def validate_problem(problem, protected_fixed_ids=None, statements: bool = False
             and not role_errors
             and not readout_issues
             and not noise_issues
+            and not ruled_issues
         ),
         "n_errors": n_errors,
         "n_warnings": n_warnings,

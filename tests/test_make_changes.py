@@ -1789,15 +1789,15 @@ def test_a_condition_input_stated_as_an_agent_is_told_to_move_to_the_binding(
     assert 'drop it from the statement and read it in the binding, `k="k*EGF"`' in out["error"]
 
 
-def test_an_unread_condition_input_is_reported_before_an_unknown_bound(tmp_path, add_condition):
-    """The bounds block's "Unknown parameter id" masked the unread condition target behind it,
-    3 calls in one isensee run (#193)."""
+def test_a_condition_input_no_row_reads_blocks_nothing(tmp_path, add_condition):
+    """`EGF`, read by no row, was refused as an invalid target, ahead of an unknown bound (#193).
+    The reconcile declares it now (PEtab-MCP#332), so the bound is the one error."""
     out = _call(_input_server(tmp_path, add_condition), "make_changes", {
         "justification": "A becomes B", "statements": [_statement_row()],
         "bindings": {"conv": "mass_action"},
         "parameters": [{"parameter_id": "nope", "lower_bound": 1e-3, "upper_bound": 1e3}]})
     assert out["applied"] is False
-    assert "invalid targets" in out["error"] and "Unknown parameter id" not in out["error"]
+    assert "Unknown parameter id 'nope'" in out["error"] and "invalid targets" not in out["error"]
 
 
 def _serum_call(mcp, amount, rows=()):
@@ -2335,18 +2335,6 @@ def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
     description = next(t for t in tools if t.name == "make_changes").description
     assert "NOTHING is bound" in description and "`statement_edits`" in description
     assert "statement_edits" in _make_changes_schema(mcp)
-
-
-def test_an_unread_condition_target_is_explained():
-    """The hint said the model "must have it: read it as …", which froehlich leads took for a
-    refusal of every unread input: it must be declared, and need not be read (PEtab-MCP#290)."""
-    from petab_mcp.operations import _rejection_summary
-    from petab_mcp.validation import INPUT_UNREAD
-
-    text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
-    assert "{'rit'}" in text and "input the condition table SETS" in text
-    assert "must declare it under its id" in text and text.endswith(INPUT_UNREAD)
-    assert "SETS" not in _rejection_summary(["something else"])
 
 
 # -- readouts, bindings and written mechanisms -------------------------------------------
