@@ -109,6 +109,66 @@ def test_a_forks_dropped_parameter_warning_is_against_its_base(session):
     ]
 
 
+def _with_c(c_init: float) -> str:
+    """The toy model with a species `C` started at its own `C_init`, declared at ``c_init``."""
+    return _antimony(
+        "species C in compartment_;", "C = C_init;", f"C_init = {c_init};", "r3: B => C; k1 * B;"
+    )
+
+
+def test_a_start_held_fixed_by_value_is_named(session):
+    """REGRESSION (PEtab-MCP#325): a start re-declared at 1 was held fixed with no message, and
+    bounds sent for it were taken with none either (bachmann 10, 23). Both edits now say so."""
+    res = O.set_model(session, _with_c(1.0), justification="C starts normalised")
+    assert [w for w in res["warnings"] if w.startswith("Held FIXED")] == [
+        f"Held FIXED, not estimated: `C_init` = 1 (the start of `C`). {O._HELD_FIXED}"
+    ]
+    bounded = O.set_model(
+        session,
+        _with_c(1.0),
+        justification="box C's start",
+        parameters=[{"parameter_id": "C_init", "lower_bound": 0.1, "upper_bound": 10}],
+    )
+    assert any(w.startswith("`C_init` is FIXED at 1, so the bounds") for w in bounded["warnings"])
+    assert not any(w.startswith("Held FIXED") for w in bounded["warnings"])  # not moved again
+
+
+def test_a_fork_keeps_a_start_its_model_now_fixes(session):
+    """REGRESSION (PEtab-MCP#325): a fork restored its base's nominal over a row the reconcile had
+    just fixed, so bachmann 10's start re-declared at 1 was simulated fixed at the base's fitted
+    79.75, one parameter off k for free."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+
+    O.set_model(session, _with_c(5.0), justification="C starts at a guess")
+    session.problem.parameter_df.loc["C_init", NOMINAL_VALUE] = 79.75  # as the fit leaves it
+    base = session.problem.parameter_df.copy()
+    O.set_model(
+        session, _with_c(1.0), justification="fork: C normalised", restore_parameter_df=base
+    )
+    row = session.problem.parameter_df.loc["C_init"]
+    assert (float(row[NOMINAL_VALUE]), bool(row[ESTIMATE])) == (1.0, False)
+
+
+def test_a_log_scale_refusal_names_the_kept_fitted_value(session):
+    """REGRESSION (PEtab-MCP#325): a kept row's fitted value refused log10 with advice for an
+    initial condition, on a rate constant the model re-declared at 0.5 (haiku lucarelli 4)."""
+    from petab.v2.C import NOMINAL_VALUE
+
+    O.set_model(session, _antimony("r3: A => ; k3 * A;", "k3 = -0.1;"), justification="k3")
+    session.problem.parameter_df.loc["k3", NOMINAL_VALUE] = -0.03  # as the fit leaves it
+    with pytest.raises(OperationError) as err:
+        O.set_model(
+            session,
+            _antimony("r3: A => ; k3 * A;", "k3 = 0.5;"),
+            justification="k3 on log10",
+            parameters=[
+                {"parameter_id": "k3", "scale": "log10", "lower_bound": 1e-3, "upper_bound": 10}
+            ],
+        )
+    assert "-0.03 is its row's fitted value, not the 0.5 the model declares" in str(err.value)
+    assert "initial-condition" not in str(err.value)
+
+
 def test_parameters_can_target_a_newly_introduced_parameter(session):
     """The parameter edit runs AFTER the reconcile, so it can bound a symbol this very re-author
     introduced — the whole point of taking both in one call."""
