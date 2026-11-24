@@ -139,6 +139,25 @@ def test_a_model_with_no_dynamics_is_refused(seeded):
     assert seeded.model_authored() is False  # and the working model is untouched
 
 
+def test_a_shipped_model_of_rate_ruled_variables_is_not_seeded_over(tmp_path):
+    """A model whose states are rate-ruled variables declares no species and no reaction. It is a
+    model all the same: the session keeps its rule rather than replacing it with the seed, and
+    mints only the placeholder that keeps it importable."""
+    yaml_path = _model_less_problem(tmp_path)
+    (yaml_path.parent / "model.ant").write_text(
+        "model ruled\n  B' = k1 - k2*B;\n  B = 0;\n  k1 = 0.5;\n  k2 = 0.1;\nend\n",
+        encoding="utf-8",
+    )
+    session = PetabSession(
+        str(yaml_path), provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
+    )
+    sm = session.model.sbml_model
+    assert sm.getNumRules() == 1 and sm.getRule(0).getVariable() == "B"
+    assert R.species_ids(sm) == {R.PLACEHOLDER_SPECIES}
+    assert session.has_model() is True
+    assert session.model_authored() is True
+
+
 def test_a_petab_placeholder_never_becomes_a_species(tmp_path):
     """`observableParameter1_<obsId>` is substituted from the measurement table at import; it is
     not an entity, and whatever it resolves to already has a parameter row. Declaring it would

@@ -1262,7 +1262,8 @@ and the best version. `improvement.is_new_best` marks the version that became th
 `progress.best_version`: the lowest score so far (`improvement_vs_best_prior` > 0), unless \
 `new_best_declined` says why not. `progress` is `get_progress`'s moving part: a new best resets \
 `non_improving_streak` only once the best has gained {STREAK_RESET_MIN_SCORE_GAIN:g} since the \
-last reset, a streak of {NON_IMPROVING_STREAK_CAP} sets `should_stop`, and \
+last reset (`streak_not_reset` says when one has not), a fit left unscored leaves the streak as it \
+is, a streak of {NON_IMPROVING_STREAK_CAP} sets `should_stop`, and \
 `score_improvement_over_last_n` spans the last {PLATEAU_WINDOW} fits⦄.
 
 The score's `k` is `n_estimated` + `hardcoded_constants`: a numeric literal in the model's math \
@@ -2755,7 +2756,9 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """Early-stop-chain progress for this session — a cheap counter read (no fit/simulation).
 
         `{n_fitted_ops, non_improving_streak, streak_cap, best_version, criterion, best_score,
-        best_gof_pvalue, score_improvement_over_last_n, plateau_window, should_stop, stop_reason}`.
+        best_gof_pvalue, score_improvement_over_last_n, plateau_window, should_stop, stop_reason,
+        streak_not_reset}`, the last only where the last fit was a new best that did not reset the
+        streak.
         `best_score` is under `criterion` — the complexity penalty this session ranks by.
         `best_version` is the best model so far (the session's result), the lowest-scoring version,
         the last whose fit says `is_new_best`;

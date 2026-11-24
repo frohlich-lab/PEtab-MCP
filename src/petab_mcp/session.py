@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID, TARGET_ID
+from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID, TARGET_ID, TIME
 from petab.v2.models.sbml_model import SbmlModel
 
 from . import criteria, logging_setup, protocols
@@ -126,6 +126,7 @@ _PROGRESS_ON_RESULT = (
     "score_improvement_over_last_n",
     "should_stop",
     "stop_reason",
+    "streak_not_reset",
 )
 
 
@@ -137,6 +138,20 @@ def _n_unique(df, column: str) -> int:
 def _unique_ids(df, column: str) -> list[str]:
     """The distinct ``column`` ids ``df`` names, in its order; none for an absent table."""
     return [] if df is None or column not in df.columns else list(map(str, df[column].unique()))
+
+
+def _steady_state(measurement_df) -> dict[str, str]:
+    """``describe_problem``'s ``steady_state`` line when measurements sit at time inf, else
+    nothing."""
+    if measurement_df is None or TIME not in measurement_df.columns:
+        return {}
+    n = sum(1 for t in measurement_df[TIME] if math.isinf(float(t)))
+    if not n:
+        return {}
+    return {
+        "steady_state": f"{n} of the {len(measurement_df)} measurements are at time inf, the "
+        'steady state their experiment reaches; get_measurements and query_data write it "inf".'
+    }
 
 
 def _with_fitted_values(simulation: dict[str, Any] | None, parameter_df) -> dict[str, Any] | None:
@@ -328,7 +343,7 @@ class PetabSession:
         #     only ``STREAK_RESET_MIN_SCORE_GAIN`` below this.
         #   * ``best`` — the best-scoring fitted model so far (see :class:`Checkpoint`).
         #   * ``op_history`` — per-op (version, score, running best_score, gof p, is_new_best, and
-        #     ``no_reset``: why a new best did not reset the streak), to surface "best-score
+        #     ``no_reset``/``streak_not_reset``: why a new best did not reset the streak), to surface "best-score
         #     improvement over the last N ops", to detect a plateau, and for the cap's stop_reason.
         # Every write holds ``counters_lock``, and ``progress_report`` reads them under it.
         self.non_improving_streak: int = 0
@@ -496,9 +511,13 @@ class PetabSession:
         later with no traceback — and it is what makes "there is always a model" a real
         invariant rather than an expectation.
         """
-        if self.has_model():
-            return
         from . import reconcile as R
+
+        if self.has_model():
+            # A shipped model is never seeded over. One whose states are rate-ruled variables
+            # declares no species, and gets the placeholder that keeps it importable.
+            R.ensure_one_species(self.model.sbml_model)
+            return
         from .validation import validate_problem
 
         antimony = R.seed_model_antimony(self.problem)
@@ -730,7 +749,8 @@ class PetabSession:
         return self.problem.model
 
     def has_model(self) -> bool:
-        """Whether there is a model at all (any species or reactions).
+        """Whether there is a model at all: any species, reaction or rule. Rules count, so a model
+        whose states are rate-ruled variables is one (see :func:`reconcile.has_dynamics`).
 
         THIS IS NOT THE MODEL-LESS FLAG — use :meth:`model_authored` for that. A model-less
         problem is SEEDED at construction with a content-free but valid model (see
@@ -750,11 +770,13 @@ class PetabSession:
         unreachable is what let every one of them go; the two call sites left are the seeding
         path itself, which establishes the invariant rather than defending against it.
         """
+        from . import reconcile as R
+
         model = self.problem.model
         if model is None:
             return False
         sm = model.sbml_model
-        return sm.getNumReactions() > 0 or sm.getNumSpecies() > 0
+        return sm.getNumSpecies() > 0 or R.has_dynamics(sm)
 
     def model_authored(self) -> bool:
         """Whether a MECHANISM has been authored — the model-less flag, reported as
@@ -902,6 +924,7 @@ class PetabSession:
             "condition_targets": _unique_ids(p.condition_df, TARGET_ID),
             "n_experiments": _n_unique(p.experiment_df, EXPERIMENT_ID),
             "n_measurements": 0 if p.measurement_df is None else int(len(p.measurement_df)),
+            **_steady_state(p.measurement_df),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
             "current_version": self.provenance.current_version,
             # The multistart count a fit uses when `n_starts` is omitted. Reported because
@@ -1294,8 +1317,14 @@ class PetabSession:
         (see :func:`fitting.compute_improvement`), the flag, the streak, and the checkpoint stay in
         lock step on one score.
 
+        A fit left unscored (no score, see :func:`fitting._reconcile_objective`) says nothing about
+        whether the model improved, so once a fit has scored it is no op: the streak and the
+        plateau window stay as they are. Before any fit has scored it counts, so a session whose
+        fits never score still stops at the cap, with :data:`_UNSCORED_STALL_ADVICE`.
+
         Two exceptions, each an adopted new best that increments the streak, its op recording why
-        (``no_reset``), which the cap's ``stop_reason`` counts. One that gains less than
+        (``no_reset``), which the cap's ``stop_reason`` counts, and ``streak_not_reset``, which
+        the fit result's ``progress`` carries. One that gains less than
         ``STREAK_RESET_MIN_SCORE_GAIN`` on ``streak_mark`` is the best but not progress: noise-floor
         wander would otherwise reset the streak forever. One whose ESTIMATED noise sigma collapsed
         is the other: the two implausible tails differ in whether a model can keep improving
@@ -1347,6 +1376,8 @@ class PetabSession:
             # so the checkpoint invariant — "score is a real, beatable number" — holds
             # locally no matter how the score was produced.
             usable = score is not None and math.isfinite(score)
+            if not usable and self.best is not None:
+                return
             candidate = (
                 Checkpoint(
                     version=version,
@@ -1362,9 +1393,10 @@ class PetabSession:
             )
             adopted = candidate is not None and self._adopt_checkpoint(candidate, is_new_best)
             # The adopted new bests that are not progress (see the docstring).
-            no_reset = None
+            no_reset = detail = None
             if adopted and candidate.sigma_estimated and candidate.sigma_collapsed:
                 no_reset = "a collapsed estimated noise sigma"
+                detail = f"v{version} is the best, but its estimated noise sigma collapsed"
             elif (
                 adopted
                 and self.streak_mark is not None
@@ -1373,6 +1405,11 @@ class PetabSession:
                 no_reset = (
                     f"a {self.criterion.name} gain under {STREAK_RESET_MIN_SCORE_GAIN:g} on the "
                     "best at the last reset"
+                )
+                detail = (
+                    f"v{version} is the best by a {self.criterion.name} gain of "
+                    f"{self.streak_mark - score:.2g} since the streak last reset, under the "
+                    f"{STREAK_RESET_MIN_SCORE_GAIN:g} that counts as progress"
                 )
             if adopted and no_reset is None:
                 self.non_improving_streak = 0
@@ -1388,7 +1425,7 @@ class PetabSession:
                     "best_score": self.best.score if self.best else None,
                     "gof_pvalue": gof_p,
                     "is_new_best": adopted,
-                    **({"no_reset": no_reset} if no_reset else {}),
+                    **({"no_reset": no_reset, "streak_not_reset": detail} if no_reset else {}),
                 }
             )
 
@@ -1515,6 +1552,8 @@ class PetabSession:
                 "plateau_window": PLATEAU_WINDOW,
                 "should_stop": stop_reason is not None,
                 "stop_reason": stop_reason,
+                # Why the last op, a new best, did not reset the streak.
+                "streak_not_reset": hist[-1].get("streak_not_reset") if hist else None,
             }
 
     @contextlib.contextmanager

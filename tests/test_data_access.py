@@ -325,6 +325,18 @@ def test_nan_values_cleaned_to_none(session):
     assert val is None or (isinstance(val, float) and not math.isnan(val))
 
 
+def test_a_steady_state_record_reads_inf_not_null(session):
+    """A record at t=inf (a steady-state measurement) keeps its time: SQL counts it as no NULL,
+    and the row writes it "inf"."""
+    session.simulation = {"records": [_rec("o", "c", float("inf"), 1.0, 1.0, 0.0, 0.0, 1.0)]}
+    out = data_access.run_query(session, "SELECT time FROM simulations")
+    assert out["rows"] == [{"time": "inf"}]
+    nulls = data_access.run_query(
+        session, "SELECT count(*) AS n FROM simulations WHERE time IS NULL"
+    )
+    assert nulls["rows"] == [{"n": 0}]
+
+
 # -- fit_diagnosis: the compact, bounded residual read for the agent --------
 def _inner_solved_toy(session, *, sigma: bool, offset: bool):
     """The toy on 10 time points with fontaine's observation model, ``obs_B = B + offset_B`` with
