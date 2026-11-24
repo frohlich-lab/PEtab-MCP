@@ -1795,13 +1795,15 @@ def _non_finite_gradient(session, problem) -> str:
 
 
 def state_powers(session, low: dict[str, float] | None = None) -> str:
-    """Each power in the model whose base reads a state and whose exponent an estimated
-    parameter, and what to send instead; ``""`` when there is none. ``low`` (a state's lowest
-    value, where it reached 0 or below) keeps only the powers of those states, saying how low.
-    Below 0 a power with a non-integer exponent is not a number, and at 0 one with an exponent below
-    1 has an infinite slope (AMICI writes the derivative in the exponent as 0 at a base of exactly
-    0). Read for a fit any of whose starts ended NOT_FINITE (``PetabSession.fit``), and where every
-    start failed on a gradient (:func:`_non_finite_gradient`)."""
+    """Each power in the model whose base reads a state or a condition target and whose exponent
+    an estimated parameter, and what to send instead; ``""`` when there is none. ``low`` (a
+    state's lowest value, where it reached 0 or below) keeps only the powers of those states,
+    saying how low. Below 0 a power with a non-integer exponent is not a number, and at 0 one with
+    an exponent below 1 has an infinite slope (AMICI writes the derivative in the exponent as 0 at
+    a base of exactly 0): lun 109's `xM2*M2d^hM2`, its input 0 in most conditions and `hM2` at
+    0.998, lost 64-74 of 100 starts NOT_FINITE. Read for a fit any of whose starts ended NOT_FINITE
+    (``PetabSession.fit``), and where every start failed on a gradient
+    (:func:`_non_finite_gradient`)."""
     import libsbml
 
     wp = session.problem
@@ -1811,6 +1813,7 @@ def state_powers(session, low: dict[str, float] | None = None) -> str:
         if low is not None
         else {s.getId() for s in sm.getListOfSpecies() if not s.getConstant()}
         | {r.getVariable() for r in sm.getListOfRules() if r.isRate()}
+        | _reconcile.condition_target_symbols(wp)
     )
     estimated = {str(p) for p in wp.parameter_df.index if _reconcile.is_parameter_estimated(wp, p)}
     found = []
@@ -1823,7 +1826,7 @@ def state_powers(session, low: dict[str, float] | None = None) -> str:
             what = (
                 f"a base that is not above 0 ({', '.join(f'`{b}` reaches {low[b]:g}' for b in base)})"
                 if low is not None
-                else f"the state{'s' if len(base) > 1 else ''} {_names(base)}"
+                else _names(base)
             )
             found.append(
                 f"`{libsbml.formulaToL3String(node)}` raises {what} to the estimated "

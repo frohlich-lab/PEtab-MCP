@@ -821,18 +821,20 @@ def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
 
 
 def test_a_power_of_a_state_to_an_estimated_exponent_is_named(dosed_session):
-    """The powers that go NaN when their state dips below 0 (PEtab-MCP#323), named for a fit any
-    of whose starts ended NOT_FINITE; a number as the exponent is not one."""
+    """The powers that go NaN when their state dips below 0 (PEtab-MCP#323), or lose their slope
+    where a condition sets their input to 0 (lun 109), named for a fit any of whose starts ended
+    NOT_FINITE; a number as the exponent is not one."""
     from petab_mcp import fitting
 
-    model = _DOSE_DRIVEN.replace("k1 * drive * A", "k1 * A^n_A + k1 * B^2").replace(
+    model = _DOSE_DRIVEN.replace("k1 * drive * A", "k1 * A^n_A + k1 * B^2 + dose^n_A").replace(
         "k2 = 0.1;", "k2 = 0.1;\n  n_A = 2;"
     )
     O.set_model(dosed_session, model, justification="cooperative conversion")
     assert fitting._reconcile.is_parameter_estimated(dosed_session.problem, "n_A")
-    assert fitting.state_powers(dosed_session).startswith(
-        "`A^n_A` raises the state `A` to the estimated `n_A`. Below 0 a power"
-    )
+    named = fitting.state_powers(dosed_session)
+    assert "`A^n_A` raises `A` to the estimated `n_A`" in named
+    assert "`dose^n_A` raises `dose` to the estimated `n_A`" in named
+    assert "B^2" not in named and ". Below 0 a power" in named
     assert fitting.state_powers(dosed_session, {"B": -0.1}) == ""
 
 
