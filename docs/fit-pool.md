@@ -112,7 +112,7 @@ Also found there:
   pool shares the fits alone.
 - **The pool is a service, run like the Phoenix collector:** the operator starts and stops it, and a
   sweep never does. A pool serves one environment, so a repository on its own pin runs its own
-  pool. gemot_iclr_2026, whose pins are frozen with the paper, keeps its private pools.
+  pool.
 - **Compiling stays on the run's node,** never on a worker.
 - **A fit returns when its slowest batch has.** A cutoff that stops the last few starts once most
   are done was considered (2026-11-07) and not adopted. Other runs' batches fill the workers a fit's

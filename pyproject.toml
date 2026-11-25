@@ -57,7 +57,7 @@ dependencies = [
     "petab>=0.10.0",
     "python-libsbml>=5.19",
     # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
-    # guard against a symbolic reaction stoichiometry (issue frohlich-lab/petab_mcp#89). Below
+    # guard against a symbolic reaction stoichiometry. Below
     # 3.2, reusing one symbol across several stoichiometries (`N A -> N B`) instead fails the
     # Antimony->SBML conversion on an id-uniqueness clash, raising an opaque libSBML error that
     # nothing here translates.
