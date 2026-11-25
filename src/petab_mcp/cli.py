@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from . import criteria
-from .server import create_server
+from .server import create_server, statements_extra_missing
 from .session import store_root
 
 
@@ -156,6 +156,9 @@ def main(argv: list[str] | None = None) -> int:
             "rows make, and only that route builds from statements.",
             file=sys.stderr,
         )
+        return 2
+    if args.entity_map and (missing := statements_extra_missing()):
+        print(f"error: --entity-map: {missing}", file=sys.stderr)
         return 2
     if args.fit_pool and not args.build_root:
         print(

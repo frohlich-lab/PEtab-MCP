@@ -3163,6 +3163,26 @@ def _open_ctx(
     return _Ctx(session, engine, held_out)
 
 
+#: What the `statements` route imports beyond the core install: the `statements` extra.
+STATEMENTS_EXTRA = ("indra", "pysb", "bionetgen")
+
+
+def statements_extra_missing() -> str | None:
+    """Why this environment cannot serve the `statements` route (an entity map), naming the
+    packages of :data:`STATEMENTS_EXTRA` it lacks and what to install; ``None`` when it has them."""
+    import importlib.util
+
+    missing = [name for name in STATEMENTS_EXTRA if importlib.util.find_spec(name) is None]
+    if not missing:
+        return None
+    return (
+        f"an entity map needs the `statements` extra, and {', '.join(missing)} "
+        f"{'is' if len(missing) == 1 else 'are'} not installed: install `petab-mcp[statements]` "
+        "with the pysb commit the README's Install names, since no pysb release installs beside "
+        "AMICI."
+    )
+
+
 def create_server(
     yaml_path: str,
     build_root: str | None = None,
@@ -3248,6 +3268,8 @@ def create_server(
             "constraints need an entity_map: a constraint is a claim the statements route's rows "
             "make, and only that route builds from statements."
         )
+    if entity_map is not None and (missing := statements_extra_missing()):
+        raise ValidationError(missing)
     if constraint_updates not in ("off", "any"):
         raise ValidationError(f"constraint_updates is 'off' or 'any', not {constraint_updates!r}.")
     if constraint_updates == "any" and not constraints:
