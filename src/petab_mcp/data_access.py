@@ -795,7 +795,9 @@ def fit_diagnosis(
         _fit = (session.simulation or {}).get("fitted_parameters")
         _rep = fitting.noise_sigma_report(session.problem, _fit)
         if _rep:
-            noise_sigma = {"report": _rep, "advice": fitting.noise_sigma_advice(_rep)}
+            residual = {"flagged_observables": sorted(flagged)}
+            advice = fitting.noise_sigma_advice(_rep, session.problem, residual)
+            noise_sigma = {"report": _rep, "advice": advice}
     except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
         noise_sigma = {}
     signals = sigma_misfit_signals(session, report=_rep, sims=df)

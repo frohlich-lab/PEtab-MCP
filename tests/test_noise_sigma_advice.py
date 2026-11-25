@@ -15,12 +15,9 @@ from petab_mcp import residual_tests as rt  # noqa: E402
 
 from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION  # noqa: E402
 from petab_mcp.fitting import (  # noqa: E402
-    NOISE_SIGMA_COLLAPSED_ADVICE,
-    NOISE_SIGMA_INFLATED_ADVICE,
     _entry_collapsed,
     _entry_inflated,
     noise_sigma_advice,
-    noise_sigma_advice_for,
     noise_sigma_report,
 )
 
@@ -86,10 +83,64 @@ def test_none_when_plausible_or_empty():
     assert noise_sigma_advice({"s": _entry(0.08, 0.1, 0.4)}) is None
 
 
+def _inflated(**extra):
+    """An inflated entry as noise_sigma_report writes it: effective sd 0.5 above a cap of 0.1."""
+    return {**_entry(0.5, 0.1, 2.5), "effective_sigma": 0.5, "status": "inflated", **extra}
+
+
 def test_inflated_advice():
     a = noise_sigma_advice({"s": _entry(0.5, 0.1, 2.5)})  # fitted above cap
-    assert a == NOISE_SIGMA_INFLATED_ADVICE
-    assert "inflated" in a and "will NOT be accepted" in a
+    assert "`s` 0.5 against a cap of 0.1 (noise sd)" in a and "not accepted as finished" in a
+
+
+def test_the_advice_states_this_fits_residual_verdict():
+    """#333: a fixed string said the residual_structure verdict "still flags the structure" while
+    isensee's same fit flagged no observable. The advice now reads the verdict, or says nothing of
+    one it was not given."""
+    report = {"s": _inflated()}
+    none = noise_sigma_advice(report, residual={"flagged_observables": []})
+    assert "verdict flags no observables" in none and "still flags" not in none
+    two = noise_sigma_advice(report, residual={"flagged_observables": ["a", "b"]})
+    assert "verdict flags 2 observables" in two and "`a`" not in two  # a count, as fix_pointers
+    assert "residual_structure" not in noise_sigma_advice(report)
+
+
+def test_the_advice_names_every_flagged_sigma_in_its_own_units():
+    """#333: the refusal named no sigma, value or cap, and gave blockers one at a time. Each is
+    named at once, in the parameter's own units where the report converted its cap."""
+    lo = NOISE_SIGMA_COLLAPSE_FRACTION / 2
+    report = {
+        "s": _inflated(fitted=0.2, fitted_cap=0.04),
+        "t": _inflated(),
+        "u": {**_entry(lo, 0.5, lo), "fitted_floor": 0.004},
+    }
+    a = noise_sigma_advice(report)
+    assert "`s` 0.2 against a cap of 0.04;" in a and "`t` 0.5 against a cap of 0.1 (noise sd)" in a
+    assert "0.75 x the data std" in a and f"`u` {lo:.3g} against a floor of 0.004" in a
+
+
+def test_no_widening_advice_for_a_sigma_the_fit_solves(monkeypatch):
+    """#333: isensee's rho_pRII_Western is solved analytically, so its bounds are refused (#274),
+    yet "do not widen" sent agents to bound it."""
+    from petab_mcp import reconcile as R
+
+    monkeypatch.setattr(R, "classify_inner_parameters", lambda p: {"s": R.INNER_TYPE_SIGMA})
+    a = noise_sigma_advice({"s": _inflated(), "t": _inflated()}, problem=object())
+    assert "widening the bounds of `t` does not help" in a
+    a = noise_sigma_advice({"s": _inflated()}, problem=object())
+    assert "Fix the mechanism" in a and "widening" not in a
+
+
+def test_a_cap_below_replicate_scatter_says_no_model_meets_it():
+    """#333 (#320): isensee's cap 0.0746 lies below its replicate pure error 0.092, so every honest
+    fit reads inflated. The advice says so, and stops telling the agent to fix the mechanism."""
+    a = noise_sigma_advice({"s": _inflated(data_noise_estimate=0.2, data_noise_method="replicate")})
+    assert "replicate scatter alone 0.2, above the cap, so no model brings" in a
+    assert "Fix the mechanism" not in a and "not accepted" not in a
+    a = noise_sigma_advice(
+        {"s": _inflated(data_noise_estimate=0.05, data_noise_method="replicate")}
+    )
+    assert "replicate scatter alone 0.05" in a and "no model" not in a and "Fix the mechanism" in a
 
 
 def _ratio_entry(ratio, method, fitted=0.5, cap=10.0):
@@ -240,33 +291,10 @@ def test_data_std_cap_still_flags_independent_of_method():
     assert _entry_inflated(_entry(0.5, 0.1, 2.5)) is True
 
 
-def test_cap_only_inflation_uses_the_generic_advice():
-    from petab_mcp.fitting import NOISE_SIGMA_INFLATED_ADVICE
-
-    # The cap arm is the only inflation arm, so it is also the only advice: one string, whatever
-    # noise floor the report happens to carry.
-    for method in ("difference", "replicate"):
-        assert (
-            noise_sigma_advice({"s": _ratio_entry(2.4, method, fitted=20.0, cap=10.0)})
-            == NOISE_SIGMA_INFLATED_ADVICE
-        ), method
-
-
 def test_collapsed_advice():
     frac = NOISE_SIGMA_COLLAPSE_FRACTION / 2
     a = noise_sigma_advice({"s": _entry(frac, 0.5, frac)})  # fraction below floor
-    assert a == NOISE_SIGMA_COLLAPSED_ADVICE
-    assert "collapsed" in a and "will NOT be accepted" in a
-
-
-def test_inflation_reported_first_when_both_present():
-    # One inflated + one collapsed sigma (different observables): advice leads with inflation, the
-    # more common misfit-masking case (matches noise_sigma_advice's documented ordering).
-    both = {
-        "hi": _entry(0.5, 0.1, 2.5),
-        "lo": _entry(NOISE_SIGMA_COLLAPSE_FRACTION / 2, 0.5, NOISE_SIGMA_COLLAPSE_FRACTION / 2),
-    }
-    assert noise_sigma_advice(both) == NOISE_SIGMA_INFLATED_ADVICE
+    assert f"`s` at {frac:.3g} x its data std" in a and "not accepted as finished" in a
 
 
 def test_shared_per_entry_predicates():
@@ -280,13 +308,6 @@ def test_shared_per_entry_predicates():
     )
     assert not _entry_inflated({"fitted": 0.5, "upper_bound_cap": None})  # cap unassessable
     assert not _entry_collapsed({"fraction_of_data_std": None})  # frac unassessable
-
-
-def test_advice_for_flags_derives_without_rescanning():
-    assert noise_sigma_advice_for(True, False) == NOISE_SIGMA_INFLATED_ADVICE
-    assert noise_sigma_advice_for(False, True) == NOISE_SIGMA_COLLAPSED_ADVICE
-    assert noise_sigma_advice_for(True, True) == NOISE_SIGMA_INFLATED_ADVICE  # inflation first
-    assert noise_sigma_advice_for(False, False) is None
 
 
 def test_report_status_per_entry_including_unknown(monkeypatch):

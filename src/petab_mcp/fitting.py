@@ -45,6 +45,7 @@ from . import reconcile as _reconcile
 from .constants import (
     NOISE_SIGMA_MIN_POINTS,
     NOISE_SIGMA_COLLAPSE_FRACTION,
+    NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
     OVERFIT_GOF_PVALUE,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
@@ -2539,39 +2540,87 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
     return any(_entry_collapsed(e) for e in report.values() if isinstance(e, dict))
 
 
-# Agent-facing advice when the fit's noise model is implausible. Surfaced proactively on every
-# get_fit_summary (not just at a plateau stop) and echoed by a client's finish gate, so the agent
-# learns WHY a good-looking BIC won't be accepted and fixes the mechanism instead of the noise.
-NOISE_SIGMA_INFLATED_ADVICE = (
-    "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit — "
-    "the chi2 goodness-of-fit is not genuine adequacy here. Do NOT widen or lean on the noise; fix "
-    "the mechanism so the residuals shrink at a plausible sigma (this result's residual_structure "
-    "verdict still flags the structure). A fit resting on an inflated sigma will "
-    "NOT be accepted as finished."
-)
-NOISE_SIGMA_COLLAPSED_ADVICE = (
-    "an ESTIMATED noise sigma has collapsed far below the data's own variability — the fit is "
-    "overfitting the noise for a good-looking score, not genuine adequacy. Prefer a simpler / more "
-    "parsimonious mechanism at a plausible sigma rather than one that drives the residuals to ~0. "
-    "A fit resting on a collapsed sigma will NOT be accepted as finished."
-)
+def _sigma_clause(pid: str, entry: "dict[str, Any]") -> "tuple[str, bool]":
+    """One flagged sigma against its limit, in the parameter's own units where
+    :func:`_fitted_limit` gave them, and whether replicate scatter alone is above its cap."""
+    if _entry_collapsed(entry):
+        at = entry.get("fitted_floor")
+        if at is not None:
+            return f"`{pid}` {entry['fitted']:.3g} against a floor of {at:.3g}", False
+        return f"`{pid}` at {entry['fraction_of_data_std']:.3g} x its data std", False
+    cap = float(entry["upper_bound_cap"])
+    at = entry.get("fitted_cap")
+    # One coordinate for all three numbers: the parameter's own where known, else the noise sd's.
+    if at is not None:
+        scale, value, where = at / cap, entry["fitted"], ""
+    else:
+        scale, value, where = 1.0, entry.get("effective_sigma", entry.get("fitted")), " (noise sd)"
+    text = f"`{pid}` {float(value):.3g} against a cap of {cap * scale:.3g}{where}"
+    floor = entry.get("data_noise_estimate")
+    if entry.get("data_noise_method") != "replicate" or floor is None:
+        return text, False
+    text += f", replicate scatter alone {floor * scale:.3g}"
+    if floor < cap:
+        return text, False
+    return f"{text}, above the cap, so no model brings this sigma under it", True
 
 
-def noise_sigma_advice_for(inflated: bool, collapsed: bool) -> str | None:
-    """Advice from already-computed inflated/collapsed flags (so a caller that needs both the flags
-    AND the advice — e.g. :func:`fit_summary` — computes the two predicates ONCE). Inflation is
-    reported first when both tails are present, since it is the more common misfit-masking case."""
+def _inner_sigmas(problem: Any) -> set[str]:
+    """The noise sigmas ``problem``'s fit solves analytically, whose bounds are refused."""
+    try:
+        inner = _reconcile.classify_inner_parameters(problem)
+    except Exception:  # noqa: BLE001 - advisory: then every sigma reads as optimized
+        return set()
+    return {pid for pid, kind in inner.items() if kind == _reconcile.INNER_TYPE_SIGMA}
+
+
+def noise_sigma_advice(
+    report: "dict[str, Any] | None",
+    problem: Any = None,
+    residual: "dict[str, Any] | None" = None,
+) -> str | None:
+    """Agent-facing advice for an implausible noise model, built from THIS fit, or ``None`` when its
+    estimated sigmas are plausible. Names every flagged sigma at once (:func:`_sigma_clause`), the
+    cap rule, a cap that replicate scatter alone breaks, whether the fit's ``residual`` verdict
+    (:func:`data_access.residual_structure_rollup`) flags anything, and which bounds not to widen:
+    none of a sigma ``problem``'s fit solves analytically, whose bounds are refused. Fixed strings
+    said the verdict "still flags the structure" beside a verdict that flagged nothing
+    (PEtab-MCP#333)."""
+    entries = [(pid, e) for pid, e in (report or {}).items() if isinstance(e, dict)]
+    inflated = [_sigma_clause(pid, e) + (pid,) for pid, e in entries if _entry_inflated(e)]
+    collapsed = [_sigma_clause(pid, e)[0] for pid, e in entries if _entry_collapsed(e)]
+    if not inflated and not collapsed:
+        return None
+    parts = []
     if inflated:
-        return NOISE_SIGMA_INFLATED_ADVICE
+        parts.append(
+            "ESTIMATED noise sigma above its cap, absorbing misfit, so the chi2 goodness-of-fit is "
+            f"not adequacy here: {'; '.join(c for c, _, _ in inflated)}. A cap is "
+            f"{NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:g} x the data std of the sigma's observables."
+        )
+        meetable = [pid for _, unmeetable, pid in inflated if not unmeetable]
+        outer = [f"`{pid}`" for pid in meetable if pid not in _inner_sigmas(problem)]
+        if meetable:
+            parts.append(
+                "Fix the mechanism so the residuals shrink at a plausible sigma"
+                + (f"; widening the bounds of {', '.join(outer)} does not help." if outer else ".")
+            )
     if collapsed:
-        return NOISE_SIGMA_COLLAPSED_ADVICE
-    return None
-
-
-def noise_sigma_advice(report: "dict[str, Any] | None") -> str | None:
-    """Concise agent-facing advice for an implausible noise model, or ``None`` when the fit's
-    estimated sigmas are plausible."""
-    return noise_sigma_advice_for(noise_sigma_inflated(report), noise_sigma_collapsed(report))
+        parts.append(
+            f"ESTIMATED noise sigma below {NOISE_SIGMA_COLLAPSE_FRACTION:g} x its data std, "
+            f"overfitting the noise for a good-looking score: {'; '.join(collapsed)}. Prefer a "
+            "simpler mechanism at a plausible sigma over one that drives the residuals to ~0."
+        )
+    flagged = (residual or {}).get("flagged_observables")
+    if isinstance(flagged, list):
+        # The count alone: the fix_pointers switch withholds which observables (withheld.strip).
+        n = (residual or {}).get("n_flagged_observables", len(flagged))
+        parts.append(
+            f"This fit's residual_structure verdict flags {n or 'no'} observable{'' if n == 1 else 's'}."
+        )
+    if collapsed or any(not unmeetable for _, unmeetable, _ in inflated):
+        parts.append("A fit resting on an implausible sigma is not accepted as finished.")
+    return " ".join(parts)
 
 
 def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
@@ -2808,13 +2857,13 @@ def fit_summary(session, engine) -> dict[str, Any]:
     _collapsed = noise_sigma_collapsed(_report)
     out["noise_sigma_inflated"] = _inflated
     out["noise_sigma_collapsed"] = _collapsed
-    _advice = noise_sigma_advice(_report)  # report-based: quotes the replicate ratio when reliable
-    if _advice is not None:
-        out["noise_sigma_advice"] = _advice
     # Cheap: the rollup reads the STORED records, no re-simulation. Lazy — data_access imports us.
     from .data_access import residual_structure_rollup
 
     out["residual_structure"] = residual_structure_rollup(session, sims=None)
+    _advice = noise_sigma_advice(_report, session.problem, out["residual_structure"])
+    if _advice is not None:
+        out["noise_sigma_advice"] = _advice
     # The PARAMETERISATION counterpart, on the same reasoning: the cheapest ties BIC would pay for
     # (see :func:`identifiability.merge_hints`). They ride on the fit RESULT, which only the caller
     # that RAN the fit holds — so a caller reading the score afterwards (another agent, a client's
@@ -3148,7 +3197,12 @@ def fit_result_block(
         # Prefer the report PetabSession.fit already computed and stashed, so the event, the
         # adequacy gate and this block cannot disagree; computed here for the paths that don't
         # stash one (a restore).
-        **noise_sigma_block(problem, fitted, report=fitsim.get("noise_sigma_report")),
+        **noise_sigma_block(
+            problem,
+            fitted,
+            report=fitsim.get("noise_sigma_report"),
+            residual=fitsim.get("residual_structure"),
+        ),
         # The COMPACT residual-structure verdict only — the first few observables the sign/runs
         # tests or the replicate lack-of-fit test flag, a one-line summary, and the bounded
         # replicate verdict where the design has replicates (see
@@ -3198,6 +3252,7 @@ def noise_sigma_block(
     problem: Any,
     fitted: dict[str, float] | None,
     report: dict[str, Any] | None = None,
+    residual: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The noise-model verdict as it appears on any fit-bearing result.
 
@@ -3209,7 +3264,8 @@ def noise_sigma_block(
     noise model is plausible, a result that omits these keys entirely reads to an agent as
     "plausible". Any fit-bearing shape must therefore carry the whole verdict or none of it, and
     the agent may have no ``get_fit_summary`` to fall back on. ``report`` short-circuits the
-    computation for a caller that already has one.
+    computation for a caller that already has one; ``residual`` is the fit's residual verdict the
+    advice reads (:func:`noise_sigma_advice`).
     """
     if report is None:
         report = noise_sigma_report(problem, fitted)
@@ -3217,7 +3273,7 @@ def noise_sigma_block(
     collapsed = noise_sigma_collapsed(report)
     block = {"noise_sigma_inflated": inflated, "noise_sigma_collapsed": collapsed}
     if inflated or collapsed:
-        block["noise_sigma_advice"] = noise_sigma_advice_for(inflated, collapsed)
+        block["noise_sigma_advice"] = noise_sigma_advice(report, problem, residual)
         block["noise_sigma_report"] = {
             pid: e for pid, e in report.items() if _entry_inflated(e) or _entry_collapsed(e)
         }
