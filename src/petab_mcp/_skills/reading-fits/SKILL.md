@@ -19,10 +19,10 @@ description: >-
   With estimated sigmas chi2 sits near `n_data_points` by construction.
 ⦄- Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
 - A change's result lists only what is new since the parent version in
-  `fitted_parameters_changed`, `parameter_scales`, `parameters_at_bound` and `merge_hints`, only
-  flagged sigmas in `noise_sigma_report`, and three flagged observables in `residual_structure`,
-  with `n_parameters_at_bound`, `n_merge_hints` and `n_flagged_observables` the full counts. A fit
-  summary has every pin, tie, sigma and flagged observable.
+  `fitted_parameters_changed`, `parameter_scales` and `merge_hints`, only flagged sigmas in
+  `noise_sigma_report`, and three flagged observables in `residual_structure`, with
+  `n_merge_hints` and `n_flagged_observables` the full counts; its pins split into
+  `parameters_newly_at_bound` and `parameters_still_at_bound`. A fit summary has them all.
 ⦃- `is_new_best`: this version became the best model, `progress.best_version`, the lowest score
   so far. A lower score that did not carries `new_best_declined`, saying why.
 ⦄

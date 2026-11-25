@@ -373,6 +373,21 @@ def test_a_bound_on_an_inner_solved_sigma_is_refused(session):
     assert session.problem.parameter_df.loc[["k1", "sigma_B"], "upperBound"].tolist() == [100, 100]
 
 
+def test_no_pin_where_the_bound_cannot_be_widened(session):
+    """#341: the fit report listed an inner-solved sigma at its bound, whose bounds are refused
+    above (isensee 63612603_69), and a value at a linear lower bound of 0, where its term is off
+    (lucarelli 63782292_0/3; 0.9 of [0, 100] was within the 1% too). The same pins on a log10 or an
+    upper bound are still listed, and without the problem the sigma is too."""
+    from petab_mcp import fitting
+
+    df = session.problem.parameter_df
+    df.loc["sigma_B", "estimate"] = True
+    fitted = {"A_init": 0.9, "B_init": 100.0, "sigma_B": 1e-4, "k1": 1e-4}
+    pins = fitting.parameters_at_bound(fitted, df, problem=session.problem)
+    assert [(p["parameter_id"], p["side"]) for p in pins] == [("B_init", "upper"), ("k1", "lower")]
+    assert "sigma_B" in {p["parameter_id"] for p in fitting.parameters_at_bound(fitted, df)}
+
+
 def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
     # One call retunes several parameters at once — the point of the batched editor.
     res = O.change_parameters(

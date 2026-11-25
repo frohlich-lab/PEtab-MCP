@@ -635,8 +635,13 @@ def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_pa
         {"antimony": _antimony(), "justification": "score with the default starts"},
     )
     assert res["n_starts"] == default
-    # ...and how many of them reached the best value (#213)
-    assert re.fullmatch(rf"[1-9]\d*/{default} \(within 1 nll\)", res["starts_at_best"])
+    # ...and how many of them reached the best value (#213), fresh and warm apart (#334)
+    split = re.fullmatch(
+        r"(\d+)/(\d+) fresh, (\d+)/(\d+) warm \(within 1 nll\)", res["starts_at_best"]
+    )
+    assert split, res["starts_at_best"]
+    fresh, n_fresh, warm, n_warm = map(int, split.groups())
+    assert fresh + warm >= 1 and n_fresh + n_warm == default
 
     # given -> exactly that count, not default + n_starts
     res = _call(

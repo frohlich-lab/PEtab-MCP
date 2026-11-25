@@ -833,8 +833,8 @@ def _params_meta(record) -> list[dict[str, Any]]:
         ub = record.ub[i] if i < len(record.ub) else None
         at_bound = False
         if lb is not None and ub is not None and ub > lb:
-            # Same relative tolerance the fit report uses (fitting.parameters_at_bound), so a
-            # parameter isn't flagged at-bound by one path and not the other.
+            # The fit report's tolerance (fitting.parameters_at_bound). A value at a linear
+            # lower bound of 0, which that report leaves out, counts here: it is on the box.
             tol = PARAMETER_AT_BOUND_RELATIVE_TOL * (ub - lb)
             at_bound = (est_s - lb) <= tol or (ub - est_s) <= tol
         try:

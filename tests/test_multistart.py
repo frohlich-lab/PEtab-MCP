@@ -468,22 +468,30 @@ def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
     fit_session, monkeypatch
 ):
     """dessauges raised `n_starts` step by step to 8000, each fit with 1 start at the best
-    (PEtab-MCP#287): a raised fit that still leaves 1 or 2 there says the optimum is a needle. One
-    at the default does not, since there a raise is still the advice, and neither does one where
-    those are half the starts or more."""
-    real, at_best = fitting.fit_and_simulate, {"n": 1}
+    (PEtab-MCP#287): a raised fit that still leaves 0 to 2 FRESH starts there says the optimum is a
+    needle. Warm starts begin at the previous optimum and do not count: 401 of a refit's 408 at the
+    best were warm (PEtab-MCP#334). One at the default does not, since there a raise is still the
+    advice, and neither does one where those are half the fresh starts or more."""
+    real, forced = fitting.fit_and_simulate, {}
 
     def forced_at_best(*args, **kwargs):
         out = real(*args, **kwargs)
-        out["n_starts_at_best"] = at_best["n"]
+        out.update(forced)
         return out
 
+    def needle(n_starts=None, **counts):
+        forced.update(counts)
+        warnings = fit_session.fit(n_starts=n_starts)["warnings"]
+        return next((w for w in warnings if "needle" in w), None)
+
     monkeypatch.setattr(fitting, "fit_and_simulate", forced_at_best)
-    assert not any("needle" in w for w in fit_session.fit()["warnings"])
-    raised = fit_session.fit(n_starts=3)
-    assert any("1 of 3 starts reached" in w and "needle" in w for w in raised["warnings"])
-    at_best["n"] = 2
-    assert not any("needle" in w for w in fit_session.fit(n_starts=4)["warnings"])
+    one_fresh = {"n_starts_at_best": 1, "n_warm_starts": 0, "n_warm_starts_at_best": 0}
+    assert needle(**one_fresh) is None
+    assert "1 of 3 fresh starts reached" in needle(3, **one_fresh)
+    warm = {"n_warm_starts": 2, "n_warm_starts_at_best": 2}
+    assert "1 of 3 fresh starts reached" in needle(5, n_starts_at_best=3, **warm)
+    assert "0 of 4 fresh starts reached" in needle(6, n_starts_at_best=2, **warm)
+    assert needle(7, n_starts_at_best=5, n_warm_starts=3, n_warm_starts_at_best=3) is None
 
 
 def test_a_refit_at_the_cap_is_not_offered_more_starts(fit_session):
