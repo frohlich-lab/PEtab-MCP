@@ -171,8 +171,7 @@ NOISE_SIGMA_REPLICATE_MIN_DOF = 6
 # reference sigma (0.56% of a trend-dominated std), and the data-std cap sat below isensee's
 # replicate scatter, so every fit there read inflated. Replaying the judge over the 113 finished
 # runs of the 2026-11-09 sweep, this rule takes passes 101 -> 106 with none lost, and the outcome
-# holds for a collapse factor of 0.33-0.5 and a cap factor of 1.5-2.0. It is the paper's
-# `--sigma-rule proposed` (gemot_iclr_2026 slurm/sweep_panels.sigma_flags).
+# holds for a collapse factor of 0.33-0.5 and a cap factor of 1.5-2.0.
 NOISE_SIGMA_COLLAPSE_OF_REPLICATE = 0.5
 NOISE_SIGMA_CAP_OF_REPLICATE = 1.5
 

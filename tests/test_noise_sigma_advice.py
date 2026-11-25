@@ -301,10 +301,10 @@ def test_the_other_one_is_the_parsimony_gate_s_and_the_arm_says_so():
     assert data_access._merge_lof_verdicts([arm], {}, n_structural=6)["status"] == "flagged"
 
 
-# --- the paper's rule, on the entries it scored (#320) ---------------------------------------
+# --- the #320 rule, on stored entries of the 2026-11-09 sweep ----------------------------------
 def _stored_verdicts():
-    """``tests/data/noise_sigma_verdicts.json``, each row with the verdict of the paper's
-    ``sigma_flags(report, "proposed")`` (gemot_iclr_2026 b89bb7b, ``slurm/sweep_panels.py``):
+    """``tests/data/noise_sigma_verdicts.json``, each row with its verdict under the #320 rule,
+    computed by a separate implementation of it, not by this package:
 
     * ``versions``: stored noise_sigma_report entries of the 2026-11-09 sweep
       (gemot_pools_20261107), out of 12,189 in its 95 finished reference runs with an estimated
@@ -319,10 +319,10 @@ def _stored_verdicts():
     return data["versions"], data["references"]
 
 
-def test_the_verdict_is_the_papers_on_the_entries_it_scored():
-    """#320: the paper rescored its runs under this rule (`--sigma-rule proposed`), and gemot's
-    judge imports these predicates, so a disagreement makes the judged runs and the paper differ.
-    The stored caps are the old 0.75 x data std, so this also holds the raise to the floor."""
+def test_the_verdict_matches_stored_sweep_entries():
+    """#320: the sweep's runs were re-judged under this rule, and gemot's judge imports these
+    predicates, so a disagreement would score one version two ways. The stored caps are the old
+    0.75 x data std, so this also holds the raise to the floor."""
     versions, references = _stored_verdicts()
     rows = versions + [[p, pid, "reference", None, e, f] for p, pid, e, f in references]
     for problem, pid, run, version, entry, flags in rows:

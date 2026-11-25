@@ -2371,8 +2371,7 @@ def _sigma_limits(entry: "dict[str, Any]") -> "tuple[float | None, float | None,
     is none, and all three for an entry the report marked ``unknown`` (so no reader can flag what
     the entry's ``status`` calls unassessed). The rule of PEtab-MCP#320, stated once for
     :func:`_entry_inflated`, :func:`_entry_collapsed`, the reported ``upper_bound_cap`` and
-    :func:`_fitted_limit`. It is the paper's ``sigma_flags(report, "proposed")`` (gemot_iclr_2026
-    ``slurm/sweep_panels.py``), held to it on stored entries in ``tests/test_noise_sigma_advice.py``.
+    :func:`_fitted_limit`.
 
     Where the sigma's data have replicates (``data_noise_method == "replicate"``, which needs
     ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled df), the floor is ``NOISE_SIGMA_COLLAPSE_OF_REPLICATE``
