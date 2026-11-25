@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from conftest import confirmed
+
 from petab_mcp.references import StubReferenceResolver
 from petab_mcp.server import create_server
 
@@ -95,6 +97,6 @@ def test_a_revert_to_an_earlier_rate_is_refused_as_that_version(tmp_path):
     _change(mcp, "steeper", [_STEEPER])
     rows = _rows(mcp)
 
-    back = _change(mcp, "saturating")
-    assert back["applied"] is False and "identical to v0" in back["error"], back["message"]
+    back = confirmed(lambda: _change(mcp, "saturating"))
+    assert back["applied"] is False and "identical to v0" in back["error"], back["error"]
     assert back["version"] == 1 and _rows(mcp) == rows

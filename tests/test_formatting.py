@@ -13,6 +13,8 @@ from petab_mcp.formatting import (
     df_to_records,
     df_to_tsv,
     experiments_tsv,
+    measurement_time,
+    summarize_measurements,
 )
 
 
@@ -31,6 +33,19 @@ def test_filtered_measurements_no_spurious_id(session):
     recs = df_to_records(filtered)
     assert recs
     assert all("id" not in r for r in recs)  # no positional-offset id leaks in
+
+
+def test_a_steady_state_time_is_written_inf_and_a_missing_one_null(session):
+    """t=inf is a value, the steady state, so a JSON result writes it "inf" (JSON has no
+    Infinity) and keeps it apart from a missing cell and from -inf."""
+    df = session.problem.measurement_df.copy()
+    df["time"] = df["time"].astype(float)
+    df.loc[df.index[0], "time"] = np.inf
+    df.loc[df.index[1], "time"] = np.nan
+    times = [r["time"] for r in df_to_records(df)]
+    assert times[:2] == ["inf", None]
+    assert summarize_measurements(df)["groups"][0]["time"]["max"] == "inf"
+    assert measurement_time(-np.inf) == -np.inf and measurement_time(np.nan) is None
 
 
 def test_observables_tsv_leads_with_the_named_index(session):
@@ -81,7 +96,7 @@ def test_a_wide_condition_table_comes_back_one_row_per_target_under_the_cap():
     assert len(text.encode()) <= CONDITIONS_MAX_BYTES
     head, *table = text.splitlines()
     assert head.startswith("9169 conditions set 146 targets")
-    assert "WHERE conditionId = 'line0'" in head
+    assert "WHERE condition_id = 'line0'" in head
     summary = pd.read_csv(io.StringIO("\n".join(table)), sep="\t", index_col="targetId")
     assert list(summary.index) == [f"gene{t}" for t in range(145)] + ["dose"]
     assert summary.loc["gene1", ["n_conditions", "n_values", "min", "max"]].tolist() == [
@@ -101,7 +116,7 @@ def test_a_summary_counts_the_targets_past_the_cap():
     listed = len(text.splitlines()) - 3
     assert (
         last
-        == f"(+{900 - listed} more targets: query_data `SELECT DISTINCT targetId FROM conditions`)"
+        == f"(+{900 - listed} more targets: query_data `SELECT DISTINCT target_id FROM conditions`)"
     )
 
 
@@ -143,7 +158,7 @@ def test_a_froehlich_sized_experiment_table_comes_back_one_row_per_layout_under_
     assert len(text.encode()) <= EXPERIMENTS_MAX_BYTES
     head, *table = text.splitlines()
     assert head.startswith("9170 experiments, too large a table for one reply")
-    assert f"WHERE experimentId = 'experiment____{ids[0]}'" in head
+    assert f"WHERE experiment_id = 'experiment____{ids[0]}'" in head
     assert table == [
         "n_experiments\tn_periods\ttimes\tn_conditions\texample",
         f"9169\t1\t0\t1\texperiment____{ids[0]}",

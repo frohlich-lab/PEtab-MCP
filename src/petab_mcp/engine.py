@@ -35,7 +35,7 @@ from petab.v2.C import (
 )
 
 from . import filelock
-from .formatting import finite_float
+from .formatting import finite_float, measurement_time
 from .problem import observable_transformation, scale
 
 
@@ -297,8 +297,9 @@ class AmiciEngine:
 
         Per-point records still come from AMICI's ``ReturnData``: pyPESTO hands them back when
         the objective is called with ``return_dict=True`` (it switches AMICI to full reporting),
-        so the simulation dataframe is unchanged. Returns ``(nllh, records, res, states)``, the
-        last :meth:`_state_trajectories` off the same ``ReturnData``.
+        so the simulation dataframe is unchanged. Returns ``(nllh, records, res, states,
+        failed)``: :meth:`_state_trajectories` off the same ``ReturnData``, and the experiments
+        whose simulation failed, with AMICI's status (:func:`fitting.amici_failures`).
         """
         from pypesto.C import FVAL, RDATAS
 
@@ -320,7 +321,8 @@ class AmiciEngine:
             # real fit.
             nllh = None
         states = self._state_trajectories(problem.objective.amici_model, rdatas)
-        return nllh, records, self._res_from_rdatas(rdatas), states
+        failed = fitting.amici_failures(rdatas)
+        return nllh, records, self._res_from_rdatas(rdatas), states, failed
 
     def _state_trajectories(self, model, rdatas) -> dict[str, Any] | None:
         """The model's species and assignment rules at every time AMICI simulated, off the
@@ -362,7 +364,7 @@ class AmiciEngine:
     def evaluate_objective(self) -> dict[str, Any]:
         """Score the current model + parameters against the fixed measurements."""
         with self.session.lock:
-            nllh, records, res, _ = self._objective_evaluate()
+            nllh, records, res, _, _ = self._objective_evaluate()
 
         chi2 = self._chi2(records, res)
         return {
@@ -379,12 +381,12 @@ class AmiciEngine:
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted
-        ``residual_weighted`` (the chi2 term), and evaluated ``noise``. These records
-        back the ``simulations`` table exposed for SQL analysis via
+        ``residual_weighted`` (signed (m − s)/σ; its square is the chi2 term), and evaluated
+        ``noise``. These records back the ``simulations`` table exposed for SQL analysis via
         :mod:`petab_mcp.data_access`.
         """
         with self.session.lock:
-            nllh, records, res, states = self._objective_evaluate(solve_inner, gradient)
+            nllh, records, res, states, failed = self._objective_evaluate(solve_inner, gradient)
 
         n_expected, n_missing = self.simulation_gap(records)
         return {
@@ -398,6 +400,9 @@ class AmiciEngine:
             "n_missing_simulations": n_missing,
             "records": records,
             "state_trajectories": states,
+            # Which experiments did not simulate, and AMICI's status for each: the fit's
+            # re-scoring names them where it leaves the fit unscored.
+            "failed_experiments": failed,
         }
 
     # -- helpers -----------------------------------------------------------
@@ -568,7 +573,7 @@ class AmiciEngine:
             {
                 "observable_id": row.get(OBSERVABLE_ID),
                 "experiment_id": row.get(EXPERIMENT_ID),
-                "time": finite_float(row.get(TIME)),
+                "time": measurement_time(row.get(TIME)),
                 "measurement": finite_float(row.get(MEASUREMENT)),
                 "simulation": None,
                 "residual": None,
@@ -685,7 +690,7 @@ class AmiciEngine:
                 {
                     "observable_id": row.get(OBSERVABLE_ID),
                     "experiment_id": row.get(EXPERIMENT_ID),
-                    "time": finite_float(row.get(TIME)),
+                    "time": measurement_time(row.get(TIME)),
                     "measurement": m,
                     "simulation": s,
                     "residual": residual,

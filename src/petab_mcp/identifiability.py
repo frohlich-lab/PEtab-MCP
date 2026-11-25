@@ -15,10 +15,10 @@ The FIM is a LOCAL linearization and can understate non-identifiability for stro
 models, so the two are meant to be read together. All output is bounded (top-N pairs/directions).
 
 One verdict off that diagnosis rides on EVERY fit result instead of waiting to be asked for:
-:func:`fit_merge_hints` names the parameter ties whose cost the complexity penalty already pays for (see
-:func:`merge_hints`). It is the same computation the section reports, condensed — a tool called
-once a session cannot inform a decision made every turn. One edit reads the same geometry: a pin
-(:func:`pin_image`) moves the optimum along a flat direction and checks the fit stays put.
+:func:`fit_merge_hints` names the parameter ties whose estimated cost the complexity penalty pays
+for (see :func:`merge_hints`). It is the same computation the section reports, condensed — a tool
+called once a session cannot inform a decision made every turn. One edit reads the same geometry:
+a pin (:func:`pin_image`) moves the optimum along a flat direction and checks the fit stays put.
 
 NOTHING HERE MAY BUILD A MODEL. A diagnosis describes a fit that already happened, and the module
 that fit was compiled with already exists, so every entry point reads the frozen
@@ -36,10 +36,11 @@ analytical subsystem stands on its own.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from . import criteria
-from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
+from .constants import MERGE_PRICE_UNRELIABLE_MOVE, PARAMETER_AT_BOUND_RELATIVE_TOL
 
 #: An eigenvalue of the FIM below this fraction of its largest is a flat axis.
 FLAT_REL = 1e-3
@@ -1028,22 +1029,30 @@ MERGE_HINT_LIMIT = 3
 
 
 def merge_hints(
-    diagnosis: "dict[str, Any] | None", *, limit: int = MERGE_HINT_LIMIT, rename: bool = False
+    diagnosis: "dict[str, Any] | None",
+    *,
+    limit: int = MERGE_HINT_LIMIT,
+    version: int | None = None,
+    model: "tuple[str, Any] | None" = None,
 ) -> list[dict[str, Any]] | None:
     """The ties worth reporting beside a fit's score: up to ``limit`` cheapest ONE-SHARED-VALUE
-    merges whose ``dnll`` is below what the criterion charges for the parameter each deletes
-    — or ``None``.
+    merges whose estimated ``dnll`` is below what the criterion charges for the parameter each
+    deletes — or ``None``.
 
     ``diagnosis`` is an :func:`identifiability` payload, so the hints cannot say anything the
     section does not: they ARE that payload's ONE-SHARED-VALUE ``merge_candidates`` rows that beat
-    the charge, cheapest first, minus the detail. Four fields each (and ``take``, below), kept
+    the charge, cheapest first, minus the detail. Four fields each (and the three below), kept
     short because this rides on every fit result and is re-sent in the agent's history every later
-    turn: the pair, its cost, ``dscore`` (negative = the merge lowers the score), and
+    turn: the pair, its estimated cost, ``dscore`` (negative = the merge lowers the score), and
     ``move_scaled``. The last one is not decoration —
     :func:`merge_candidates` prices a ONE-SHARED-VALUE tie and says that price must be read against
     the move: a hint naming a near-free tie without it invites taking a merge whose parameter
     travels many decades, which is the quadratic running off down a flat direction rather than an
-    edit that survives a refit.
+    edit that survives a refit. A move of :data:`MERGE_PRICE_UNRELIABLE_MOVE` or more adds
+    ``price_unreliable: true``.
+
+    ``version`` is the version whose fit priced them, carried as ``priced_at_version``: a price is
+    this optimum's, and agents applied one version's hints to another base (PEtab-MCP#336).
 
     ALL of them, not just the cheapest, because one hint per fit taught the caller to merge one pair
     per refit while the rest of the redundancy sat unnamed — and on this problem class the ties come
@@ -1063,10 +1072,10 @@ def merge_hints(
     tie that beats the charge — so its ABSENCE is not a certificate of parsimony. Only the section
     distinguishes those (``n_ties_skipped``, ``filters_off``).
 
-    ``rename`` (a session whose ``make_changes`` offers ``model_edits``, ``session.text_route``)
-    adds ``take``, the ``model_edits`` op that makes the tie: a ``rename`` of the second onto the
-    first, which keeps its fitted value (and is the one the fixed tables read, if either is). Without it blasi agents retyped rate laws by hand and lost
-    a constant doing so (PEtab-MCP#283). The statements route ties by ``rebind``, row by row.
+    ``model`` (:func:`edit_surface`: on a session whose ``make_changes`` offers ``model_edits``)
+    adds ``take``, the ``model_edits`` ops that make the tie (:func:`tie_ops`). Without it blasi
+    agents retyped rate laws by hand and lost a constant doing so (PEtab-MCP#283). The statements
+    route ties by ``rebind``, row by row.
     """
     ties = ((diagnosis or {}).get("merge_candidates") or {}).get("ties") or []
     out = []
@@ -1074,16 +1083,95 @@ def merge_hints(
         if not (isinstance(row, dict) and row.get("merge_improves_score")):
             continue
         pair = list(row.get("parameters") or ())
+        move = row.get("move_scaled")
         hint = {
             "parameters": pair,
             "dnll": row.get("dnll"),
             "dscore": row.get("dscore"),
-            "move_scaled": row.get("move_scaled"),
+            "move_scaled": move,
         }
-        if rename and len(pair) == 2:
-            hint["take"] = {"op": "rename", "old": pair[1], "new": pair[0]}
+        if isinstance(move, (int, float)) and move >= MERGE_PRICE_UNRELIABLE_MOVE:
+            hint["price_unreliable"] = True
+        if version is not None:
+            hint["priced_at_version"] = version
+        if model is not None and len(pair) == 2 and (ops := _take(pair, model)):
+            hint["take"] = ops
         out.append(hint)
     return out[:limit] or None
+
+
+def _take(pair: list[str], model: tuple[str, Any]) -> list[dict[str, str]] | None:
+    """:func:`tie_ops` for a hint, ``None`` where it cannot tell: a hint never fails a fit."""
+    try:
+        return tie_ops(*pair, *model)
+    except Exception:  # noqa: BLE001 - advisory; the hint stands without its ops
+        return None
+
+
+def _written(pid: str, masked: str) -> bool:
+    return re.search(rf"(?<![\w.]){re.escape(pid)}\b", masked) is not None
+
+
+def _minted_initial(pid: str, masked: str, sbml_model) -> tuple[str, str] | None:
+    """``(species, its initial assignment)`` where ``pid`` is the ``<species>_init`` the reconcile
+    minted (:func:`reconcile.ensure_parametric_initial_conditions`) and the text never writes."""
+    import libsbml
+
+    from .reconcile import _ast_names
+
+    if not pid.endswith("_init") or _written(pid, masked):
+        return None
+    sid = pid[: -len("_init")]
+    ia = sbml_model.getInitialAssignmentBySymbol(sid) if sbml_model.getSpecies(sid) else None
+    if ia is None or pid not in _ast_names(ia.getMath()):
+        return None
+    return sid, libsbml.formulaToL3String(ia.getMath())
+
+
+def tie_ops(keep: str, drop: str, text: str, sbml_model) -> list[dict[str, str]] | None:
+    """The ``model_edits`` ops that give ``drop`` and ``keep`` one value in ``text``, the source
+    they apply to, whose reconciled model is ``sbml_model`` — or ``None`` where no op can.
+
+    Two parameters the text writes are one ``rename`` of ``drop`` onto ``keep``, which keeps
+    ``keep``'s fitted value. A ``<species>_init`` the reconcile minted is in no text to rename, and
+    no text may take its name while the species starts at a literal (the reconcile refuses it), so
+    a minted member is tied by ``set_initial`` on its species instead: the species starts at the
+    other member through the minted assignment's own formula (an amount over a volume stays one).
+    Of two minted members, ``keep``'s species is first written to start at ``keep`` by name.
+    """
+    from .model_edits import mask_comments
+
+    masked = mask_comments(text or "")
+    mk, md = _minted_initial(keep, masked, sbml_model), _minted_initial(drop, masked, sbml_model)
+
+    def start_at(minted: tuple[str, str], old: str, new: str) -> dict[str, str]:
+        sid, formula = minted
+        expr = re.sub(rf"(?<![\w.]){re.escape(old)}\b", new, formula)
+        return {"op": "set_initial", "id": sid, "antimony": expr}
+
+    if md and mk:
+        return [start_at(mk, keep, keep), start_at(md, drop, keep)]
+    if md and _written(keep, masked):
+        return [start_at(md, drop, keep)]
+    if mk and _written(drop, masked):
+        return [start_at(mk, keep, drop)]
+    if _written(keep, masked) and _written(drop, masked):
+        return [{"op": "rename", "old": drop, "new": keep}]
+    return None
+
+
+def edit_surface(session) -> tuple[str, Any] | None:
+    """``(text, sbml_model)`` for :func:`merge_hints`' ``take``: the source a ``model_edits`` op
+    applies to (the one this call submitted, else the working one, else the render a shipped
+    problem's first edit applies to) and the model it reconciled to — ``None`` on a session whose
+    ``make_changes`` offers no ``model_edits``."""
+    if not session.text_route:
+        return None
+    try:
+        text = session.submitted_source or session.model_source
+        return text or session.model.to_antimony(), session.problem.model.sbml_model
+    except Exception:  # noqa: BLE001 - advisory; the hints stand without their ops
+        return None
 
 
 #: Key under which a fit stashes :func:`fit_diagnosis_block` on its simulation payload. Not part of
@@ -1131,7 +1219,7 @@ def fit_merge_hints(session) -> list[dict[str, Any]] | None:
     """:func:`merge_hints` for the fit ``session`` has just frozen, for the fit result to carry —
     the rows of :func:`fit_diagnosis_block`'s verdict the result has room for."""
     return merge_hints(
-        (fit_diagnosis_block(session) or {}).get("diagnosis"), rename=session.text_route
+        (fit_diagnosis_block(session) or {}).get("diagnosis"), model=edit_surface(session)
     )
 
 
@@ -1197,4 +1285,66 @@ def stored_merge_hints(session) -> list[dict[str, Any]] | None:
     diagnosis = stored_diagnosis(session)
     if not diagnosis.get("available") or diagnosis.get("stale"):
         return None
-    return merge_hints(diagnosis, rename=session.text_route)
+    return merge_hints(
+        diagnosis, version=session.provenance.current_version, model=edit_surface(session)
+    )
+
+
+def version_merge_hints(provenance, version: int) -> list[dict[str, Any]]:
+    """The hints stored ``version``'s fit priced, re-derived from the diagnosis it stored
+    (:func:`fit_diagnosis_block`), so they are the ones its own fit result carried; ``[]`` where
+    it stored none."""
+    stored = (provenance.get_version_simulation(version) or {}).get(STORED_DIAGNOSIS_KEY)
+    return merge_hints(stored.get("diagnosis") if isinstance(stored, dict) else None) or []
+
+
+#: Opens the warning :func:`unhinted_ties` writes, so ``withheld`` cuts it with the hints it reads.
+UNHINTED_TIE = "unhinted tie: "
+
+
+def unhinted_ties(session, ops: Any, base: int) -> list[str]:
+    """A warning for each tie in ``ops``, a ``model_edits`` batch applied to version ``base``, that
+    no merge hint of ``base``'s own fit prices.
+
+    A tie is a ``rename`` of one estimated parameter onto another, or a ``set_initial`` starting a
+    species whose ``<species>_init`` is estimated at another estimated parameter (a minted
+    initial value's ``take``, :func:`tie_ops`). A price is the optimum's that priced it: hints read
+    at v23 and applied to v22 cost 30.7 bic in one run (PEtab-MCP#336). Best-effort: ``[]`` where
+    the base cannot be read, or is no version yet (``-1``, a shipped problem's first edit).
+    """
+    from .parameters import estimated_mask
+
+    if base < 0:
+        return []
+    try:
+        prov = session.provenance
+        table = (
+            session.problem.parameter_df
+            if base == prov.current_version
+            else prov.get_parameter_df(base)
+        )
+        estimated = {str(p) for p in table.index[estimated_mask(table)]}
+        ties = []
+        for op in ops if isinstance(ops, list) else ():
+            name = (op.get("op") or "").strip() if isinstance(op, dict) else ""
+            if name == "rename":
+                pair = {str(op.get("old") or "").strip(), str(op.get("new") or "").strip()}
+            elif name == "set_initial":
+                read = set(re.findall(r"[A-Za-z_]\w*", str(op.get("antimony") or "")))
+                pair = {f"{str(op.get('id') or '').strip()}_init"} | (read & estimated)
+            else:
+                continue
+            if len(pair) == 2 and pair <= estimated and pair not in ties:
+                ties.append(pair)
+        if not ties:
+            return []
+        hinted = {frozenset(h["parameters"]) for h in version_merge_hints(prov, base)}
+    except Exception:  # noqa: BLE001 - advisory; never refuse an edit over a warning
+        return []
+    return [
+        f"{UNHINTED_TIE}v{base}, which this change applies to, has no merge hint tying "
+        f"`{a}` and `{b}`: a hint's price holds only at its `priced_at_version`, so this fit's "
+        "score decides the tie."
+        for a, b in (sorted(t) for t in ties)
+        if frozenset((a, b)) not in hinted
+    ]

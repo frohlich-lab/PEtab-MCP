@@ -554,9 +554,9 @@ def test_query_data_static_tables(tmp_path):
 
     async def go():
         out = _structured(
-            await mcp.call_tool("query_data", {"sql": "SELECT parameterId FROM parameters"})
+            await mcp.call_tool("query_data", {"sql": "SELECT parameter_id FROM parameters"})
         )
-        ids = {r["parameterId"] for r in out["rows"]}
+        ids = {r["parameter_id"] for r in out["rows"]}
         assert ids == {"k1", "k2", "sigma_B", "A_init", "B_init"}
         assert out["truncated"] is False
 
@@ -1106,6 +1106,8 @@ def test_fit_tools(tmp_path):
                 "antimony": _ONE_REACTION_ANTIMONY,
                 "justification": "a second scored version",
                 "n_starts": 2,
+                # HEAD, named: v1 may not be the best, and then a call without it is asked about.
+                "base_version": 1,
             },
         )
         # The two versions this block actually cares about — the bounds change and the structure

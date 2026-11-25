@@ -36,12 +36,26 @@ def finite_float(value: Any) -> float | None:
     return None if (math.isnan(f) or math.isinf(f)) else f
 
 
+def measurement_time(value: Any) -> float | None:
+    """A measurement time as a ``float``: finite, or ``±inf`` for a steady state; ``None`` when
+    missing or NaN. Unlike :func:`finite_float` it keeps an infinity, which is a time, not a gap;
+    :func:`_clean` writes it as ``"inf"``/``"-inf"``."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(f) else f
+
+
 def _clean(value: Any) -> Any:
     """Coerce a single cell into a JSON-friendly value."""
     if value is None:
         return None
     if isinstance(value, float):
-        # JSON has no NaN/Inf; represent them as None so results stay valid.
+        # JSON has no NaN/Inf: NaN is a missing cell (None), and an infinity, such as a
+        # steady-state measurement time, is written "inf"/"-inf".
+        if math.isinf(value):
+            return "inf" if value > 0 else "-inf"
         return finite_float(value)
     if isinstance(value, (str, int, bool)):
         return value
@@ -146,12 +160,13 @@ def conditions_summary(df: "pd.DataFrame", max_bytes: int = CONDITIONS_MAX_BYTES
     head = (
         f"{df[CONDITION_ID].nunique()} conditions set {len(table)} targets, too large a table for "
         "one reply: one row per target instead. A condition's own values are query_data `SELECT "
-        f"targetId, targetValue FROM conditions WHERE conditionId = '{df[CONDITION_ID].iloc[0]}'`.\n"
+        f"target_id, target_value FROM conditions WHERE condition_id = "
+        f"'{df[CONDITION_ID].iloc[0]}'`.\n"
     )
     header, *rows = table.to_csv(sep="\t", float_format="%.6g", lineterminator="\n").splitlines(
         keepends=True
     )
-    tail = "(+{} more targets: query_data `SELECT DISTINCT targetId FROM conditions`)\n"
+    tail = "(+{} more targets: query_data `SELECT DISTINCT target_id FROM conditions`)\n"
     budget = max_bytes - len((head + header + tail.format(len(rows))).encode())
     kept = []
     for row in rows:
@@ -208,8 +223,8 @@ def experiments_summary(periods: pd.DataFrame, max_bytes: int = EXPERIMENTS_MAX_
     head = (
         f"{len(experiments)} experiments, too large a table for one reply: one row per period "
         "layout instead, `n_conditions` the conditions each of its `times` applies. An "
-        "experiment's own periods are query_data `SELECT time, conditionId FROM experiments WHERE "
-        f"experimentId = '{periods[EXPERIMENT_ID].iloc[0]}'`.\n"
+        "experiment's own periods are query_data `SELECT time, condition_id FROM experiments "
+        f"WHERE experiment_id = '{periods[EXPERIMENT_ID].iloc[0]}'`.\n"
     )
     columns = ["n_experiments", "n_periods", "times", "n_conditions", "example"]
     header, *rows = (
