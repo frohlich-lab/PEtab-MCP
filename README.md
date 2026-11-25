@@ -38,7 +38,14 @@ benchmark examples and the run explorer — lives in
 ## Install
 
 ```bash
-pip install -e .          # installs AMICI + pyPESTO (a C++ toolchain is required)
+pip install -e . --group pins   # installs AMICI + pyPESTO (a C++ toolchain is required)
+```
+
+The `pins` group (pip >= 25.1) adds unreleased commits of pysb and petab, which PyPI refuses as
+dependencies. No released pysb installs beside AMICI, so an install from PyPI names its commit:
+
+```bash
+pip install petab-mcp "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3"
 ```
 
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
@@ -77,7 +84,7 @@ problem lives at `tests/data/toy_v2/`; `tests/data/toy_v1/` is the same problem 
 
 The fits of many servers, a sweep's runs say, share one pool of SLURM workers. `petab-mcp-pool`
 runs the pool as a SLURM job of its own, and a server joins it with `--fit-pool ADDRESS` (or
-`PETAB_MCP_FIT_POOL`). Both need the `dask` extra (`pip install -e '.[dask]'`).
+`PETAB_MCP_FIT_POOL`). Both need the `dask` extra (`pip install -e '.[dask]' --group pins`).
 
 ```bash
 petab-mcp-pool --slurm-max-jobs N --address-file PATH   # --port 8786
@@ -276,7 +283,7 @@ Principles to hold onto when extending this package.
 ## Development
 
 ```bash
-pip install -e '.[dev]'   # AMICI + pyPESTO are core deps; dev adds pytest + ruff
+pip install -e '.[dev]' --group pins   # AMICI + pyPESTO are core deps; dev adds pytest + ruff
 pytest                    # needs the full install (AMICI/pyPESTO are hard deps); PubMed is stubbed
 ```
 

@@ -50,11 +50,11 @@ dependencies = [
     # problem that does not lint (every benchmark problem is, until its agent writes the model),
     # petab1to2's own rescaling of log10 noise onto log-normal (#535), and the SciML extension
     # (`petab.v2.extensions.sciml`), which the harness's neural route stages its problems in.
-    # At PEtab-dev/libpetab-python#579, on top of 0.10.0, until a release has it: the PR keeps
-    # per-experiment constants in the condition table, where `ExperimentsToSbmlConverter` made
-    # each a piecewise initial assignment with a branch per experiment, which kept
-    # Froehlich_CellSystems2018 (9169 experiments) from importing. Back to a floor once released.
-    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@08a13908b060dd605df09f3a58c65ac01464520b",
+    # The `pins` group below adds PEtab-dev/libpetab-python#579, which keeps per-experiment
+    # constants in the condition table, where `ExperimentsToSbmlConverter` made each a piecewise
+    # initial assignment with a branch per experiment; without it Froehlich_CellSystems2018 (9169
+    # experiments) does not import.
+    "petab>=0.10.0",
     "python-libsbml>=5.19",
     # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
     # guard against a symbolic reaction stoichiometry (issue frohlich-lab/petab_mcp#89). Below
@@ -109,11 +109,12 @@ dependencies = [
     # `import dateutil.tz`, and pandas with it. pip happens to backtrack dateutil instead.
     # Drop this once botocore allows dateutil 3.
     "python-dateutil<3",
-    # The model language the mechanisms build, and its SBML export (`problem_sbml`). A commit on
-    # master, not a release: 1.17.0 caps sympy below 1.12, which amici needs, and the commit lifting
-    # the cap (pysb#611) is unreleased. Revisit with the next release, as `pysb>=1.18,<2`: the
-    # policies construct Rule, Expression and Observable directly.
-    "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3",
+    # The model language the mechanisms build, and its SBML export (`problem_sbml`). No release
+    # resolves: 1.17.0 caps sympy below 1.12, which amici needs, and pysb#611, which lifts the cap,
+    # is unreleased. The `pins` group below installs a master commit that has it. Revisit with the
+    # next release, as `pysb>=1.18,<2`: the policies construct Rule, Expression and Observable
+    # directly.
+    "pysb>=1.17",
     # Never imported here: it ships the BioNetGen that pysb finds and runs to expand the rules into
     # reactions (`problem_sbml`). 0.8.7 is what the suite is measured against. BioNetGen is a Perl
     # program pysb runs as `perl BNG2.pl`, so `perl` must be on PATH or every expansion fails
@@ -155,9 +156,13 @@ petab-mcp-pool = "petab_mcp.pool:main"
 Homepage = "https://github.com/frohlich-lab/PEtab-MCP"
 Repository = "https://github.com/frohlich-lab/PEtab-MCP"
 
-# The pysb pin above is a git commit, which hatchling refuses without this.
-[tool.hatch.metadata]
-allow-direct-references = true
+# Unreleased commits the dependencies above need, kept out of the published metadata because
+# PyPI refuses a direct reference there: `pip install -e . --group pins` (pip >= 25.1).
+[dependency-groups]
+pins = [
+    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@08a13908b060dd605df09f3a58c65ac01464520b",
+    "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3",
+]
 
 # The one place the version is set: `__version__` in the package.
 [tool.hatch.version]

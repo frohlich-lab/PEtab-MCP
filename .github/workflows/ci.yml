@@ -98,7 +98,7 @@ jobs:
         if: env.RUN == 'true'
         run: |
           python -m pip install --upgrade pip
-          AMICI_PARALLEL_COMPILE=$(nproc) python -m pip install -e '.[dev]'
+          AMICI_PARALLEL_COMPILE=$(nproc) python -m pip install -e '.[dev]' --group pins
 
       # `swig` is an (unpinned) AMICI dependency, so `.[dev]` already pulls it;
       # install it explicitly too so CI never silently relies on the transitive
@@ -256,7 +256,7 @@ jobs:
       - name: Install package (with dev extras)
         run: |
           python -m pip install --upgrade pip
-          AMICI_PARALLEL_COMPILE=$(nproc) python -m pip install -e '.[dev]'
+          AMICI_PARALLEL_COMPILE=$(nproc) python -m pip install -e '.[dev]' --group pins
 
       - name: Run the regulator corpus
         run: python -m pytest -v -n 2 tests/test_regulator_corpus.py
