@@ -1106,6 +1106,8 @@ def test_fit_tools(tmp_path):
                 "antimony": _ONE_REACTION_ANTIMONY,
                 "justification": "a second scored version",
                 "n_starts": 2,
+                # HEAD, named: v1 may not be the best, and then a call without it is asked about.
+                "base_version": 1,
             },
         )
         # The two versions this block actually cares about — the bounds change and the structure

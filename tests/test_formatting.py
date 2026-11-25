@@ -13,6 +13,8 @@ from petab_mcp.formatting import (
     df_to_records,
     df_to_tsv,
     experiments_tsv,
+    measurement_time,
+    summarize_measurements,
 )
 
 
@@ -31,6 +33,19 @@ def test_filtered_measurements_no_spurious_id(session):
     recs = df_to_records(filtered)
     assert recs
     assert all("id" not in r for r in recs)  # no positional-offset id leaks in
+
+
+def test_a_steady_state_time_is_written_inf_and_a_missing_one_null(session):
+    """t=inf is a value, the steady state, so a JSON result writes it "inf" (JSON has no
+    Infinity) and keeps it apart from a missing cell and from -inf."""
+    df = session.problem.measurement_df.copy()
+    df["time"] = df["time"].astype(float)
+    df.loc[df.index[0], "time"] = np.inf
+    df.loc[df.index[1], "time"] = np.nan
+    times = [r["time"] for r in df_to_records(df)]
+    assert times[:2] == ["inf", None]
+    assert summarize_measurements(df)["groups"][0]["time"]["max"] == "inf"
+    assert measurement_time(-np.inf) == -np.inf and measurement_time(np.nan) is None
 
 
 def test_observables_tsv_leads_with_the_named_index(session):

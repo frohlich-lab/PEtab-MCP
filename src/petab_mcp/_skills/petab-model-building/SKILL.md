@@ -36,7 +36,8 @@ says when its conditions apply (time -inf: while the model equilibrates beforeha
 - **Names must match.** A condition targets a model entity by name; a mismatch means the
   perturbation silently never happens.
 - **Read the inputs that act.** A target nothing reads changes no experiment: wrong for an input
-  the data respond to, right for one with no effect (a control). Unread, it need only exist.
+  the data respond to, right for one with no effect (a control). One you leave out is declared
+  for you, at 0. No rule may assign one: the condition sets it.
 
 A condition-set initial value is an experimental *input*, not a value to fit.
 

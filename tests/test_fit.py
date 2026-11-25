@@ -800,10 +800,23 @@ def test_an_unscored_fit_under_a_source_that_breaks_a_total_names_it(dosed_sessi
     nllh, note = fitting._reconcile_objective(dosed_session, {"neg_log_likelihood": 10.0}, sim)
     assert nllh is None
     if sink:
-        assert "fault in how the server evaluates" in note
+        assert "Neither value judges the structure" in note and "server" not in note
     else:
         assert "pre-equilibration has no steady state to reach: `r3` (`-> B; kb * A`)" in note
         assert "server" not in note
+
+
+def _without_steady_state(session, build_root) -> None:
+    """``session`` holds ``_SOURCED`` without a sink, fitting 2 starts, with only ``kb`` free. Its
+    total then grows at no less than ``kb * k2 / (k1 + k2)`` >= 1.7e-4 from every start, which
+    no pre-equilibration converges on; with ``k1`` and ``k2`` free, a start at ``k2`` ~ 1e-4 and
+    ``k1`` ~ 80 grew slowly enough for one to (CI on PEtab-MCP#358)."""
+    from petab_mcp.engine import AmiciEngine
+
+    O.set_model(session, _SOURCED.format(sink=""), justification="basal flux")
+    session.problem.parameter_df.loc[["k1", "k2"], "estimate"] = False
+    session.engine = AmiciEngine(session, build_root=str(build_root))
+    session.auto_fit_starts = 2
 
 
 def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
@@ -811,10 +824,275 @@ def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
 ):
     """#285: the same source fails every start where no pre-equilibration converges, which the
     refusal read as an ODE that will not integrate or an undefined readout."""
-    from petab_mcp.engine import AmiciEngine
-
-    O.set_model(dosed_session, _SOURCED.format(sink=""), justification="basal flux")
-    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
-    dosed_session.auto_fit_starts = 2
+    _without_steady_state(dosed_session, amici_build_root)
     with pytest.raises(ModelUpdateError, match="no steady state to reach: `r3` "):
         dosed_session.fit()
+
+
+@pytest.mark.parametrize(
+    ("sink", "named"),
+    [
+        ("kd * dose * B", "`r3` (`-> B; kb * A`, where condition `pre` stops `r4`)"),
+        ("kd * (1 + dose) * B", None),
+    ],
+)
+def test_a_sink_a_pre_equilibration_condition_stops_leaves_no_steady_state(
+    dosed_session, sink, named
+):
+    """#335: raimundez 86's receptor had a sink, but a pre-equilibration condition switched it
+    off, so its source grew there with no steady state. The static check saw the sink; this one
+    reads each pre-equilibration's conditions (`pre` sets `dose` to 0)."""
+    from petab_mcp import fitting
+
+    model = _SOURCED.format(sink=f"  kd = 0.1;\n  r4: B => ; {sink};\n")
+    O.set_model(dosed_session, model, justification="gated sink")
+    assert fitting._sources_breaking_totals(dosed_session.problem) == ([named] if named else [])
+    if named:
+        sim = {"neg_log_likelihood": 12.0, "n_missing_simulations": 0, "n_expected_points": 6}
+        _, note = fitting._reconcile_objective(dosed_session, {"neg_log_likelihood": 10.0}, sim)
+        assert f"no steady state to reach: {named} makes a species from nothing" in note
+
+
+def test_a_power_of_a_state_to_an_estimated_exponent_is_named(dosed_session):
+    """The powers that go NaN when their state dips below 0 (PEtab-MCP#323), or lose their slope
+    where a condition sets their input to 0 (lun 109), named for a fit any of whose starts ended
+    NOT_FINITE; a number as the exponent is not one."""
+    from petab_mcp import fitting
+
+    model = _DOSE_DRIVEN.replace("k1 * drive * A", "k1 * A^n_A + k1 * B^2 + dose^n_A").replace(
+        "k2 = 0.1;", "k2 = 0.1;\n  n_A = 2;"
+    )
+    O.set_model(dosed_session, model, justification="cooperative conversion")
+    assert fitting._reconcile.is_parameter_estimated(dosed_session.problem, "n_A")
+    named = fitting.state_powers(dosed_session)
+    assert "`A^n_A` raises `A` to the estimated `n_A`" in named
+    assert "`dose^n_A` raises `dose` to the estimated `n_A`" in named
+    assert "B^2" not in named and ". Below 0 a power" in named
+    assert fitting.state_powers(dosed_session, {"B": -0.1}) == ""
+
+
+def test_a_fit_some_of_whose_starts_end_not_finite_says_how_many(fit_session, monkeypatch):
+    """#323: fujita lost 6-25% of its starts NOT_FINITE with nothing said; any share is reported,
+    with the powers of states that make one (here a stand-in), and only a majority is said to
+    leave the score in doubt."""
+    from petab_mcp import fitting
+
+    payload = fitting._optimization_payload
+
+    def some(result):
+        out = payload(result)
+        out["exitflag_counts"] = {"ExitFlag.FTOL": 2, "ExitFlag.NOT_FINITE": 1}
+        return out
+
+    monkeypatch.setattr(fitting, "_optimization_payload", some)
+    monkeypatch.setattr(fitting, "state_powers", lambda session: "`A^n` raises the state `A`.")
+    out = fit_session.fit(n_starts=3)
+    assert (
+        "1 of 3 starts ended NOT_FINITE: the objective or its gradient was not a number where "
+        "they went. `A^n` raises the state `A`."
+    ) in out["warnings"]
+
+
+def test_a_fit_the_pool_failed_does_not_count_toward_the_identical_fit_guard(
+    fit_session, monkeypatch
+):
+    """A worker that died under the fit (dask KilledWorker) scored nothing, so sending the change
+    again is not a loop (PEtab-MCP#341)."""
+    from petab_mcp.errors import FitBackendError
+    from petab_mcp.session import PetabSession
+
+    def died(self, n_starts=None):
+        raise FitBackendError("a worker of the fit pool died")
+
+    monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", died)
+    with pytest.raises(FitBackendError):
+        fit_session.fit()
+    assert not any(fit_session._fit_attempts.values())
+
+
+def _log_noise(session):
+    p = session.problem
+    session.problem = p.replace(
+        observable_df=p.observable_df.assign(noiseDistribution="log-normal")
+    )
+
+
+def _records(*points):
+    return [
+        {"observable_id": "obs_B", "time": t, "measurement": 0.5, "simulation": s}
+        for t, s in points
+    ]
+
+
+def test_a_readout_at_0_or_below_under_log_noise_is_named(session):
+    """#327: blasi 63612603_5's zero-order rate laws drove log-normal readouts below 0, which no
+    check named; a readout of 0 at t=0 is the other origin."""
+    from petab_mcp import fitting
+
+    assert fitting._log_readouts_not_positive(session, _records((0.0, 0.0), (1.0, -0.2))) == ""
+    _log_noise(session)
+    text = fitting._log_readouts_not_positive(session, _records((0.0, 0.0), (1.0, 0.3)))
+    assert text.startswith("`obs_B` (down to 0, at t=0): under log noise the likelihood")
+    assert "A readout of 0 at t=0 reads a species that starts at 0." in text
+    text = fitting._log_readouts_not_positive(session, _records((1.0, -0.2), (2.0, -0.5)))
+    assert text.startswith("`obs_B` (down to -0.5, at t=1, t=2)")
+    assert "One below 0 reads a species a rate consumes without reading it" in text
+
+
+@pytest.mark.parametrize("shown", [None, "simulation", "readout"])
+def test_an_all_failed_fit_names_the_cause_its_starts_show(session, shown):
+    """#327: the refusal sent agents to a fitting log that never holds per-start failures. It
+    names the cause its re-simulated starts show, else both; the t=0 example only where a
+    log-noise observable is measured at t=0 (the toy's `obs_B` is, at 0.0)."""
+    from petab_mcp import fitting
+
+    for log in (False, True):
+        if log:
+            _log_noise(session)
+        text = fitting._every_start_failed(session, "WHERE", "STARTS.", shown)
+        assert "WHERE — a property of the problem, not the optimizer. STARTS. " in text
+        assert "fitting log" not in text
+        assert ("(a) the SIMULATION" in text) == (shown is None)
+        assert ("first of two causes: the SIMULATION" in text) == (shown == "simulation")
+        assert ("second of two causes: the simulation succeeds" in text) == (shown == "readout")
+        example = "measured at t=0 gives log(0) = -inf"
+        assert (example in text) == (log and shown != "simulation")
+
+
+class _RData:
+    """A ReturnData stand-in: an experiment's status and AMICI's messages for it."""
+
+    def __init__(self, eid, status=0, *messages):
+        from types import SimpleNamespace
+
+        self.id, self.status = eid, status
+        self.messages = [SimpleNamespace(message=m) for m in messages]
+
+
+def _all_failed(statuses, records=()):
+    """An all-failed multistart of three starts, two of them from the same point, whose objective
+    returns one ReturnData per ``statuses``, and an engine reading ``records`` off them."""
+    from types import SimpleNamespace
+
+    from pypesto.C import RDATAS
+
+    calls = []
+
+    def objective(x, sensi_orders, return_dict):
+        calls.append(list(x))
+        return {RDATAS: [_RData(f"e{i}", s, f"failed at t = {i}") for i, s in enumerate(statuses)]}
+
+    starts = [
+        {"exitflag": "ExitFlag.NOT_FINITE", "message": "non-finite at initial point.", "x0": x0}
+        for x0 in ([0.0, 1.0, 2.0], [0.0, 1.0, 2.0], [0.5, 1.0, 3.0])
+    ] + [{"exitflag": -1, "message": "stopped by the server", "x0": None}]
+    result = SimpleNamespace(optimize_result=SimpleNamespace(list=starts))
+    problem = SimpleNamespace(x_free_indices=[0, 2], dim_full=3, objective=objective)
+    engine = SimpleNamespace(_simulation_records=lambda objective, rdatas: list(records))
+    return result, problem, engine, calls
+
+
+def test_amici_failures_names_each_failed_experiment_with_its_status():
+    """AMICI logs a failure to stderr, which on a fit pool reached no log (PEtab-MCP#327)."""
+    from amici.sim.sundials import AMICI_ERROR, AMICI_SUCCESS
+
+    from petab_mcp import fitting
+
+    rdatas = [_RData("e0", AMICI_SUCCESS), _RData("e1", AMICI_ERROR, "first", "last")]
+    assert fitting.amici_failures(rdatas) == ["`e1` ends AMICI_ERROR (last)"]
+
+
+def test_the_failed_starts_are_re_simulated_where_they_began(session):
+    """#327: the refusal carries each start's exit flag and message, and AMICI's status at the
+    distinct points the failed starts began from, reduced to the free parameters."""
+    from amici.sim.sundials import AMICI_ERROR, AMICI_SUCCESS
+
+    from petab_mcp import fitting
+
+    result, problem, engine, calls = _all_failed([AMICI_SUCCESS, AMICI_ERROR])
+    text, shown = fitting._failed_starts(session, engine, problem, result)
+    assert calls == [[0.0, 2.0], [0.5, 3.0]]
+    assert shown == "simulation"
+    assert text == (
+        "Its starts: 3 ended NOT_FINITE (non-finite at initial point.); 1 ended raised (stopped "
+        "by the server). Re-simulated at 2 of their start points, AMICI fails: `e1` ends "
+        "AMICI_ERROR (failed at t = 1)."
+    )
+
+
+def test_a_failed_start_whose_experiments_simulate_names_the_readout(session):
+    """Where every experiment simulates at a failed start's point, the readout is what failed."""
+    from amici.sim.sundials import AMICI_SUCCESS
+
+    from petab_mcp import fitting
+
+    _log_noise(session)
+    result, problem, engine, _ = _all_failed([AMICI_SUCCESS], _records((0.0, 0.0)))
+    text, shown = fitting._failed_starts(session, engine, problem, result)
+    assert shown == "readout"
+    assert (
+        "Re-simulated at 2 of their start points, every experiment simulates, but readouts with "
+        "log noise are 0 or below where measured: `obs_B` (down to 0, at t=0)"
+    ) in text
+    result, problem, engine, _ = _all_failed([AMICI_SUCCESS], _records((0.0, 0.3)))
+    assert fitting._failed_starts(session, engine, problem, result)[1] is None
+
+
+def test_every_failed_start_is_re_simulated_and_its_amici_status_named(
+    dosed_session, amici_build_root, monkeypatch
+):
+    """#327: every start failed, and the refusal sent the agent to a fitting log that held nothing
+    of them. Without the source check (see the test above), the refusal reaches its general form,
+    which now carries AMICI's status where the starts began and names the one cause it shows."""
+    from petab_mcp import fitting
+
+    _without_steady_state(dosed_session, amici_build_root)
+    monkeypatch.setattr(fitting, "_sources_breaking_totals", lambda problem: [])
+    with pytest.raises(ModelUpdateError) as refused:
+        dosed_session.fit()
+    text = str(refused.value)
+    assert "Its starts: 2 ended " in text
+    assert "Re-simulated at 2 of their start points, AMICI fails: `e0` ends AMICI_" in text
+    assert "That is the first of two causes: the SIMULATION fails" in text
+    assert "fitting log" not in text
+
+
+def test_a_readout_at_0_under_log_noise_at_the_nominal_values_is_named(fit_session):
+    """#327: the toy's `B` starts at 0 and is measured at t=0, which under log noise has no
+    likelihood at any start."""
+    _log_noise(fit_session)
+    p = fit_session.problem
+    fit_session.problem = p.replace(
+        measurement_df=p.measurement_df.assign(measurement=p.measurement_df["measurement"] + 0.1)
+    )
+    with pytest.raises(ModelUpdateError) as refused:
+        fit_session.fit()
+    text = str(refused.value)
+    assert "`obs_B` (down to 0, at t=0)" in text, text
+    assert "A readout of 0 at t=0 reads a species that starts at 0." in text
+    assert "Re-simulated" not in text  # the nominal values' check, before any start's
+
+
+def test_a_gap_a_tighter_resimulation_closes_is_scored(fit_session, monkeypatch):
+    """#335: a fit whose optimum the first re-simulation does not reproduce is re-simulated once
+    more at tighter tolerances, and scored on that one where it does."""
+    from petab_mcp import fitting
+    from petab_mcp.engine import AmiciEngine
+
+    residuals, atols = AmiciEngine.residuals, []
+
+    def off_once(self, solve_inner=True, gradient=False):
+        sim = residuals(self, solve_inner=solve_inner, gradient=gradient)
+        solver = fitting.estimation_problem(self.session, self)[0].objective.amici_solver
+        atols.append(solver.get_absolute_tolerance())
+        if len(atols) == 1:
+            return {**sim, "neg_log_likelihood": sim["neg_log_likelihood"] + 50.0}
+        return sim
+
+    monkeypatch.setattr(AmiciEngine, "residuals", off_once)
+    out = fit_session.fit()
+    assert atols[:2] == [pytest.approx(1e-10), pytest.approx(1e-13)]
+    assert out["neg_log_likelihood"] is not None
+    assert not any("not scored" in w for w in out.get("warnings", []))
+    solver = fitting.estimation_problem(fit_session, fit_session.engine)[0].objective.amici_solver
+    assert solver.get_absolute_tolerance() == pytest.approx(1e-10)

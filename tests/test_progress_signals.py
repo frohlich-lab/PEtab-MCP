@@ -125,8 +125,10 @@ def test_end_to_end_through_real_fits(tmp_path, signals):
         assert not any(b in json.dumps(read, ensure_ascii=False) for b in S._BRACKETS)
     for r in results:
         assert all(r[k] is not None for k in _OWN), r
-    off_best = [m for m in results[2]["messages"] if "is not the best" in m["message"]]
-    assert bool(off_best) is signals
+    # HEAD v2 is not the best: a call without `base_version` is refused once only where the agent
+    # may be told which is (PEtab-MCP#330).
+    refit = call("make_changes", {"n_starts": 3, "justification": "refit v2"})
+    assert (refit.get("error_cause") == "implicit_base") is signals
     assert {"summary", "low_power"} <= set(results[2]["residual_structure"])
     assert all(row["criterion_value"] is not None for row in call("list_versions"))
 

@@ -36,12 +36,26 @@ def finite_float(value: Any) -> float | None:
     return None if (math.isnan(f) or math.isinf(f)) else f
 
 
+def measurement_time(value: Any) -> float | None:
+    """A measurement time as a ``float``: finite, or ``±inf`` for a steady state; ``None`` when
+    missing or NaN. Unlike :func:`finite_float` it keeps an infinity, which is a time, not a gap;
+    :func:`_clean` writes it as ``"inf"``/``"-inf"``."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(f) else f
+
+
 def _clean(value: Any) -> Any:
     """Coerce a single cell into a JSON-friendly value."""
     if value is None:
         return None
     if isinstance(value, float):
-        # JSON has no NaN/Inf; represent them as None so results stay valid.
+        # JSON has no NaN/Inf: NaN is a missing cell (None), and an infinity, such as a
+        # steady-state measurement time, is written "inf"/"-inf".
+        if math.isinf(value):
+            return "inf" if value > 0 else "-inf"
         return finite_float(value)
     if isinstance(value, (str, int, bool)):
         return value

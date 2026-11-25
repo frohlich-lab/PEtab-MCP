@@ -27,7 +27,9 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
   session's ``pypesto.log``.
 * **A cluster failure fails the fit** with :class:`~petab_mcp.errors.FitBackendError`, and the
   starts never rerun on the server node (see ``fitting._run_fit``). A worker killed under a batch
-  (``KilledWorker``, usually memory) is one. A lost scheduler is the pool's failure, not the run's:
+  (``KilledWorker``, usually memory) is one, and its message says it is the pool's failure, not the
+  model's: an agent read one as its Hill form crashing (PEtab-MCP#341). A lost scheduler is the
+  pool's failure, not the run's:
   it ends the call as the ``fit_pool`` :class:`~petab_mcp.errors.InfrastructureError`, and the
   next fit runs on the pool once it is back at the same address (:class:`DaskEngine`).
 * **A batch has a deadline**: its starts' caps plus
@@ -67,7 +69,7 @@ from pathlib import Path
 from typing import Any
 
 import cloudpickle
-from distributed import Client, WorkerPlugin, wait
+from distributed import Client, KilledWorker, WorkerPlugin, wait
 from pypesto.engine import Task
 
 from .errors import FIT_POOL, FitBackendError, InfrastructureError, PetabMcpError
@@ -381,6 +383,12 @@ class DaskEngine(CappedEngine):
             if self.client.status != "running":  # reconnecting, or closed after failing to
                 raise InfrastructureError(
                     FIT_POOL, f"the fit's client lost the pool's scheduler: {exc!r}"
+                ) from exc
+            if isinstance(exc, KilledWorker):
+                raise FitBackendError(
+                    "a worker of the fit pool died while it ran this fit's starts (dask "
+                    "KilledWorker: out of memory, crashed, or its job ended). That is the pool's "
+                    "failure, not the model's: nothing was scored. Send the change again."
                 ) from exc
             raise FitBackendError(f"the fit's dask cluster failed it: {exc!r}") from exc
         finally:
