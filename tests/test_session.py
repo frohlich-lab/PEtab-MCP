@@ -116,6 +116,16 @@ def test_describe_names_the_condition_targets(dosed_session):
     assert dosed_session.describe()["condition_targets"] == ["dose"]
 
 
+def test_describe_says_which_measurements_are_at_steady_state(session):
+    """blasi's 252 measurements are all at t=inf (PEtab-MCP#339)."""
+    assert "steady_state" not in session.describe()
+    df = session.problem.measurement_df
+    df["time"] = df["time"].astype(float)
+    df.loc[df.index[:2], "time"] = float("inf")
+    line = session.describe()["steady_state"]
+    assert line.startswith(f"2 of the {len(df)} measurements are at time inf")
+
+
 _FLATTEN_OBSERVABLES = (
     "observableId\tobservableFormula\tnoiseFormula\tobservablePlaceholders\n"
     "obs_B\tsign_obs_B * B\tsigma_B\tsign_obs_B\n"

@@ -97,21 +97,29 @@ def sign_test(residuals: list[float]) -> dict[str, Any]:
 
     ``p`` is the probability, under an unbiased model (each sign equally likely), of a split at
     least as lopsided as observed. Small ``p`` ⇒ systematic bias for this observable. ``None``
-    when there are no usable (non-zero, finite) residuals.
+    when there are no usable (non-zero, finite) residuals. ``min_p`` is the smallest ``p`` ``n``
+    signs can give (all one sign), so a series with ``min_p`` above a level cannot reach it.
     """
     signs = _signs(residuals)
     n = len(signs)
     n_pos = sum(1 for s in signs if s > 0)
     n_neg = n - n_pos
     if n == 0:
-        return {"n": 0, "n_pos": 0, "n_neg": 0, "p": None, "low_power": True}
+        return {"n": 0, "n_pos": 0, "n_neg": 0, "p": None, "min_p": None, "low_power": True}
     # Exact two-sided binomial tail at p=0.5. scipy.stats.binomtest is the reference; compute it
     # directly so this module carries no scipy dependency of its own (and matches exactly at the
     # boundary, where binom_test's doubling convention differs across versions).
     k = min(n_pos, n_neg)
     tail = 2.0 * sum(math.comb(n, i) for i in range(0, k + 1)) / (2.0**n)
     p = min(1.0, tail)
-    return {"n": n, "n_pos": n_pos, "n_neg": n_neg, "p": p, "low_power": n < MIN_POWER_N}
+    return {
+        "n": n,
+        "n_pos": n_pos,
+        "n_neg": n_neg,
+        "p": p,
+        "min_p": min(1.0, 2.0 ** (1 - n)),
+        "low_power": n < MIN_POWER_N,
+    }
 
 
 def _runs_pmf(n1: int, n2: int) -> dict[int, float]:
@@ -158,7 +166,8 @@ def runs_test(residuals: list[float]) -> dict[str, Any]:
     least as extreme in either direction), and ``direction``: ``"few_runs"`` (R below expected —
     serial correlation / a systematic time trend) or ``"many_runs"`` (R above — over-alternation),
     or ``None`` when R equals expectation. ``p`` is ``None`` when either sign is absent (a runs
-    test is undefined with only one sign — that is the sign test's job).
+    test is undefined with only one sign — that is the sign test's job). ``min_p`` is the
+    smallest ``p`` this split of signs can give, at its least likely run count.
     """
     signs = _signs(residuals)
     n = len(signs)
@@ -167,15 +176,25 @@ def runs_test(residuals: list[float]) -> dict[str, Any]:
     base = {"n": n, "n_pos": n_pos, "n_neg": n_neg, "runs": _count_runs(signs)}
     if n_pos == 0 or n_neg == 0:
         # All one sign: no runs structure to test (the bias is the sign test's finding).
-        return {**base, "expected_runs": None, "p": None, "direction": None, "low_power": True}
+        return {
+            **base,
+            "expected_runs": None,
+            "p": None,
+            "min_p": None,
+            "direction": None,
+            "low_power": True,
+        }
     pmf = _runs_pmf(n_pos, n_neg)
     expected = 2.0 * n_pos * n_neg / n + 1.0
     r_obs = base["runs"]
-    p_obs = pmf.get(r_obs, 0.0)
+
     # Two-sided by the total-probability convention: sum the mass of every run count no more
     # likely than the observed one. Robust for an asymmetric discrete distribution where a
     # doubled one-sided tail can exceed 1.
-    p = min(1.0, sum(pr for pr in pmf.values() if pr <= p_obs + 1e-12))
+    def tail(mass: float) -> float:
+        return min(1.0, sum(pr for pr in pmf.values() if pr <= mass + 1e-12))
+
+    p = tail(pmf.get(r_obs, 0.0))
     direction = None
     if r_obs < expected:
         direction = "few_runs"
@@ -185,6 +204,7 @@ def runs_test(residuals: list[float]) -> dict[str, Any]:
         **base,
         "expected_runs": round(expected, 3),
         "p": p,
+        "min_p": tail(min(pmf.values())),
         "direction": direction,
         "low_power": n < MIN_POWER_N,
     }

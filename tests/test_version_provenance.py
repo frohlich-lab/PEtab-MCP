@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import DATA_DIR
+from conftest import DATA_DIR, confirmed
 
 from petab_mcp.references import StubReferenceResolver
 
@@ -124,7 +124,7 @@ def test_an_ordinary_commit_still_descends_from_head(served):
     op("v0", "r1", "(k1*1.0)*A")
     op("v1", "r2", "(k2*1.0)*B")
     forked = op("fork", "r1", "(k1*3)*A", base_version=0)
-    after = op("ordinary commit after a fork", "r2", "(k2*1.00)*B")
+    after = confirmed(lambda: op("ordinary commit after a fork", "r2", "(k2*1.00)*B"))
     assert forked["committed"] is True and after["committed"] is True, (forked, after)
     assert _meta(prov, forked["version"])["parent"] == 0
     assert _meta(prov, after["version"])["parent"] == forked["version"], (

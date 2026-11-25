@@ -24,6 +24,8 @@ import pytest
 
 from pathlib import Path
 
+from conftest import confirmed
+
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
 from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS, MAX_FIT_STARTS_FACTOR
@@ -107,6 +109,66 @@ def test_a_forks_dropped_parameter_warning_is_against_its_base(session):
         "the re-author dropped previously-estimated parameter(s) ['k3']: their fitted values are "
         "gone. Re-declare them in the Antimony if that was unintended."
     ]
+
+
+def _with_c(c_init: float) -> str:
+    """The toy model with a species `C` started at its own `C_init`, declared at ``c_init``."""
+    return _antimony(
+        "species C in compartment_;", "C = C_init;", f"C_init = {c_init};", "r3: B => C; k1 * B;"
+    )
+
+
+def test_a_start_held_fixed_by_value_is_named(session):
+    """REGRESSION (PEtab-MCP#325): a start re-declared at 1 was held fixed with no message, and
+    bounds sent for it were taken with none either (bachmann 10, 23). Both edits now say so."""
+    res = O.set_model(session, _with_c(1.0), justification="C starts normalised")
+    assert [w for w in res["warnings"] if w.startswith("Held FIXED")] == [
+        f"Held FIXED, not estimated: `C_init` = 1 (the start of `C`). {O._HELD_FIXED}"
+    ]
+    bounded = O.set_model(
+        session,
+        _with_c(1.0),
+        justification="box C's start",
+        parameters=[{"parameter_id": "C_init", "lower_bound": 0.1, "upper_bound": 10}],
+    )
+    assert any(w.startswith("`C_init` is FIXED at 1, so the bounds") for w in bounded["warnings"])
+    assert not any(w.startswith("Held FIXED") for w in bounded["warnings"])  # not moved again
+
+
+def test_a_fork_keeps_a_start_its_model_now_fixes(session):
+    """REGRESSION (PEtab-MCP#325): a fork restored its base's nominal over a row the reconcile had
+    just fixed, so bachmann 10's start re-declared at 1 was simulated fixed at the base's fitted
+    79.75, one parameter off k for free."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+
+    O.set_model(session, _with_c(5.0), justification="C starts at a guess")
+    session.problem.parameter_df.loc["C_init", NOMINAL_VALUE] = 79.75  # as the fit leaves it
+    base = session.problem.parameter_df.copy()
+    O.set_model(
+        session, _with_c(1.0), justification="fork: C normalised", restore_parameter_df=base
+    )
+    row = session.problem.parameter_df.loc["C_init"]
+    assert (float(row[NOMINAL_VALUE]), bool(row[ESTIMATE])) == (1.0, False)
+
+
+def test_a_log_scale_refusal_names_the_kept_fitted_value(session):
+    """REGRESSION (PEtab-MCP#325): a kept row's fitted value refused log10 with advice for an
+    initial condition, on a rate constant the model re-declared at 0.5 (haiku lucarelli 4)."""
+    from petab.v2.C import NOMINAL_VALUE
+
+    O.set_model(session, _antimony("r3: A => ; k3 * A;", "k3 = -0.1;"), justification="k3")
+    session.problem.parameter_df.loc["k3", NOMINAL_VALUE] = -0.03  # as the fit leaves it
+    with pytest.raises(OperationError) as err:
+        O.set_model(
+            session,
+            _antimony("r3: A => ; k3 * A;", "k3 = 0.5;"),
+            justification="k3 on log10",
+            parameters=[
+                {"parameter_id": "k3", "scale": "log10", "lower_bound": 1e-3, "upper_bound": 10}
+            ],
+        )
+    assert "-0.03 is its row's fitted value, not the 0.5 the model declares" in str(err.value)
+    assert "initial-condition" not in str(err.value)
 
 
 def test_parameters_can_target_a_newly_introduced_parameter(session):
@@ -336,7 +398,8 @@ def test_a_refit_of_the_current_model_is_ranked_like_any_fit(tmp_path):
     assert out["progress"]["best_version"] == 1
     out = _call(mcp, "make_changes", {"justification": "harder", "n_starts": 3})
     assert out["committed"] is True and out["version"] == 2 and out["n_starts"] == 3
-    out = _call(mcp, "make_changes", {"justification": "as hard again", "n_starts": 3})
+    again = {"justification": "as hard again", "n_starts": 3}
+    out = confirmed(lambda: _call(mcp, "make_changes", again))
     assert out["no_change"] is True and out["version"] == 2
 
 
@@ -463,12 +526,12 @@ def test_a_revert_to_an_earlier_model_is_refused_as_that_version(tmp_path):
         {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "v1", "n_starts": 2},
     )
     back = {"model_edits": [_set_rate("k1")], "justification": "back", "n_starts": 2}
-    refused = _call(mcp, "make_changes", back)
+    refused = confirmed(lambda: _call(mcp, "make_changes", back))
     assert refused["applied"] is False and "identical to v0" in refused["error"]
     assert _head(mcp)["current_version"] == 1
 
     bounds = [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e3}]
-    wider = _call(mcp, "make_changes", {**back, "parameters": bounds})
+    wider = confirmed(lambda: _call(mcp, "make_changes", {**back, "parameters": bounds}))
     assert wider["committed"] is True and wider["version"] == 2, wider["message"]
 
 
@@ -633,7 +696,7 @@ def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):
     )
 
     # fewer starts than the new HEAD -> back to a no-op, not a weaker refit
-    weaker = _call(mcp, "make_changes", {**same_model, "n_starts": 3})
+    weaker = confirmed(lambda: _call(mcp, "make_changes", {**same_model, "n_starts": 3}))
     assert weaker["no_change"] is True and _head(mcp)["current_version"] == 1
 
 
@@ -1542,14 +1605,14 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     model = _call(resumed, "get_model", {"format": "statements"})["result"]
     assert "mechanism saturating" in model
     row["prefix"] = "conv2"
-    assert _call(resumed, "make_changes", {"justification": "reuse", "statements": [row],
-                                           "bindings": {"conv2": "saturating"}})[
-        "applied"
-    ] is True
+    reuse = {"justification": "reuse", "statements": [row], "bindings": {"conv2": "saturating"}}
+    assert confirmed(lambda: _call(resumed, "make_changes", reuse))["applied"] is True
     # Model text without rows changes the model under them: that version records none. A server
     # offers the text routes or `statements`, never both, so the text comes from a server without
     # the map resuming the same store.
-    out = _call(_server(tmp_path), "make_changes", {"justification": "by hand", "antimony": _antimony()})
+    text = _server(tmp_path)
+    by_hand = {"justification": "by hand", "antimony": _antimony()}
+    out = confirmed(lambda: _call(text, "make_changes", by_hand))
     assert out["committed"] is True
     assert not (versions / "v3" / "statements.json").exists()
     # Resumed at v3, which has no rows, the run's written mechanisms still come back: a row names
@@ -1557,13 +1620,11 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     again = _statements_server(tmp_path)
     row["prefix"] = "conv3"
     rows = {"statements": [row], "bindings": {"conv3": "saturating"}}
-    assert _call(again, "make_changes", {"justification": "back", **rows})[
-        "applied"
-    ] is True
+    back = {"justification": "back", **rows}
+    assert confirmed(lambda: _call(again, "make_changes", back))["applied"] is True
     changed = {**_SATURATING, "rate": "vmax"}
-    out = _call(
-        again, "make_changes", {"justification": "y", **rows, "mechanisms": [changed]}
-    )
+    redefined = {"justification": "y", **rows, "mechanisms": [changed]}
+    out = confirmed(lambda: _call(again, "make_changes", redefined))
     assert out["error_cause"] == "mechanism_redefined"
 
 
@@ -1789,15 +1850,15 @@ def test_a_condition_input_stated_as_an_agent_is_told_to_move_to_the_binding(
     assert 'drop it from the statement and read it in the binding, `k="k*EGF"`' in out["error"]
 
 
-def test_an_unread_condition_input_is_reported_before_an_unknown_bound(tmp_path, add_condition):
-    """The bounds block's "Unknown parameter id" masked the unread condition target behind it,
-    3 calls in one isensee run (#193)."""
+def test_a_condition_input_no_row_reads_blocks_nothing(tmp_path, add_condition):
+    """`EGF`, read by no row, was refused as an invalid target, ahead of an unknown bound (#193).
+    The reconcile declares it now (PEtab-MCP#332), so the bound is the one error."""
     out = _call(_input_server(tmp_path, add_condition), "make_changes", {
         "justification": "A becomes B", "statements": [_statement_row()],
         "bindings": {"conv": "mass_action"},
         "parameters": [{"parameter_id": "nope", "lower_bound": 1e-3, "upper_bound": 1e3}]})
     assert out["applied"] is False
-    assert "invalid targets" in out["error"] and "Unknown parameter id" not in out["error"]
+    assert "Unknown parameter id 'nope'" in out["error"] and "invalid targets" not in out["error"]
 
 
 def _serum_call(mcp, amount, rows=()):
@@ -2337,18 +2398,6 @@ def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
     assert "statement_edits" in _make_changes_schema(mcp)
 
 
-def test_an_unread_condition_target_is_explained():
-    """The hint said the model "must have it: read it as …", which froehlich leads took for a
-    refusal of every unread input: it must be declared, and need not be read (PEtab-MCP#290)."""
-    from petab_mcp.operations import _rejection_summary
-    from petab_mcp.validation import INPUT_UNREAD
-
-    text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
-    assert "{'rit'}" in text and "input the condition table SETS" in text
-    assert "must declare it under its id" in text and text.endswith(INPUT_UNREAD)
-    assert "SETS" not in _rejection_summary(["something else"])
-
-
 # -- readouts, bindings and written mechanisms -------------------------------------------
 def _readout_server(tmp_path, extra=""):
     """The toy with its observable reading a blinded `readout_B`, and an empty entity map: a
@@ -2690,9 +2739,9 @@ def test_an_edit_reports_only_the_rows_it_touches(tmp_path):
         {"op": "add_row", "row": "back: B becomes A", "binding": "mass_action"}]})
     assert out["applied"] is True, out.get("error")
     assert said(out) == []
-    out = _call(mcp, "make_changes", {"justification": "z", "statement_edits": [
+    out = confirmed(lambda: _call(mcp, "make_changes", {"justification": "z", "statement_edits": [
         {"op": "remove_row", "prefix": "aa"},
-        {"op": "add_row", "row": "back2: B becomes A, modulated by C", "binding": "slowed"}]})
+        {"op": "add_row", "row": "back2: B becomes A, modulated by C", "binding": "slowed"}]}))
     assert out["applied"] is True, out.get("error")
     (message,) = said(out)
     assert message.startswith("`back2`: you stated `modulated by C`")
@@ -3014,28 +3063,87 @@ def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch)
 def test_a_result_names_the_version_it_was_applied_to_and_the_best(tmp_path):
     """PEtab-MCP#282: a change applies to the working model unless `base_version` names another,
     and agents assumed it was the best. Each result says which it was applied to and which is the
-    best, and warns where neither that version nor the one it leaves is the best."""
+    best. An explicit `base_version` off the best is the agent's choice and draws no warning
+    (#341)."""
     mcp = _server(tmp_path, auto_fit=True)
 
     def k1(lb, ub, **call):
         box = [{"parameter_id": "k1", "lower_bound": lb, "upper_bound": ub}]
         return _call(mcp, "make_changes", {"parameters": box, "n_starts": 2, **call})
 
-    def off_best(out):
-        return [m["message"] for m in out["messages"] if "is not the best" in m["message"]]
-
     out = k1(1e-3, 2e-3, antimony=_antimony(), justification="k1 boxed in")
     assert out["message"] == "Change applied to the loaded problem and saved as v0; best is v0."
     out = k1(1e-3, 1e3, justification="let k1 go")  # the data need k1 ~ 0.5
     assert out["message"] == "Change applied to v0 and saved as v1; best is v1."
-    assert not off_best(out)
     out = k1(1e-3, 3e-3, justification="k1 boxed in again", base_version=0)
     assert out["message"] == "Change applied to v0 and saved as v2; best is v1."
-    assert off_best(out) == [
-        "v0, which this change was applied to, is not the best version; v1 is. A change applies "
-        "to the working model, now v2, unless `base_version` names another: send "
-        "`base_version=1` to change the best."
-    ]
+    assert not [m for m in out["messages"] if "not the best" in m["message"]]
+    # The fitted values moved against the base sent, v0, not HEAD v1 (#341).
+    assert "vs v0, which v2 was made from" in out["fitted_parameters_note"]
+
+    # PEtab-MCP#330: HEAD v2 is not the best, and a call without `base_version` would fit a change
+    # to it; one sent by mistake cost a 75-minute fit. Refused before anything runs, once per call.
+    asked = k1(1e-3, 4e-3, justification="a mistake?")
+    assert asked["applied"] is False and asked["error_cause"] == "implicit_base"
+    assert asked["error"] == (
+        "make_changes: no `base_version`, so this change would apply to the working model, v2, "
+        "which is not the best version; v1 is. NOTHING was applied. Send `base_version=1` to "
+        "change the best, or this same call again to change v2."
+    )
+    assert k1(1e-3, 5e-3, justification="another")["error_cause"] == "implicit_base"
+    out = k1(1e-3, 5e-3, justification="yes, v2")
+    assert out["message"] == "Change applied to v2 and saved as v3; best is v1."
+    # A HEAD the agent restored is a base it chose.
+    assert _call(mcp, "restore_version", {"version": 0})["version"] == 0
+    out = k1(1e-3, 6e-3, justification="on from v0")
+    assert out["message"] == "Change applied to v0 and saved as v4; best is v1."
+
+
+def test_reads_during_a_fit_show_the_last_version_and_say_so(tmp_path, monkeypatch):
+    """PEtab-MCP#330: reads take no lock, so beside a fit they saw the change being fitted and the
+    last fit at once: `get_fit_summary` charged that change's k beside the last fit's nll, a BIC
+    no version has, and `query_data` paired its parameter table with the last fit's records. Each
+    read now says which version it shows, and while a fit runs, that one is running."""
+    import threading
+
+    from petab_mcp.errors import ModelUpdateError
+
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp, "make_changes", {"antimony": _antimony(), "justification": "v0", "n_starts": 2}
+    )
+    assert first["committed"] is True, first.get("error")
+    settled = _call(mcp, "get_fit_summary", {})
+    assert settled["version"] == 0 and "fit_running" not in settled
+    assert _call(mcp, "get_model_structure", {})["version"] == 0
+
+    fitting_, release = threading.Event(), threading.Event()
+
+    def _fit(self, n_starts=None):
+        fitting_.set()
+        release.wait(60)
+        raise ModelUpdateError("the stub's fit ended")
+
+    monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit)
+    change = {"antimony": _antimony("r3: A => ; k3 * A;"), "justification": "a loss of A"}
+    running = threading.Thread(target=_call, args=(mcp, "make_changes", change))
+    running.start()
+    try:
+        assert fitting_.wait(60)
+        summary = _call(mcp, "get_fit_summary", {})
+        table = _call(mcp, "query_data", {"sql": "SELECT parameterId FROM parameters"})
+        structure = _call(mcp, "get_model_structure", {})
+    finally:
+        release.set()
+        running.join(60)
+
+    assert summary["version"] == 0 and summary["k"] == settled["k"]
+    assert summary["bic"] == settled["bic"]
+    assert summary["fit_running"].startswith("a change is being fitted; this read shows v0")
+    assert table["version"] == 0 and "fit_running" in table
+    assert "k3" not in {row["parameterId"] for row in table["rows"]}
+    assert structure["version"] is None and "k3" in structure["parameters"]
+    assert "that change's model, not a version yet" in structure["fit_running"]
 
 
 def test_a_merge_hint_names_its_rename_and_taking_it_merges_the_pair(tmp_path):

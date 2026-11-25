@@ -2,16 +2,18 @@
 
 ``create_server(progress_signals=False)`` withholds them from the agent: the fields that rank,
 compare or judge a fit (:data:`KEYS`), the lines that state the best version or a score
-difference against another version ("best is vM", the off-best warning, a structure family's
-score against the best, the nesting comparison), and the description text naming a withheld
-field. The rest of the prose is unchanged. Each fit still reports its own nll, criterion values,
-k and chi2.
+difference against another version ("best is vM", a structure family's score against the best,
+the nesting comparison), and the description text naming a withheld field. The rest of the prose
+is unchanged. Each fit still reports its own nll, criterion values, k and chi2.
 
-Nothing upstream reads the setting. Text is written with its signal bracketed (:func:`signal`,
-:func:`signal_or`), and a result's fields are what they always were; ``server._ProgressSignals``
-applies :func:`render` and :func:`strip` to everything the server sends. So the stored record
-(version meta, fit events) keeps every field for whoever analyses the session, and
-``get_progress``, the client's early-stop and best-version probe, is sent whole.
+One thing upstream reads the setting: ``make_changes`` refuses a call without ``base_version``
+on a HEAD that is not the best only with signals on (``server._implicit_base``), since the refusal
+itself would say which version is not the best. Nothing else does. Text is written with its
+signal bracketed (:func:`signal`, :func:`signal_or`), and a result's fields are what they always
+were; ``server._ProgressSignals`` applies :func:`render` and :func:`strip` to everything the
+server sends. So the stored record (version meta, fit events) keeps every field for whoever
+analyses the session, and ``get_progress``, the client's early-stop and best-version probe, is
+sent whole.
 """
 
 from __future__ import annotations
