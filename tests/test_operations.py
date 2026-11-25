@@ -1049,13 +1049,14 @@ def test_a_fork_is_checked_against_the_version_it_forks(session):
 def test_a_species_new_against_the_forked_version_is_warned_about(session):
     """PEtab-MCP#282, perelson 0: a `base_version` fork took "the species before this edit" from
     HEAD, so a species new against the base but present in HEAD (a phantom `Ie2`) went unwarned."""
+    sink = ["J: B => D; k3 * B;", "K: D => ; k4 * D;"]
     base = _commit(session)
-    _set_model(session, ["J: B => D; k3 * B;"])
+    _set_model(session, sink)
     _commit(session)
-    again = _set_model(session, ["J: B => D; k3 * B;"])  # on HEAD, `D` is not new
+    again = _set_model(session, sink)  # on HEAD, `D` is not new
     assert not any("unobserved species" in w for w in again["warnings"])
     session.derived_from = base
-    forked = _set_model(session, ["J: B => D; k3 * B;"])
+    forked = _set_model(session, sink)
     assert any("unobserved species ['D']" in w for w in forked["warnings"])
 
 
