@@ -76,12 +76,10 @@ def test_commit_change_refuses_a_no_op_edit(session):
 
 
 def test_references_optional_for_model_ops(session):
-    # references are optional for model ops now (justification still required). This edit
-    # adds species D, which appears in no observable -> a parsimony warning.
+    # references are optional for model ops now (justification still required).
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B is degraded to D")
     assert res["applied"] is True
     assert res["references"] == []
-    assert any("unobserved species" in w for w in res["warnings"])
 
 
 def test_no_parsimony_warning_when_reusing_species(session):
@@ -102,12 +100,41 @@ def test_no_parsimony_warning_when_new_species_feeds_observable(session):
     assert not any("unobserved species" in w for w in res["warnings"])
 
 
-def test_parsimony_warning_still_fires_for_disconnected_sink(session):
-    # D is a pure downstream sink of the observed species B (B -> D): it feeds no observable and
-    # no input sets it, so it stays flagged as a genuinely disconnected hidden state.
+def test_no_parsimony_warning_for_a_parameter_free_sink(session):
+    # D is a pure downstream sink of the observed species B (B -> D), starting empty: read by
+    # nothing and carrying no parameter, it fits as `B ->` does (bruno, PEtab-MCP#341).
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B drains to D")
     assert res["applied"] is True
-    assert any("unobserved species" in w for w in res["warnings"])
+    assert not any("unobserved species" in w for w in res["warnings"])
+
+
+@pytest.mark.parametrize(
+    "own", [["K: D => ; k4 * D;"], ["D = D_init;", "D_init = 0.5;"]], ids=["decay", "initial"]
+)
+def test_parsimony_warning_fires_for_a_sink_with_a_parameter_of_its_own(session, own):
+    # D's own decay rate, or its estimated initial value, is a parameter no data constrains.
+    res = _set_model(session, ["J: B => D; k3 * B;", *own], justification="B drains to D")
+    assert res["applied"] is True
+    assert any("unobserved species ['D']" in w for w in res["warnings"])
+
+
+def test_the_placeholder_species_is_neither_warned_about_nor_counted(session):
+    # A closed-form model (a rule, no species) gets the server's placeholder species, which no
+    # warning, structure or count names (PEtab-MCP#331).
+    from petab_mcp import reconcile as R
+    from petab_mcp.model import model_structure
+
+    res = O.set_model(session, "model m\n  k1 = 0.5;\n  B := k1;\nend\n", justification="closed")
+    assert res["applied"] is True
+    assert _species(session) == {R.PLACEHOLDER_SPECIES}
+    assert not any(R.PLACEHOLDER_SPECIES in w for w in res["warnings"])
+    structure = model_structure(session, initial_conditions="")
+    assert structure["species"] == [] and structure["initial_conditions"] == []
+    assert session.describe()["n_species"] == 0
+    # Copied back into a model with real species, it is pruned without a word.
+    res = _set_model(session, [f"species {R.PLACEHOLDER_SPECIES} in compartment_;"])
+    assert R.PLACEHOLDER_SPECIES not in _species(session)
+    assert not any(R.PLACEHOLDER_SPECIES in w for w in res["warnings"])
 
 
 def _blinded_session(tmp_path):
@@ -127,12 +154,16 @@ def _blinded_session(tmp_path):
 def test_a_readout_rule_carries_what_it_reads_into_the_observed_set(tmp_path):
     # On a blinded problem the formula names only `readout_B`, never a species. Read off the
     # formula alone, every added species was reported as feeding no observable — all ten, in one
-    # model. C feeds B, which the readout reads; the sink D is still flagged.
+    # model. C feeds B, which the readout reads; the sink D, with a decay of its own, is flagged.
     session = _blinded_session(tmp_path)
     res = _set_model(session, ["readout_B := B;", "J: C => B; k3 * C;"], justification="C feeds B")
     assert res["applied"] is True
     assert not any("unobserved species" in w for w in res["warnings"])
-    res = _set_model(session, ["readout_B := B;", "J: B => D; k3 * B;"], justification="B to D")
+    res = _set_model(
+        session,
+        ["readout_B := B;", "J: B => D; k3 * B;", "K: D => ; k4 * D;"],
+        justification="B to D",
+    )
     assert any("unobserved species ['D']" in w for w in res["warnings"])
 
 
@@ -236,9 +267,11 @@ def test_change_parameters_requires_justification(session):
         )
 
 
-def test_change_parameters_empty_list_rejected(session):
-    with pytest.raises(OperationError, match="non-empty list"):
-        O.change_parameters(session, [], justification="nothing to do")
+def test_change_parameters_with_no_entry_is_a_refit_that_changes_nothing(session):
+    """`make_changes(n_starts=...)` alone refits the working model: an edit of no bound."""
+    before = P.parameters_to_records(session.problem)
+    assert O.change_parameters(session, [], justification="more starts")["applied"] is True
+    assert P.parameters_to_records(session.problem) == before
 
 
 def test_change_parameters_invalid_scale_is_reverted(session):
@@ -250,6 +283,24 @@ def test_change_parameters_invalid_scale_is_reverted(session):
         )
     after = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
     assert after["A_init"] == before["A_init"]
+
+
+def test_a_bound_alone_is_checked_against_the_rows_log_scale(session):
+    """#285: fontaine 96 sent `lower_bound: 0` without a scale on a log10 parameter. The bound was
+    stored, and the fit died in pyPESTO's start sampling on numpy's uniform(-inf, ...) overflow,
+    read as an ill-posed ODE; three attempts later the agent dropped the structure."""
+    from petab.v2.C import LOWER_BOUND
+
+    refused = r"log10 scale for 'k1': lowerBound=0.0 .*`scale: lin`"
+    with pytest.raises(OperationError, match=refused):
+        O.change_parameters(
+            session,
+            [{"parameter_id": "k1", "lower_bound": 0.0, "upper_bound": 10.0}],
+            justification="x",
+        )
+    assert float(session.problem.parameter_df.loc["k1", LOWER_BOUND]) > 0  # reverted
+    linear = [{"parameter_id": "k1", "lower_bound": 0.0, "upper_bound": 10.0, "scale": "lin"}]
+    assert O.change_parameters(session, linear, justification="x")["applied"] is True
 
 
 def test_change_parameters_bounds(session):
@@ -264,31 +315,45 @@ def test_change_parameters_bounds(session):
     assert float(recs["k1"]["upperBound"]) == 1e3
 
 
-def test_a_one_bound_edit_is_refused_quoting_the_current_box(session):
-    """The server never picks a bound the caller did not send, so a one-sided edit is refused. The
-    bare "needs BOTH" left agents guessing (9x, #86); the refusal now quotes the box to resend."""
+def test_a_one_bound_edit_keeps_the_other_bound(session):
+    """A one-sided edit was refused 21x in 21 runs of one sweep (#284), and its meaning is plain:
+    the bound it leaves out stays as it is. The result says which box that makes."""
+    res = O.change_parameters(
+        session, [{"parameter_id": "k1", "lower_bound": 1e-3}], justification="one side"
+    )
+    assert res["applied"] is True
+    said = "'k1': only its lower bound was sent, so the box is [0.001, 100]."
+    assert said in [m["message"] for m in res["messages"]]
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert (float(recs["k1"]["lowerBound"]), float(recs["k1"]["upperBound"])) == (1e-3, 100.0)
+
+
+def test_a_one_bound_edit_past_the_kept_bound_names_the_bound_to_send(session):
+    """The table's own refusal of an empty box speaks of a zero-width pin, which is not what a
+    lower bound above the kept upper one is."""
     before = P.parameters_to_records(session.problem)
-    with pytest.raises(OperationError, match=r"'k1' sets only one bound.*\[0\.0001, 100\]: send"):
+    with pytest.raises(OperationError, match=r"\[1000, 100\].*upper bound stays.*upper_bound"):
         O.change_parameters(
-            session, [{"parameter_id": "k1", "lower_bound": 1e-3}], justification="one side"
+            session, [{"parameter_id": "k1", "lower_bound": 1e3}], justification="one side"
         )
     assert P.parameters_to_records(session.problem) == before
-    both = [{"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 100.0}]
-    assert O.change_parameters(session, both, justification="both sides")["applied"] is True
 
 
-def test_a_forks_one_bound_refusal_quotes_the_forked_versions_box(session):
-    """A `base_version` fork restores that version's box, so the box to resend is that one, not
+def test_a_forks_one_bound_edit_keeps_the_forked_versions_other_bound(session):
+    """A `base_version` fork restores that version's box, so the bound left out is that one, not
     the abandoned branch's."""
     stored = session.problem.parameter_df.copy()
-    stored.loc["k1", "upperBound"] = 10.0  # the forked version's box; HEAD's upper is 100
-    with pytest.raises(OperationError, match=r"\[0\.0001, 10\]: send both"):
-        _set_model(
-            session,
-            justification="fork",
-            parameters=[{"parameter_id": "k1", "upper_bound": 5.0}],
-            restore_parameter_df=stored,
-        )
+    stored.loc["k1", "lowerBound"] = 1e-2  # the forked version's box; HEAD's lower is 1e-4
+    res = _set_model(
+        session,
+        justification="fork",
+        parameters=[{"parameter_id": "k1", "upper_bound": 5.0}],
+        restore_parameter_df=stored,
+    )
+    recs = {r["parameterId"]: r for r in P.parameters_to_records(session.problem)}
+    assert (float(recs["k1"]["lowerBound"]), float(recs["k1"]["upperBound"])) == (1e-2, 5.0)
+    said = "'k1': only its upper bound was sent, so the box is [0.01, 5]."
+    assert said in [m["message"] for m in res["messages"]]
 
 
 def test_change_parameters_names_an_assignment_rule_symbol(session):
@@ -318,6 +383,40 @@ def test_change_parameters_names_a_noise_placeholder(session):
             [{"parameter_id": "noiseParameter1_obs_B", "lower_bound": 1e-3, "upper_bound": 1.0}],
             justification="estimate the noise",
         )
+
+
+def test_a_bound_on_an_inner_solved_sigma_is_refused(session):
+    """#267: the fit solves an estimated noise sigma analytically on [0, inf), whatever its table
+    says, so a bound on one was stored and ignored: fontaine 8 v29 bounded one at 9.0 and got 11.96
+    back, reported "at upper bound". Refused, and the batch with it; a FIXED sigma, which the fit
+    never solves, still takes bounds (test_the_seed_survives_a_parameters_only_edit)."""
+    session.problem.parameter_df.loc["sigma_B", "estimate"] = True
+    with pytest.raises(OperationError, match="'sigma_B'.*solves this noise sigma") as exc:
+        O.change_parameters(
+            session,
+            [
+                {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e3},
+                {"parameter_id": "sigma_B", "lower_bound": 1e-3, "upper_bound": 9.0},
+            ],
+            justification="cap the noise",
+        )
+    assert exc.value.cause == "inner_solved_bound"
+    assert session.problem.parameter_df.loc[["k1", "sigma_B"], "upperBound"].tolist() == [100, 100]
+
+
+def test_no_pin_where_the_bound_cannot_be_widened(session):
+    """#341: the fit report listed an inner-solved sigma at its bound, whose bounds are refused
+    above (isensee 63612603_69), and a value at a linear lower bound of 0, where its term is off
+    (lucarelli 63782292_0/3; 0.9 of [0, 100] was within the 1% too). The same pins on a log10 or an
+    upper bound are still listed, and without the problem the sigma is too."""
+    from petab_mcp import fitting
+
+    df = session.problem.parameter_df
+    df.loc["sigma_B", "estimate"] = True
+    fitted = {"A_init": 0.9, "B_init": 100.0, "sigma_B": 1e-4, "k1": 1e-4}
+    pins = fitting.parameters_at_bound(fitted, df, problem=session.problem)
+    assert [(p["parameter_id"], p["side"]) for p in pins] == [("B_init", "upper"), ("k1", "lower")]
+    assert "sigma_B" in {p["parameter_id"] for p in fitting.parameters_at_bound(fitted, df)}
 
 
 def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
@@ -387,20 +486,30 @@ def test_change_parameters_bad_range_reverts(session):
     assert float(recs["k1"]["upperBound"]) != 1.0  # not applied
 
 
-# -- repeated-widening backstop (issue #56) --------------------------------
-def _add_version(session, *, upper, nllh, kind="fit"):
-    """Snapshot a real version whose stored parameter table sets k1's UPPER bound to ``upper``
-    and whose meta records ``neg_log_likelihood`` (``None`` => a simulate-only fit). The
-    guard reconstructs widening history from these stored tables, so this mirrors exactly how a
-    real fit / rollback lands on disk."""
+# -- repeated-widening backstop (issues #56, #269) --------------------------
+def _add_version(session, *, upper, nllh, structure="s0", parent=None):
+    """Snapshot a real version whose stored parameter table sets k1's UPPER bound to ``upper``,
+    whose meta records ``structure_hash`` ``structure`` and ``neg_log_likelihood`` ``nllh``
+    (``None`` => none recorded), descending from ``parent`` (default HEAD). The guard walks these
+    stored tables and metas along ``parent``, so this mirrors how a real fit lands on disk."""
     from petab.v2.C import UPPER_BOUND
 
     df = session.problem.parameter_df.copy(deep=True)
     df.loc["k1", UPPER_BOUND] = upper
-    meta = {} if nllh is None else {"neg_log_likelihood": nllh}
-    session.provenance.snapshot_version(
-        session.problem.model.to_antimony(), df, kind=kind, meta=meta
+    meta = {"structure_hash": structure}
+    if nllh is not None:
+        meta["neg_log_likelihood"] = nllh
+    return session.provenance.snapshot_version(
+        session.problem.model.to_antimony(), df, kind="fit", parent=parent, meta=meta
     )
+
+
+def _two_negligible_widenings(session, parent=None):
+    """A base version and two bounds-only widenings of k1 (100 -> 1e3 -> 1e4), each for
+    ΔBIC = 0.1. Returns the last version."""
+    base = _add_version(session, upper=100.0, nllh=100.0, parent=parent)
+    _add_version(session, upper=1e3, nllh=99.95, parent=base)
+    return _add_version(session, upper=1e4, nllh=99.9)
 
 
 def _pin_k1_at_upper(session, upper):
@@ -412,21 +521,67 @@ def _pin_k1_at_upper(session, upper):
 
 
 def test_reject_third_widening_of_repinning_parameter(session):
-    # Two prior widenings (100 -> 1e3 -> 1e4), still pinned, negligible last gain (ΔBIC=0.2) ->
-    # the third widening is refused.
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
+    # Two prior bounds-only widenings, still pinned, negligible last gain -> the third widening
+    # is refused, and the message counts it as the 3rd, not the "3th" of #269.
+    _two_negligible_widenings(session)
     _pin_k1_at_upper(session, 1e4)
-    with pytest.raises(OperationError, match="Refusing to widen"):
+    with pytest.raises(OperationError, match="Refusing to widen 'k1' a 3rd time"):
         O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)
+
+
+_ROLES = [
+    "r3: A => B; V * A / (Km + A);",
+    "r4: B => A; kr * B^n / (K2^n + B^n);",
+]
+
+
+@pytest.mark.parametrize(
+    "pid,side,advice",
+    [
+        ("n", "upper", "step function"),
+        ("n", "lower", "no cooperativity"),
+        ("Km", "upper", "linear form"),
+        ("Km", "lower", "constant flux"),
+        ("K2", "lower", "constant flux"),
+        ("V", "lower", "REMOVE"),
+        ("V", "upper", "LEAVE 'V' pinned."),
+        ("sigma_B", "lower", "LEAVE 'sigma_B' pinned."),
+    ],
+)
+def test_the_widening_refusal_advises_by_the_parameters_role(session, pid, side, advice):
+    """#285: the refusal recommended the LIMITING form for every parameter. For a Hill exponent
+    that is a step function (fiedler 34 v12: 79/100 starts NOT_FINITE), for a Michaelis constant
+    toward 0 a constant flux (fiedler 31 v6 drove a state negative, 91/100 died). Only a limit the
+    solver can integrate is recommended; the others say to leave the parameter pinned."""
+    _set_model(session, _ROLES)
+    text = O._pinned_limit_advice(session.problem, pid, side)
+    assert advice in text
+    assert ("do not write it" in text) is (advice in ("step function", "constant flux"))
+
+
+def test_an_exponent_widened_past_ten_is_warned():
+    """#285: alkan 72 widened `n_p21` to 32 and alkan 73 `hrep` to 100."""
+    from types import SimpleNamespace
+
+    import pandas as pd
+    from petab.v2.models.sbml_model import SbmlModel
+
+    model = SbmlModel.from_antimony(
+        "model m\n species A, B; A = 1; B = 0; kr = 1; n = 2; K = 1;\n"
+        " r1: A => B; kr * A^n / (K^n + A^n);\nend\n"
+    )
+    table = pd.DataFrame({"upperBound": [8.0, 100.0]}, index=["n", "K"])
+    problem = SimpleNamespace(model=model, parameter_df=table)
+    assert "step function" in O._warn_exponent_widening(problem, "n", 32.0)
+    assert O._warn_exponent_widening(problem, "n", 10.0) is None
+    assert O._warn_exponent_widening(problem, "K", 1e3) is None  # not an exponent
 
 
 def test_third_widening_rejected_through_full_operation_and_reverts(session):
     # Same, but through the public op: it must raise without applying the new bound.
     from petab.v2.C import UPPER_BOUND
 
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
+    _two_negligible_widenings(session)
     _pin_k1_at_upper(session, 1e4)
     with pytest.raises(OperationError):
         O.change_parameters(
@@ -440,63 +595,111 @@ def test_third_widening_rejected_through_full_operation_and_reverts(session):
 def test_second_widening_is_allowed(session):
     # Only one prior widening -> the next one is fine (widen at most once is skill guidance;
     # the hard backstop only blocks the THIRD).
-    _add_version(session, upper=1e3, nllh=100.0)
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=99.95)
     _pin_k1_at_upper(session, 1e3)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
 
 
 def test_widening_allowed_when_not_at_bound(session):
     # Two prior widenings but the parameter now sits mid-range -> not the pathology; allowed.
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
+    _two_negligible_widenings(session)
     session.problem.parameter_df.loc["k1", "upperBound"] = 1e4
     session.simulation = {"fitted_parameters": {"k1": 1.0}}  # comfortably inside the box
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
 
 
 def test_widening_allowed_when_last_gain_is_meaningful(session):
-    # The last widening bought a real BIC improvement (ΔBIC = 2*(100-80) = 40) -> keep going.
-    _add_version(session, upper=1e3, nllh=100.0)
+    # The last widening bought a real BIC improvement (ΔBIC = 2*(99.95-80) ≈ 40) -> keep going.
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=99.95)
     _add_version(session, upper=1e4, nllh=80.0)
     _pin_k1_at_upper(session, 1e4)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
 
 
 def test_widening_allowed_when_last_gain_unknown(session):
-    # A simulate-only commit before the last widening leaves its BIC gain undeterminable. The
-    # backstop is defined by a NEGLIGIBLE gain, so an unknown gain must NOT trigger it.
-    _add_version(session, upper=1e3, nllh=None)  # no neg_log_likelihood recorded
+    # A version with no neg_log_likelihood before the last widening leaves its BIC gain
+    # undeterminable. The backstop is defined by a NEGLIGIBLE gain, so an unknown gain must NOT
+    # trigger it.
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=None)
     _add_version(session, upper=1e4, nllh=99.9)
     _pin_k1_at_upper(session, 1e4)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
 
 
+def test_a_widening_that_lost_bic_is_not_a_negligible_gain(session):
+    # #269: the last widening LOST ~710 BIC; it was refused "for a negligible ~-7.1e+02 BIC gain".
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=99.95)
+    _add_version(session, upper=1e4, nllh=455.0)
+    _pin_k1_at_upper(session, 1e4)
+    assert O._widening_history(session, "k1", "upper") == (2, pytest.approx(-710.1))
+    O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
+
+
+def test_a_widening_made_with_a_structural_edit_is_not_counted(session):
+    # #269: a step that widened k1 AND changed the structure was counted, and its fit change
+    # (here ΔBIC = 0.1) taken as the widening's gain. Only the two bounds-only steps count, and
+    # the gain is the last of THOSE (ΔBIC ≈ 19.9), so the next widening is allowed.
+    _add_version(session, upper=100.0, nllh=100.0)
+    _add_version(session, upper=1e3, nllh=99.95)
+    _add_version(session, upper=1e4, nllh=90.0)
+    _add_version(session, upper=1e5, nllh=89.95, structure="s1")
+    _pin_k1_at_upper(session, 1e5)
+    assert O._widening_history(session, "k1", "upper") == (2, pytest.approx(19.9))
+    O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e6)  # no raise
+
+
 def test_narrowing_a_repinning_parameter_is_never_blocked(session):
     # Moving the pinned bound INWARD is not a widening -> never guarded.
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
+    _two_negligible_widenings(session)
     _pin_k1_at_upper(session, 1e4)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 5e3)  # no raise
 
 
-def test_rollback_resets_widening_count(session):
-    # Two widenings then a rollback that restores the smaller box (an inward move) -> the run of
+def test_narrowing_resets_widening_count(session):
+    # Two widenings then a step that restores the smaller box (an inward move) -> the run of
     # widenings resets, so the next widening is a fresh first, not a blocked third.
-    _add_version(session, upper=1e3, nllh=100.0)
-    _add_version(session, upper=1e4, nllh=99.9)
-    _add_version(session, upper=1e3, nllh=100.0, kind="rollback")  # restores the smaller box
+    _two_negligible_widenings(session)
+    _add_version(session, upper=1e3, nllh=99.95)
     _pin_k1_at_upper(session, 1e3)
+    assert O._widening_history(session, "k1", "upper") == (0, None)
     O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e4)  # no raise
 
 
-def test_widenings_across_fitted_versions_are_counted(session):
-    # A widening that reaches a version via any fit snapshot counts toward the backstop exactly
-    # like any other; the guard reads stored parameter tables regardless of the version's kind.
-    _add_version(session, upper=1e3, nllh=100.0, kind="fit")
-    _add_version(session, upper=1e4, nllh=99.9, kind="fit")
+def test_a_fork_does_not_inherit_the_abandoned_branchs_widenings(session):
+    # #269: the history walked version NUMBERS, so a `base_version` fork was charged with the
+    # widenings of the branch it left. Forking from the base sees only the base's lineage.
+    base = _two_negligible_widenings(session) - 2
     _pin_k1_at_upper(session, 1e4)
+    session.derived_from = base
+    assert O._widening_history(session, "k1", "upper") == (0, None)
+    O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)  # no raise
+
+
+def test_widenings_are_counted_along_parents_not_version_numbers(session):
+    # The reverse of the fork case: v0 -> v1 -> v2 is abandoned, and v3 -> v4 descend from v0.
+    # In number order v2 -> v3 reads as a narrowing that resets the run; along parents, v4 is the
+    # second negligible widening since v0, so the third is refused.
+    base = _two_negligible_widenings(session) - 2
+    fork = _add_version(session, upper=1e3, nllh=99.95, parent=base)
+    _add_version(session, upper=1e4, nllh=99.9, parent=fork)
+    _pin_k1_at_upper(session, 1e4)
+    assert O._widening_history(session, "k1", "upper") == (2, pytest.approx(0.1))
     with pytest.raises(OperationError, match="Refusing to widen"):
         O._reject_repeated_widening(session, session.problem, "k1", 1e-4, 1e5)
+
+
+@pytest.mark.parametrize(
+    ("n", "word"),
+    [(1, "1st"), (2, "2nd"), (3, "3rd"), (4, "4th"), (11, "11th"), (12, "12th"), (13, "13th")]
+    + [(21, "21st"), (22, "22nd"), (111, "111th")],
+)
+def test_ordinal(n, word):
+    # #269: the refusal said "a 3th time".
+    assert O._ordinal(n) == word
 
 
 def test_compile_fit_failure_message_reserved_name():
@@ -511,6 +714,29 @@ def test_compile_fit_failure_message_generic_is_ill_posed():
     # A genuine solver failure keeps the ill-posed guidance.
     msg = O._compile_fit_failure_message(RuntimeError("CVODES failed: too much accuracy"))
     assert "ill-posed" in msg
+
+
+def test_compile_fit_failure_message_names_the_construct_amici_does_not_support():
+    """#285: AMICI's importer refusal ("features that are currently not supported") got the
+    ill-posed text, and armistead 21 changed three unrelated things in response. The construct
+    sits in the exception the refusal wraps, which a caller may wrap again."""
+    construct = "Root-finding for models without differential states is currently not supported."
+    try:
+        try:
+            raise NotImplementedError(construct)
+        except NotImplementedError as e:
+            raise RuntimeError(
+                "The SBML model contains features that are currently not supported by the AMICI "
+                "SBML importer."
+            ) from e
+    except RuntimeError as exc:
+        refusal = exc
+    wrapped = ValueError("import failed")
+    wrapped.__cause__ = refusal
+    for exc in (refusal, wrapped):
+        msg = O._compile_fit_failure_message(exc)
+        assert construct in msg and "does not support" in msg
+        assert "trajectories stay bounded" not in msg
 
 
 def test_compile_fit_failure_message_no_false_positive_on_internals():
@@ -742,3 +968,257 @@ def test_a_stored_seed_keeps_its_name_whatever_its_form():
         "seeds": [seed],
     }
     assert O.apply_statement_edits(record, [])[2] == [seed]
+
+
+_RECORD = {
+    "rows": [{"prefix": "r_act", "statement": {"type": "PopulationTransition"}},
+             {"prefix": "c2S", "statement": {"type": "PopulationTransition"}}],
+    "bindings": {"r_act": "mass_action", "c2S": "mass_action"},
+}
+
+
+def test_set_seed_takes_its_seed_flat():
+    """`{"op": "set_seed", "agent": ..., "amount": ...}` was refused for not nesting under `seed`,
+    14 times in 10 of 24 runs of gemot round 5 (#251)."""
+    _, _, seeds, _, _, summary = O.apply_statement_edits(
+        _RECORD, [{"op": "set_seed", "agent": "A", "amount": 1}]
+    )
+    assert seeds == [{"agent": "A", "amount": 1, "name": "A"}] and summary == ["set_seed A"]
+    with pytest.raises(OperationError, match="only `set_seed` takes an `amount`"):
+        O.apply_statement_edits(_RECORD, [{"op": "set_amount", "name": "A", "agent": "A",
+                                           "amount": 1}])
+
+
+def test_a_batch_editing_one_row_twice_is_refused_naming_it():
+    """alkan r3 sent three `rebind`s to row `c2S`: the last won, and the bounds for the others
+    named ids that never existed (#251)."""
+    rebind = {"op": "rebind", "prefix": "c2S", "binding": "mass_action kf=k1"}
+    with pytest.raises(OperationError, match=r"`statement_edits\[0\]` edits row 'c2S' already"):
+        O.apply_statement_edits(_RECORD, [rebind, {**rebind, "binding": "mass_action kf=k2"}])
+    with pytest.raises(OperationError, match="edits seed 'A' already"):
+        O.apply_statement_edits(_RECORD, [{"op": "set_seed", "agent": "A", "amount": 1},
+                                          {"op": "remove_seed", "name": "A"}])
+
+
+def test_a_control_character_in_a_prefix_or_row_is_named():
+    """fujita r1 wrote `r\\r_act`, refused as "no row `r_act`" beside a list holding `r_act`
+    (#251)."""
+    with pytest.raises(OperationError, match=r"`prefix` 'r\\r_act' holds the control character '\\r'"):
+        O.apply_statement_edits(_RECORD, [{"op": "remove_row", "prefix": "r\r_act"}])
+    with pytest.raises(OperationError, match=r"`row` 'r2\\r: A becomes B' holds the control"):
+        O.apply_statement_edits(_RECORD, [{"op": "add_row", "row": "r2\r: A becomes B",
+                                           "binding": "mass_action"}])
+
+
+# -- a name the parent defined, used but defined nowhere (#264) ------------------------------
+_GLI = ["gli_on: B => GliS; k3*B;", "gli_read: A => B; k4*GliS*A;"]
+
+
+def _commit(session):
+    """Snapshot the working model as a version, as a fit would; its number."""
+    return session.provenance.snapshot_version(
+        session.model.to_antimony(), session.problem.parameter_df
+    )
+
+
+def _orphaned(session, extra) -> list[str]:
+    """The issues of the refusal of re-authoring the base model with ``extra``."""
+    from petab_mcp.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="defined nowhere") as exc:
+        _set_model(session, extra)
+    return exc.value.issues
+
+
+def test_a_name_the_parent_defined_is_refused_when_an_edit_mints_it(session):
+    """fontaine 5 v7: `gli_on` was changed to make `GliF` while a rate law still read `GliS`, and
+    `GliS` became an estimated constant (fitted to 53.5, 140 nll worse) with no warning
+    (PEtab-MCP#264); named in a warning, such names were fitted anyway (PEtab-MCP#324). `k_new`, a
+    new name a rate law reads, is a new rate constant: not named."""
+    _set_model(session, _GLI)
+    v = _commit(session)
+    gli_off = "gli_off: GliF => ; k_new*GliF;"
+    assert _orphaned(
+        session, ["gli_on: B => GliF; k3*B;", "gli_read: A => B; k4*GliS*A;", gli_off]
+    ) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        "`gli_read`: define it again, or read the name that replaced it."
+    ]
+    result = _set_model(session, ["gli_on: B => GliF; k3*B;", gli_off])
+    assert "k_new" in result["parameter_diff"]["added"]
+
+
+def test_a_rule_another_version_had_is_refused_with_its_math(session):
+    """63612603_106: `RSK_un`, an assignment rule of version 6, was minted and fitted, 1735.61 nll
+    worse, beside a warning saying so (PEtab-MCP#324)."""
+    _set_model(session, ["f := k2*A;", "r3: B => ; f*B;"])
+    v = _commit(session)
+    assert _orphaned(session, ["r3: B => ; f*B;"]) == [
+        f"`f` is used but defined nowhere. Version {v} had it as the assignment rule "
+        "`f := k2 * A`: define it again, or read the name that replaced it."
+    ]
+
+
+def test_a_fork_is_checked_against_the_version_it_forks(session):
+    """A `base_version` fork changes that version, not HEAD: `GliS` is a species of the forked
+    version only, and `k4`, a parameter there, is no definition this refusal names (#264)."""
+    _set_model(session, _GLI)
+    v = _commit(session)
+    _set_model(session)
+    _commit(session)
+    session.derived_from = v
+    assert _orphaned(session, ["gli_read: A => B; k4*GliS*A;"]) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        "`gli_read`: define it again, or read the name that replaced it."
+    ]
+
+
+def test_a_species_new_against_the_forked_version_is_warned_about(session):
+    """PEtab-MCP#282, perelson 0: a `base_version` fork took "the species before this edit" from
+    HEAD, so a species new against the base but present in HEAD (a phantom `Ie2`) went unwarned."""
+    sink = ["J: B => D; k3 * B;", "K: D => ; k4 * D;"]
+    base = _commit(session)
+    _set_model(session, sink)
+    _commit(session)
+    again = _set_model(session, sink)  # on HEAD, `D` is not new
+    assert not any("unobserved species" in w for w in again["warnings"])
+    session.derived_from = base
+    forked = _set_model(session, sink)
+    assert any("unobserved species ['D']" in w for w in forked["warnings"])
+
+
+def test_a_name_another_version_defined_is_named(session):
+    """dessauges 91 forked version 32 with a rate law pasted from version 33, which read 33's
+    species `Sopt`; the fork minted it as a constant and the fit inverted a gain with it, with no
+    warning, since version 32 never had it (PEtab-MCP#286)."""
+    _set_model(session)
+    base = _commit(session)
+    _set_model(session, _GLI)
+    v = _commit(session)
+    session.derived_from = base
+    assert _orphaned(session, ["gli_read: A => B; k4*GliS*A;"]) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        f"`gli_read`, and version {base}, which this edit changes, does not: define it here too, "
+        "or read the name that replaced it."
+    ]
+
+
+_E = ["species E in compartment_;", "E = 1;", "r4: E => ; k1*E;"]
+
+
+def _said_of(result, check):
+    return [m["message"] for m in result["messages"] if check in m["message"]]
+
+
+@pytest.mark.parametrize(
+    ("edited", "dropped"),
+    [
+        ("r3: A => B; k2*A;", True),
+        ("r3: A => B; k2*E*A;", False),
+        ("r3: A => B; k2*f; f := E*A;", False),  # read through a rule
+        ("r3: A => B; k2*E;", False),  # `A` is consumed: the reactant warning names it
+    ],
+)
+def test_a_rate_that_no_longer_reads_a_species_its_parent_read_is_named(session, edited, dropped):
+    """`set_rate_law` swaps the rate alone, and a law that lost what the old one read committed
+    with no word (PEtab-MCP#324)."""
+    _set_model(session, [*_E, "r3: A => B; k2*E*A;"])
+    v = _commit(session)
+    result = _set_model(session, [*_E, edited])
+    assert _said_of(result, "no longer reads") == (
+        [
+            f"the rate of reaction `r3` no longer reads `E`, which it read in version {v}, so it "
+            "no longer changes with it. If it still acts on this reaction, read it in its rate "
+            "again."
+        ]
+        if dropped
+        else []
+    )
+    assert len(_said_of(result, "consumes `A`")) == (edited == "r3: A => B; k2*E;")
+
+
+def _said(result, start):
+    return [m["message"] for m in result["messages"] if m["message"].startswith(start)]
+
+
+def test_an_edit_lists_the_estimated_parameters_it_created(session):
+    """dessauges 91's `Sopt` and fujita 61's `M` were minted as estimated constants and no reply
+    said so (PEtab-MCP#286). A row the edit's parent or the shipped table has is not new."""
+    result = _set_model(session, ["r3: B => ; k_new*k1*B;", "r4: A => ; Sopt*A;"])
+    assert _said(result, "New estimated") == ["New estimated parameter(s): `Sopt`, `k_new`."]
+    assert _said(_set_model(session, ["r3: B => ; k_new*k1*B;"]), "New estimated") == []
+
+
+def test_an_assignment_to_an_estimated_row_is_refused(session):
+    """schwen 47's `km_nExpID1 = km_nExpID2;` was accepted with only the generic reuse warning, and
+    the fit estimated the two apart, to 42650 and 1000 (PEtab-MCP#286)."""
+    from petab_mcp.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="the rule `k1 := k2`, which takes no row") as exc:
+        O.set_model(session, _BASE_MODEL.format(extra="").replace("k1 = 0.5", "k1 = k2"), "x")
+    assert exc.value.issues == [
+        "`k1 = k2` assigns `k1`, whose row is estimated: a row the fit estimates and an assignment "
+        "cannot both set it. To compute `k1` from other quantities, write the rule `k1 := k2`, "
+        "which takes no row; to estimate it, drop the assignment."
+    ]
+    session.problem.parameter_df.loc["sigma_B", "estimate"] = True
+    with pytest.raises(ValidationError, match="no edit can set it: drop the assignment"):
+        _set_model(session, ["sigma_B = k2;"])
+    _set_model(session, ["k_rule := 2*k2;", "r3: B => ; k_rule*B;"])  # a rule takes no row
+
+
+_STARTS = [
+    "species S in compartment_;",
+    "S = S_tot - C_init;",
+    "S_tot = 2;",
+    "C_init = 0.3;",
+    "species C in compartment_;",
+    "r3: S => C; k2*S;",
+]
+
+
+def test_a_start_set_without_its_parameter_names_what_still_reads_it(session):
+    """oliveira 59 set the exposed and infected starts to 0, and k did not drop: the susceptible
+    start still read their rows, and no message said so (PEtab-MCP#286)."""
+    _set_model(session, [*_STARTS, "C = C_init;"])
+    result = _set_model(session, [*_STARTS, "C = 0;"])
+    assert _said(result, "`C_init`") == [
+        "`C_init` no longer sets the initial amount of `C` but stays estimated, since it is still "
+        "read by the initial assignment of `S`: rewrite that without it to drop its row."
+    ]
+
+
+@pytest.mark.parametrize(
+    "rule", ["f := piecewise(A > 0, A/(A + k1), 0);", "f := piecewise(A/(A + k1), A > 0, 0);"]
+)
+def test_a_piecewise_with_a_value_where_its_condition_goes_is_refused(session, rule):
+    """raimundez 87 wrote `piecewise(EGF > 0, EGF/(EGF + r_CET*CET), 0)`, which committed with no
+    warning and scored 408 nll worse than the model it nests; the statements route refuses it
+    (PEtab-MCP#286)."""
+    from petab_mcp.errors import ValidationError
+
+    extra = [rule, "r3: B => ; k2*f*B;"]
+    if rule.startswith("f := piecewise(A >"):
+        with pytest.raises(ValidationError) as exc:
+            _set_model(session, extra)
+        assert exc.value.issues == [
+            "the rule for `f`: `piecewise(A > 0, A / (A + k1), 0)` has a value where a condition "
+            "goes. piecewise reads (value, condition, …, otherwise): write "
+            "`piecewise(A / (A + k1), A > 0, 0)`."
+        ]
+    else:
+        assert _set_model(session, extra)["applied"]
+
+
+def test_a_folded_warning_keeps_the_symbols_it_names(session):
+    """bachmann 77's dead `pSTAT5n`, read by three readouts, was "1 warning(s) unchanged since
+    version 7" from v8 on, and the best model kept the bug (PEtab-MCP#286). Only the model's and
+    the table's ids are kept: `statements` is a word, `gone` no symbol."""
+    from petab_mcp import messages as M
+
+    said = "species `B` starts at 0 and stays 0 (`r2`, 'k2', `statements`, `gone`)."
+    session.warnings_sent = {(M.SOURCE_VALIDATION, said): 7}
+    out = O._unrepeated(session, [M.warning(M.SOURCE_VALIDATION, said)], None)
+    assert [m["message"] for m in out] == [
+        "1 warning(s) unchanged since version 7, naming `B`, `r2`, `k2`."
+    ]

@@ -90,16 +90,12 @@ _CONVERSION = {
 }
 
 
-@pytest.mark.parametrize(
-    ("row", "policy", "held"), [(_CATALYSIS, "indra_default", True), (_CONVERSION, "mass_action", False)]
-)
-def test_a_species_the_conditions_set_is_held_while_the_rows_only_read_it(
-    tmp_path, add_condition, row, policy, held
-):
-    """Drugs and hormones the conditions set and the rows only read: built as molecules, the
-    doses were used up by what they drive and started at an amount every condition overwrites.
-    Metabolites or a substrate the conditions start and the rows convert: held for being
-    condition targets, they never changed."""
+@pytest.mark.parametrize(("row", "policy"), [(_CATALYSIS, "indra_default"), (_CONVERSION, "mass_action")])
+def test_a_species_the_conditions_set_starts_at_what_they_set(tmp_path, add_condition, row, policy):
+    """A dose seeded at `A_init` started at an amount every condition overwrites. Held on the
+    boundary while the rows only read it, a dose the rows used up never changed (PEtab-MCP#246).
+    Whatever the rows do, it is an ordinary species the conditions start, with no seed of its
+    own."""
     shutil.copytree(Path(__file__).parent / "data" / "toy_v2", tmp_path / "problem")
     yaml_path = tmp_path / "problem" / "problem.yaml"
     add_condition(yaml_path, "A", 2.0)
@@ -116,7 +112,7 @@ def test_a_species_the_conditions_set_is_held_while_the_rows_only_read_it(
 
     assert call("make_changes", {"justification": "A acts on B", "statements": [row],
                                  "bindings": {"r1": policy}})["applied"]
-    assert ("$A" in call("get_model", {})["result"]) is held
+    assert "$A" not in call("get_model", {})["result"]
     ics = {r["species"]: r for r in call("get_model_structure", {"initial_conditions": ""})["initial_conditions"]}
     assert ics["A"]["t0_source"] == "condition_table"
-    assert (ics["A"]["ic_parameter"] is None) is held
+    assert ics["A"]["ic_parameter"] is None

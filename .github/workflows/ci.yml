@@ -20,31 +20,61 @@ concurrency:
 jobs:
   test:
     name: test (py${{ matrix.python-version }})
+    needs: changes
+    # Not skipped when `changes` fails: a skipped required check passes, so the PR would merge
+    # untested. Without its outputs, everything runs.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     strategy:
       # Report every version's result even if one fails.
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
+    env:
+      # A pull request runs Python 3.12 only. Python 3.13 runs on main after the merge, weekly and
+      # by hand; on a pull request its job runs no step and passes, so the required check stays.
+      RUN: ${{ matrix.python-version == '3.12' || github.event_name != 'pull_request' }}
+      # The fit-pool tests (`changes` below) run where a change can reach them, and on main.
+      POOL: ${{ needs.changes.outputs.pool != 'false' }}
 
     steps:
+      - name: Python 3.13 runs after the merge
+        if: env.RUN != 'true'
+        run: echo "Python 3.13 runs on main after the merge, weekly and by hand, not on a pull request."
+
       - name: Check out repository
+        if: env.RUN == 'true'
         uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
+        if: env.RUN == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       # Not setup-python's pip cache, which falls back to any older cache of the same Python: pip
       # keys the AMICI wheel it builds on the URL alone, so this prefix names the toolchain below.
-      # Change "hdf5" when that toolchain changes.
+      # Change "ninja" when that toolchain changes.
       - name: Cache pip
+        if: env.RUN == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-
+          key: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-
+
+      # The compiler cache the tests' model builds go through (`Run tests`): a model build is
+      # ~1.5 s of code generation and ~50 s of C++ compiling, and most of the job's slowest tests
+      # build models an earlier run built too. Saved under this run's id, restored from the
+      # latest one this branch or main saved; ccache keys each object on its preprocessed source,
+      # flags and compiler, so an entry is never stale.
+      - name: Cache ccache
+        if: env.RUN == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-py${{ matrix.python-version }}-${{ github.run_id }}
+          restore-keys: ccache-${{ runner.os }}-py${{ matrix.python-version }}-
 
       # AMICI generates and compiles C++ for every model, and is itself built
       # from source here (PyPI has only its sdist; its build pulls BLAS from
@@ -52,22 +82,20 @@ jobs:
       # ubuntu-latest; the Ninja generator AMICI drives CMake with does not, so
       # install it.
       #
-      # HDF5 too: AMICI builds with it only if it finds the headers, and needs it
-      # to pickle a solver, i.e. to send a fit start to a worker.
-      #
       # Deliberately NOT installing the apt `swig`: AMICI is built against the
       # pip `swig`, and a mismatched system SWIG makes compiled models raise
       # "'SwigPyObject' object has no attribute 'module'". The matching SWIG is
       # the pip `swig` package (installed and pinned below).
-      - name: Install build toolchain (Ninja, HDF5)
+      - name: Install build toolchain (Ninja)
+        if: env.RUN == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
-          sudo apt-get install -y libhdf5-dev  # with its recommends, as AMICI's own CI does
+          sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential ccache
 
       # AMICI's source build compiles serially unless told otherwise; the pip
       # cache keeps the wheel it builds.
       - name: Install package (with dev extras)
+        if: env.RUN == 'true'
         run: |
           python -m pip install --upgrade pip
           AMICI_PARALLEL_COMPILE=$(nproc) python -m pip install -e '.[dev]'
@@ -77,6 +105,7 @@ jobs:
       # graph. Its version tracks the SWIG AMICI's own build used, which is
       # what compiled models must match.
       - name: Install the SWIG that matches the AMICI wheel
+        if: env.RUN == 'true'
         run: python -m pip install swig
 
       # Point AMICI's per-model CMake build at that pip `swig`, overriding any
@@ -87,6 +116,7 @@ jobs:
       # the package binary is missing rather than compiling against a mismatched
       # SWIG.
       - name: Pin SWIG to the AMICI-matching build
+        if: env.RUN == 'true'
         run: |
           python - <<'PY' >> "$GITHUB_ENV"
           import pathlib, sys, swig
@@ -100,14 +130,34 @@ jobs:
           PY
 
       - name: Run tests
+        if: env.RUN == 'true'
         # -n 2 lives HERE, not in pyproject's addopts, so it applies to CI (a 2-core runner)
         # without taxing every local invocation: in addopts it made pytest-xdist a hard
         # dependency (bare pytest exits 4 on the unrecognised argument), broke --pdb, and made
         # even a single-file debug run spawn two workers -- each with its own session-scoped
         # amici_build_root, so the ~60-90s toy-model compile was paid twice for no parallelism.
         # The regulator corpus runs in its own job, below, only where it can change; a local
-        # `pytest` still runs it.
-        run: python -m pytest -v -n 2 --ignore tests/test_regulator_corpus.py
+        # `pytest` still runs it. --durations lists the slowest tests at the end of the log.
+        #
+        # Every model build compiles through ccache: CMake takes the launchers from the
+        # environment. The tests build under /tmp, a different folder each run, so ccache rewrites
+        # paths below it relative to the build directory, where they are the same every run.
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_BASEDIR: /tmp
+          CCACHE_MAXSIZE: 1G
+        run: |
+          ccache --zero-stats
+          pool=()
+          if [ "$POOL" != "true" ]; then
+            pool=(--ignore tests/test_dask_engine.py --ignore tests/test_pool.py --ignore tests/test_pool_stress.py)
+          fi
+          python -m pytest -v -n 2 --durations=30 --ignore tests/test_regulator_corpus.py "${pool[@]}"
+
+      - name: ccache statistics
+        if: ${{ !cancelled() && env.RUN == 'true' }}
+        run: ccache --show-stats --verbose
 
   # Whether a change can move a verdict of the regulator corpus (tests/test_regulator_corpus.py):
   # the files below, diffed against the merge base. A job-level filter, not the workflow's own
@@ -121,11 +171,18 @@ jobs:
   # refusals' advice), problem_sbml.py (the expansion J is read off); pyproject.toml, whose pins
   # (sympy, PySB, INDRA) decide what the prover shows; the corpus, its test and this file. A
   # module the check comes to import joins the list.
+  #
+  # Whether a change can reach the fit-pool tests (tests/test_dask_engine.py, test_pool.py,
+  # test_pool_stress.py, 6 of the test job's 35 worker-minutes): the pool's own modules and what
+  # a fit on it runs through (multistart, fitting, engine, filelock), the dependencies, the shared
+  # fixtures, the tests and this file. A push to main runs them whatever changed, so a break that
+  # comes in through another module shows there.
   changes:
-    name: regulator corpus changes
+    name: changes (regulator corpus, fit pool)
     runs-on: ubuntu-latest
     outputs:
       corpus: ${{ steps.diff.outputs.corpus }}
+      pool: ${{ steps.diff.outputs.pool }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -147,15 +204,19 @@ jobs:
             *) base="" ;;
           esac
           if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            echo "corpus=true" >> "$GITHUB_OUTPUT"  # nothing to diff against: run it
+            # nothing to diff against: run both
+            echo "corpus=true" >> "$GITHUB_OUTPUT"
+            echo "pool=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed=$(git diff --name-only "$(git merge-base "$base" HEAD)" HEAD)
           echo "$changed"
-          if echo "$changed" | grep -qE '^(src/petab_mcp/(regulation|mechanisms|schemes|statements|notation|problem_sbml)\.py|pyproject\.toml|tests/test_regulator_corpus\.py|tests/data/regulator_corpus/.*|\.github/workflows/ci\.yml)$'; then
-            echo "corpus=true" >> "$GITHUB_OUTPUT"
+          touches() { if echo "$changed" | grep -qE "$1"; then echo true; else echo false; fi; }
+          echo "corpus=$(touches '^(src/petab_mcp/(regulation|mechanisms|schemes|statements|notation|problem_sbml)\.py|pyproject\.toml|tests/test_regulator_corpus\.py|tests/data/regulator_corpus/.*|\.github/workflows/ci\.yml)$')" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = push ]; then
+            echo "pool=true" >> "$GITHUB_OUTPUT"
           else
-            echo "corpus=false" >> "$GITHUB_OUTPUT"
+            echo "pool=$(touches '^(src/petab_mcp/(dask_engine|pool|pool_stress|multistart|fitting|engine|filelock)\.py|pyproject\.toml|tests/(conftest|test_dask_engine|test_pool|test_pool_stress)\.py|\.github/workflows/ci\.yml)$')" >> "$GITHUB_OUTPUT"
           fi
 
   # Not a required check: skipped, it blocks nothing. On a change, one Python: a verdict is
@@ -184,14 +245,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: pip-hdf5-${{ runner.os }}-py${{ matrix.python-version }}-
+          key: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: pip-ninja-${{ runner.os }}-py${{ matrix.python-version }}-
 
-      - name: Install build toolchain (Ninja, HDF5)
+      - name: Install build toolchain (Ninja)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake build-essential
-          sudo apt-get install -y libhdf5-dev
 
       - name: Install package (with dev extras)
         run: |

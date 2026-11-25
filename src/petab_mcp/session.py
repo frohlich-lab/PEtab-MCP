@@ -12,52 +12,65 @@ import contextlib
 import math
 import threading
 import time
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID
+from petab.v2.C import CONDITION_ID, ESTIMATE, EXPERIMENT_ID, TARGET_ID, TIME
 from petab.v2.models.sbml_model import SbmlModel
 
 from . import criteria, logging_setup, protocols
 from .constants import (
     ADEQUATE_GOF_PVALUE,
     DEFAULT_AUTO_FIT_STARTS,
+    MAX_FIT_STARTS_FACTOR,
     NON_IMPROVING_STREAK_CAP,
     OVERFIT_GOF_PVALUE,
     PLATEAU_MIN_SCORE_GAIN,
     PLATEAU_WINDOW,
+    STREAK_RESET_MIN_SCORE_GAIN,
 )
 from .data_access import residual_flag, residual_structure_rollup
 from .errors import (
+    FitBackendError,
     FitCancelledError,
     InfrastructureError,
-    ModelBuildBusyError,
     ModelUpdateError,
     PetabMcpError,
     ValidationError,
     disk_full_error,
 )
-from .fitting import noise_sigma_collapsed, noise_sigma_inflated, table_fitted_values
+from .fitting import (
+    FIT_PER_START_TIMEOUT_S,
+    check_flattenable,
+    noise_sigma_collapsed,
+    noise_sigma_inflated,
+    table_fitted_values,
+)
 from .parameters import problem_fingerprint, sha16
 from .problem import WorkingProblem, as_bool
 from .provenance import ProvenanceStore
 from .references import EutilsReferenceResolver
 
 # Appended to an early-stop ``stop_reason`` only when the best model is NOT adequate (see
-# progress_report): a stall with an inadequate best is the signature of STRUCTURAL inadequacy —
-# the model's form, not the optimizer or the bounds. The nudge stays model-agnostic (issue #82):
-# it names generic structural MOVE CATEGORIES, never a specific mechanism, so it can't hand over
-# the answer to a problem whose model is withheld.
+# progress_report). The nudge stays model-agnostic (issue #82): it names generic structural MOVE
+# CATEGORIES, never a specific mechanism, so it can't hand over the answer to a problem whose model
+# is withheld. It claims only what a streak shows. It once called the stall "not an optimizer or
+# bounds problem", while dessauges 90 (gemot#134) ended on a streak made mostly of exactly
+# equivalent rewrites of its best structure that failed to find its optimum again: an optimizer
+# outcome, each. Either way, a refit or an equivalent rewrite cannot beat the optimum its structure
+# already has.
 _STRUCTURAL_PLATEAU_ADVICE = (
-    "The best model is still not adequate and the fit has plateaued: this is the signature of "
-    "STRUCTURAL inadequacy — the model's FORM cannot fit the data — not an optimizer or bounds "
-    "problem, so re-parameterizing or widening bounds will not help. Change the model's structure "
-    "rather than re-fitting the same one: consider a generic structural move (categories, not a "
-    "specific answer) — add a latent / unobserved state; add a feedback / regulation reaction; or "
-    "raise the interaction order (linear -> nonlinear / higher-order) — and re-author it with "
-    "make_changes."
+    "The best model is still not adequate, and none of these fits beat it. A refit or an "
+    "equivalent rewrite of a structure already fitted can at best find that structure's optimum "
+    "again (one that misses it scores worse), so neither can make the model adequate: that takes a "
+    "STRUCTURAL change to the model's FORM, not another fit of the same structure. Consider a "
+    "generic structural move (categories, not a specific answer) — add a latent / unobserved "
+    "state; add a feedback / regulation reaction; or raise the interaction order (linear -> "
+    "nonlinear / higher-order)."
 )
 
 # Appended instead of the structural nudge when a stall happened without ever scoring a model.
@@ -67,22 +80,18 @@ _UNSCORED_STALL_ADVICE = (
     "No fit in this session produced a usable score, so there is no best model to compare against: "
     "this is an EVALUATION failure, not evidence about the model's form. The likelihood is "
     "undefined when the simulation does not reach every measured timepoint — check "
-    "get_fit_summary's n_missing_simulations and the per-point records for unsimulated points, "
+    "n_missing_simulations and the per-point records for unsimulated points, "
     "and address why the trajectory stops (stiffness / a parameter pinned at a bound / an "
     "unbounded rate) before drawing any conclusion about the structure."
 )
 
-# Appended to the structural nudge when the best model's chi2 GoF only looks adequate because an
-# ESTIMATED noise sigma inflated to absorb the misfit (see fitting.noise_sigma_inflated / constants.
-# NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD). The chi2 GoF test is then powerless — it rescales to
-# whatever sigma makes chi2/dof ~= 1 — so an underfit model reads as "adequate" and the session
-# would stop early on it. The fix is mechanistic, not noise-side.
+# Appended to the structural nudge when the best model's ESTIMATED noise sigma is inflated (see
+# fitting.noise_sigma_inflated). A checkpoint keeps only the flag, so the specifics are that
+# version's own noise_sigma_advice, which reads its fit (PEtab-MCP#333).
 _SIGMA_INFLATED_ADVICE = (
-    " NOTE: the best model's fit only looks statistically adequate because its ESTIMATED noise "
-    "sigma is inflated above its data-driven cap, absorbing the misfit — the chi2 goodness-of-fit "
-    "is not real adequacy here. Do NOT widen or lean on the noise; fix the mechanism so the "
-    "residuals shrink at a plausible sigma (the fit result's residual_structure verdict still "
-    "flags the structure)."
+    " NOTE: the best model's ESTIMATED noise sigma is inflated above its data-driven cap, absorbing "
+    "misfit, so its chi2 goodness-of-fit is no evidence of adequacy. That version's "
+    "noise_sigma_advice names the sigma, its cap and what to change."
 )
 
 # The other tail: the best model's ESTIMATED noise sigma collapsed implausibly small, so the fit
@@ -95,23 +104,81 @@ _SIGMA_COLLAPSED_ADVICE = (
     "residuals to ~0."
 )
 
+# A fit's optimum only 0 to 2 fresh starts of a raised multistart reach (PEtab-MCP#287), for the
+# `n_starts` cap's refusal and the warning on such a fit.
+_NEEDLE_ADVICE = (
+    "the optimum is a needle, and more starts will not make it reliable: reformulate the model "
+    "where it is that sharp (a switch-like term, e.g. a steep Hill exponent or a gate at a bound; "
+    "`get_fit_diagnosis(sections='parameters')`)"
+)
+
+#: The MAXTIME warning's addendum where :func:`_integrates_to_steady_state_only` (PEtab-MCP#331).
+_CLOSED_FORM_ADVICE = (
+    " Every measurement here is at t=inf, so each start integrates every experiment to its steady "
+    "state: readouts written as that steady state in closed form, functions of the parameters "
+    "with no reactions, leave nothing to integrate."
+)
+
+
+def _integrates_to_steady_state_only(problem) -> bool:
+    """Whether every measurement is at t=inf and the model has reactions or rate rules to
+    integrate there."""
+    from petab.v2.C import TIME
+
+    sm, mdf = problem.model.sbml_model, problem.measurement_df
+    return (
+        mdf is not None
+        and len(mdf) > 0
+        and bool((mdf[TIME].astype(float) == math.inf).all())
+        and (sm.getNumReactions() > 0 or any(r.isRate() for r in sm.getListOfRules()))
+    )
+
+
+#: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
+#: ``get_progress`` has the rest. ``streak_cap`` and ``plateau_window`` are constants the
+#: ``make_changes`` description states, ``criterion`` is on the fit block, and the best's score and
+#: GoF p-value are on its own result.
+_PROGRESS_ON_RESULT = (
+    "n_fitted_ops",
+    "non_improving_streak",
+    "best_version",
+    "score_improvement_over_last_n",
+    "should_stop",
+    "stop_reason",
+    "streak_not_reset",
+)
+
 
 def _n_unique(df, column: str) -> int:
     """How many distinct ``column`` ids ``df`` names; 0 for an absent table."""
     return 0 if df is None or column not in df.columns else int(df[column].nunique())
 
 
-def _noise_sigma_assessable(report: "dict[str, Any] | None") -> bool:
-    """Whether ANY entry in a noise_sigma_report was actually assessable — i.e. carries a usable
-    ``fraction_of_data_std``. An entry whose observable std can't be computed is reported with
-    ``status: "unknown"`` and makes both plausibility predicates fail open, so callers must not
-    read "not inflated and not collapsed" as evidence of plausibility."""
-    if not isinstance(report, dict):
-        return False
-    return any(
-        isinstance(e, dict) and isinstance(e.get("fraction_of_data_std"), (int, float))
-        for e in report.values()
-    )
+def _unique_ids(df, column: str) -> list[str]:
+    """The distinct ``column`` ids ``df`` names, in its order; none for an absent table."""
+    return [] if df is None or column not in df.columns else list(map(str, df[column].unique()))
+
+
+def _steady_state(measurement_df) -> dict[str, str]:
+    """``describe_problem``'s ``steady_state`` line when measurements sit at time inf, else
+    nothing."""
+    if measurement_df is None or TIME not in measurement_df.columns:
+        return {}
+    n = sum(1 for t in measurement_df[TIME] if math.isinf(float(t)))
+    if not n:
+        return {}
+    return {
+        "steady_state": f"{n} of the {len(measurement_df)} measurements are at time inf, the "
+        'steady state their experiment reaches; get_measurements and query_data write it "inf".'
+    }
+
+
+def _with_fitted_values(simulation: dict[str, Any] | None, parameter_df) -> dict[str, Any] | None:
+    """A version's stored ``simulation`` with the ``fitted_parameters`` its ``parameter_df``
+    holds, where the simulation is a fit's: a version keeps them by name only in its table."""
+    if simulation and simulation.get("status") in ("fit", "scored_at_nominal"):
+        simulation["fitted_parameters"] = table_fitted_values(parameter_df)
+    return simulation
 
 
 @dataclass(frozen=True)
@@ -119,7 +186,7 @@ class Checkpoint:
     """The best-scoring fitted model so far — the version a client restores and scores, and the
     reference :func:`fitting.compute_improvement` gates the next fit against.
 
-    One object rather than nine attributes because the nine are only ever meaningful together:
+    One object rather than eight attributes because the eight are only ever meaningful together:
     a checkpoint is adopted or it is not. Adopting one used to be eight sequential assignments,
     and reconstructing one on a durable resume eight more — two places to keep in step whenever
     the adequacy gate grew a term.
@@ -136,8 +203,6 @@ class Checkpoint:
     sigma_estimated: bool
     sigma_inflated: bool
     sigma_collapsed: bool
-    sigma_assessable: bool
-    residual_flagged: bool
 
     def __post_init__(self) -> None:
         if self.score is None or not math.isfinite(self.score):
@@ -215,12 +280,31 @@ class PetabSession:
             from . import reconcile as R
 
             self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
+        if self.problem.model is not None:
+            from . import reconcile as R
+
+            sm = self.problem.model.sbml_model
+            # A model whose every state is a PARAMETER driven by a rate rule declares no species
+            # and no reaction, yet moves. `has_model` (species or reactions) reads it as the empty
+            # skeleton, so `_seed_initial_model` below would replace it with the seed and a
+            # delivered model would be scored as never built. The placeholder species keeps the
+            # one-species invariant AMICI's import needs and leaves the mechanism as it came.
+            if R.has_dynamics(sm) and sm.getNumSpecies() == 0:
+                R.ensure_one_species(sm)
 
         self.lock = threading.RLock()
+        # Held only while the timing accumulators and the early-stop state below are updated
+        # (`add_timing`, `record_fit_progress`, `reseed_best`) or read whole (`run_timing`,
+        # `progress_report`); the reads take it instead of `lock`.
+        self.counters_lock = threading.Lock()
         # When the change holding `lock` (a `make_changes` and its fit) began, by time.monotonic(),
         # else None; read without the lock, so a second change is refused instead of queued (see
         # `change`).
         self.change_began: float | None = None
+        # The last change's starting point, the highest version stored when it began (None before
+        # one has run), and its fit's progress (see `change`), which `wait_for_fit` reads.
+        self.change_from: int | None = None
+        self.change_progress: Any | None = None
         self.provenance = ProvenanceStore(store_root(self.yaml_path, provenance_dir))
         self.resolver = resolver or EutilsReferenceResolver(mode=reference_mode)
         self.logger = logging_setup.configure(self.provenance.root)
@@ -232,6 +316,9 @@ class PetabSession:
         # call belongs here, in the first thing the server constructs, rather than next to the
         # fitting code that provokes the warnings.
         logging_setup.configure_amici()
+        # A problem AMICI cannot flatten fails every fit, and nothing the agent can edit changes
+        # that, so it is refused here, once. After `configure_amici`: this imports amici.
+        check_flattenable(self.problem)
 
         # Ids of parameters that ship FIXED and are structural/mechanistic constants — the ones
         # the agent must neither free nor remove. Derived once from the initial (v0) problem and
@@ -257,43 +344,40 @@ class PetabSession:
         self.fit_record: Any | None = None
         self.auto_fit: bool = True
         self.auto_fit_starts: int = DEFAULT_AUTO_FIT_STARTS
+        # Each start's wall-clock cap in seconds, for this session's fits and held-out refits; a
+        # server hosting several problems sets it per session.
+        self.fit_per_start_timeout: float = FIT_PER_START_TIMEOUT_S
 
         # Cumulative server-side timing for this session, split so the two very different costs
         # are legible: `compile_seconds` is AMICI model BUILD time (the one-time C++ compile
         # per unique structure — ONE build now, made by `fitting.estimation_problem` and shared
         # by the fit and every objective evaluation), `fit_seconds`
         # is pyPESTO OPTIMIZATION time (the recurring multistart `minimize`). Both accumulate
-        # only when work actually happens (a compile/fit cache hit adds nothing), and every
-        # write is under `self.lock` (fits/sims already hold it). Read via `get_run_timing`.
+        # only when work actually happens (a compile/fit cache hit adds nothing), through
+        # `add_timing`. Read via `run_timing` (`get_run_timing`).
+        # `queue_seconds` is the part of `fit_seconds` its starts waited with none running.
         self.compile_seconds: float = 0.0
         self.fit_seconds: float = 0.0
+        self.queue_seconds: float = 0.0
         self.n_compiles: int = 0
         self.n_fits: int = 0
 
         # Early-stop chain state (see constants.py). Every genuine fitted commit is recorded as
         # one "op" so a client can stop a session that has stopped improving and score the BEST
         # model rather than the last-committed one. ``is_new_best`` tracks the session's criterion
-        # (see fitting.compute_improvement), so `best` IS the version at which the last (gated) new
-        # best fired — one coherent notion of "better" drives the flag, the streak, and the
-        # checkpoint:
-        #   * ``non_improving_streak`` — consecutive fitted ops since the last new best; the hard
-        #     stall cap fires on it.
+        # (see fitting.compute_improvement), so `best` IS the version at which the last new best
+        # fired, the lowest score so far:
+        #   * ``non_improving_streak`` — consecutive fitted ops since a new best last counted as
+        #     progress; the hard stall cap fires on it.
+        #   * ``streak_mark`` — the best score when the streak last reset; a new best resets it
+        #     only ``STREAK_RESET_MIN_SCORE_GAIN`` below this.
         #   * ``best`` — the best-scoring fitted model so far (see :class:`Checkpoint`).
-        #   * ``op_history`` — per-op (version, score, running best_score, gof p, is_new_best), to
-        #     surface "best-score improvement over the last N ops" and to detect a plateau.
-        # All writes happen under ``self.lock`` on the commit path (fits already hold it); reads go
-        # through ``progress_report`` which takes the lock for a consistent snapshot.
+        #   * ``op_history`` — per-op (version, score, running best_score, gof p, is_new_best, and
+        #     ``no_reset``/``streak_not_reset``: why a new best did not reset the streak), to surface "best-score
+        #     improvement over the last N ops", to detect a plateau, and for the cap's stop_reason.
+        # Every write holds ``counters_lock``, and ``progress_report`` reads them under it.
         self.non_improving_streak: int = 0
-        # Whether ANY fit of this session has produced a plausible (non-flagged) estimated sigma.
-        # While False, the sigma-plausibility term is a CONSTANT for this problem -- on some
-        # problems (96 of 96 streak-capped sessions on two of them) no fit ever clears the data-std
-        # band, usually because ONE observable's explainable variance puts its ML sigma over the
-        # 0.75 cap regardless of model quality.
-        # A constant cannot discriminate progress from stagnation, so letting it block the streak
-        # reset silently turns the adaptive cap into a FIXED 15-fit budget and mislabels the stop
-        # "structural inadequacy". Fits with no estimated sigma at all leave this False; they take
-        # the plain-score reset below anyway, so the flag is only consulted where it is real.
-        self.ever_sigma_plausible: bool = False
+        self.streak_mark: float | None = None
         self.best: Checkpoint | None = None
         self.op_history: list[dict[str, Any]] = []
 
@@ -365,14 +449,31 @@ class PetabSession:
         # the duration of such a call (see server.make_changes); everything else leaves it None
         # and the snapshot falls back to HEAD, which is correct for an edit of the working model.
         self.derived_from: int | None = None
+        # A `make_changes` without `base_version` on a HEAD that is not the best is refused once
+        # and applied when sent again (`server._implicit_base`): `implicit_base_asked` is the HEAD
+        # and arguments of the call refused, `head_restored` the HEAD `restore_version` chose.
+        self.implicit_base_asked: tuple[int, str] | None = None
+        self.head_restored: int | None = None
+        # The `(old, new)` of each `rename` in the running `make_changes` call's `model_edits`
+        # (:func:`model_edits.renames`), set by the server for the call like `derived_from`: the
+        # reconcile carries each old id's row to its new id (`operations.set_model`), and the fit
+        # its warm-start coordinate (`fitting._run_fit`).
+        self.renamed: list[tuple[str, str]] = []
+
+        # Which `make_changes` routes the server offers: True for the text routes, whose
+        # `model_edits` take a merge hint as a `rename` (`identifiability.merge_hints`).
+        self.text_route: bool = True
 
         # De-duplication memory for identical fits (see :mod:`dedup` and issue #59): how many times
         # each *identical* estimation problem has been handed to `fit` this session, keyed by
-        # structure fingerprint + estimation setup (see `dedup.reauthor_key`) so that only truly
-        # identical problems — not the same structure with changed bounds/scale — count toward
-        # the loop guard. A within-session counter (a fresh session legitimately starts over),
-        # not persisted.
+        # structure fingerprint + estimation setup + starts (see `dedup.reauthor_key`) so that only
+        # truly identical problems — not the same structure with changed bounds/scale or more
+        # starts — count toward the loop guard. A within-session counter (a fresh session
+        # legitimately starts over), not persisted.
         self._fit_attempts: dict[str, int] = {}
+        # The edit and lint warnings the last committed `make_changes` result carried, each with
+        # the version whose result first carried it in full (see `operations.bundle_result`).
+        self.warnings_sent: dict[tuple[str, str], int] = {}
 
         if self.provenance.current_version < 0:
             # The initial model is WORKING STATE, not a version: every version is a fit, and
@@ -430,10 +531,11 @@ class PetabSession:
         False until a ``make_changes`` call adds actual dynamics, so the model-less contract is
         unchanged.
 
-        The seed is RECONCILED exactly like any other model — no special pass. It declares no
-        mechanism, so the kinetic and initial-condition rows a model-less problem ships are pruned
-        at v0; that is safe because :func:`reconcile.sync_parameter_table` RESTORES a shipped row
-        the moment the caller's model reintroduces that parameter, its bounds intact.
+        The seed is RECONCILED like any other model, except that its species get no parametric
+        initial condition (``parametric_ics=False``). It declares no mechanism and no
+        ``<sid>_init``, so the kinetic and initial-condition rows a model-less problem ships are
+        pruned at v0; that is safe because :func:`reconcile.sync_parameter_table` RESTORES a
+        shipped row the moment the caller's model reintroduces that parameter, its bounds intact.
 
         It then LINTS, under the same rules every edit is held to, and a failure RAISES. It
         deliberately does not degrade to the empty skeleton: that state is the one nothing
@@ -444,9 +546,13 @@ class PetabSession:
         later with no traceback — and it is what makes "there is always a model" a real
         invariant rather than an expectation.
         """
-        if self.has_model():
-            return
         from . import reconcile as R
+
+        if self.has_model():
+            # A shipped model is never seeded over. One whose states are rate-ruled variables
+            # declares no species, and gets the placeholder that keeps it importable.
+            R.ensure_one_species(self.model.sbml_model)
+            return
         from .validation import validate_problem
 
         antimony = R.seed_model_antimony(self.problem)
@@ -459,7 +565,7 @@ class PetabSession:
             )
         try:
             self._set_model_from_antimony(antimony)
-            R.reconcile(self.problem, shipped=self.shipped_parameter_df)
+            R.reconcile(self.problem, shipped=self.shipped_parameter_df, parametric_ics=False)
         except Exception as exc:
             raise ValidationError(
                 f"could not build a valid initial model for this model-less problem "
@@ -498,11 +604,12 @@ class PetabSession:
 
         Replays the fit events in the log, scored under the session's criterion (see
         :meth:`criteria.Criterion.score_of`), through the live gates —
-        :func:`fitting.clears_new_best_bar` and :meth:`_adopt_checkpoint` — so the checkpoint is
+        :func:`fitting.beats_best` and :meth:`_adopt_checkpoint` — so the checkpoint is
         the one the last process kept, not the lowest score it saw: that may be a sigma-gamed fit
         the live run refused. ``compute_improvement`` and the streak then pick up where the last
         process left off. The streak and ``op_history`` stay reset — they
-        are within-session heuristics whose exact sequence isn't reconstructed. Best-effort: an
+        are within-session heuristics whose exact sequence isn't reconstructed — and
+        ``streak_mark`` is the seeded best's score, as if the streak had just reset. Best-effort: an
         event that carries no score under THIS criterion simply doesn't seed, which is also what
         makes resuming under a criterion the earlier process did not use safe — it starts fresh
         rather than ranking one criterion's scores against another's. Called under construction,
@@ -521,19 +628,6 @@ class PetabSession:
             for ev in self.provenance.recent_events(0):
                 if "invalid_comparison" in ev:
                     self.invalid_comparison = ev.get("invalid_comparison")
-                # Rebuild the plausibility latch from EVERY event, before the best-score filter
-                # below: it records whether the band was ever satisfiable on this problem, which
-                # is a property of the session, not of its best model. Without this a resume
-                # restarts with the latch False and silently re-enters the uninformative regime —
-                # gamed improvements would advance the streak at the discounted weight on a problem
-                # the session had already demonstrated clears the band. Same predicates as the live
-                # latch in record_fit_progress, off the same persisted fields.
-                if (
-                    ev.get("noise_sigma_estimated")
-                    and ev.get("noise_sigma_assessable")
-                    and not (ev.get("noise_sigma_inflated") or ev.get("noise_sigma_collapsed"))
-                ):
-                    self.ever_sigma_plausible = True
                 # `score_of` already rejects non-finite values, so a resume can't seed the
                 # checkpoint with a NaN that no later fit could beat (see record_fit_progress).
                 score = self.criterion.score_of(ev)
@@ -553,15 +647,14 @@ class PetabSession:
                         sigma_estimated=bool(ev.get("noise_sigma_estimated", False)),
                         sigma_inflated=bool(ev.get("noise_sigma_inflated", False)),
                         sigma_collapsed=bool(ev.get("noise_sigma_collapsed", False)),
-                        sigma_assessable=bool(ev.get("noise_sigma_assessable", False)),
-                        residual_flagged=bool(ev.get("residual_flagged", False)),
                     ),
-                    fitting.clears_new_best_bar(score, self.best.score if self.best else None),
+                    fitting.beats_best(score, self.best.score if self.best else None),
                 )
         except Exception:  # noqa: BLE001 - seeding is best-effort; a resume must never fail on it
             self.logger.warning(
                 "could not seed best-score checkpoint from provenance", exc_info=True
             )
+        self.streak_mark = self.best.score if self.best else None
 
     # -- constraints -------------------------------------------------------
     def constraint_verdicts(self, version: int | None, constraints: Any) -> dict[str, Any]:
@@ -616,11 +709,32 @@ class PetabSession:
 
     def reseed_best(self, excluded: set[int]) -> None:
         """Rebuild the best-score checkpoint from the log without the versions ``excluded``, the ones
-        the constraints in force break: the best version, the new-best bar and the plateau stop
-        then rank only models that make the session's claims."""
-        with self.lock:
+        the constraints in force break: the best version, the streak's reset mark and the plateau
+        stop then rank only models that make the session's claims."""
+        with self.lock, self.counters_lock:
             self.best = None
             self._seed_progress_from_provenance(frozenset(excluded))
+
+    def add_timing(self, **amounts: float) -> None:
+        """Add each of ``amounts`` to the timing accumulator of its name (``fit_seconds=2.5,
+        n_fits=1``), all under :attr:`counters_lock`, so :meth:`run_timing` sees all or none."""
+        with self.counters_lock:
+            for name, amount in amounts.items():
+                setattr(self, name, getattr(self, name) + amount)
+
+    def run_timing(self) -> dict[str, Any]:
+        """The timing accumulators ``get_run_timing`` returns, read under :attr:`counters_lock`
+        as :meth:`progress_report` reads the early-stop state, and never under :attr:`lock`: a
+        change holds that for its whole edit and fit, so a read during a fit waited it out (29.6 s
+        of a 30 s stub, PEtab-MCP#180) instead of answering with what the change has recorded."""
+        with self.counters_lock:
+            return {
+                "compile_seconds": round(float(self.compile_seconds), 3),
+                "fit_seconds": round(float(self.fit_seconds), 3),
+                "queue_seconds": round(float(self.queue_seconds), 3),
+                "n_compiles": int(self.n_compiles),
+                "n_fits": int(self.n_fits),
+            }
 
     def set_constraints(self, constraints: Any, rationale: str) -> dict[str, Any]:
         """Replace the session's constraints with ``constraints`` (:mod:`constraints`): the next change
@@ -670,7 +784,8 @@ class PetabSession:
         return self.problem.model
 
     def has_model(self) -> bool:
-        """Whether there is a model at all (any species or reactions).
+        """Whether there is a model at all: any species, reaction or rule. Rules count, so a model
+        whose states are rate-ruled variables is one (see :func:`reconcile.has_dynamics`).
 
         THIS IS NOT THE MODEL-LESS FLAG — use :meth:`model_authored` for that. A model-less
         problem is SEEDED at construction with a content-free but valid model (see
@@ -690,11 +805,13 @@ class PetabSession:
         unreachable is what let every one of them go; the two call sites left are the seeding
         path itself, which establishes the invariant rather than defending against it.
         """
+        from . import reconcile as R
+
         model = self.problem.model
         if model is None:
             return False
         sm = model.sbml_model
-        return sm.getNumReactions() > 0 or sm.getNumSpecies() > 0
+        return sm.getNumSpecies() > 0 or R.has_dynamics(sm)
 
     def model_authored(self) -> bool:
         """Whether a MECHANISM has been authored — the model-less flag, reported as
@@ -817,24 +934,36 @@ class PetabSession:
         constrained = (
             {"n_constraints": len(self.constraints.items)} if self.constraints is not None else {}
         )
+        authored = self.model_authored()
+        # Counted on an authored model only, never on the seed's placeholders (docs/RATIONALE.md)
+        # or the one `reconcile.ensure_one_species` mints.
+        counts = (
+            {
+                "n_species": len(R.authored_species(sm)),
+                "n_model_parameters": int(sm.getNumParameters()),
+            }
+            if authored
+            else {}
+        )
         return constrained | {
             "model_id": self.model.model_id,
             # Has a MECHANISM been authored? False for a problem that ships without one, whose
             # initial version is a content-free seed (species only, no dynamics) rather than the
             # broken empty skeleton it used to be. Replaces `model_initialized`, which since the
             # seed is True from construction and no longer answers the question anyone asked.
-            "model_authored": self.model_authored(),
-            "n_species": int(sm.getNumSpecies()),
+            "model_authored": authored,
+            **counts,
             "n_reactions": int(sm.getNumReactions()),
-            "n_model_parameters": int(sm.getNumParameters()),
             "n_table_parameters": int(len(p.parameter_df)),
             "n_estimated": int(p.n_estimated),
             "free_parameters": [str(x) for x in p.x_free_ids],
             "readouts_to_define": [r for r, rule in R.readouts(p).items() if rule is None],
             "observables": [str(x) for x in getattr(p.observable_df, "index", [])],
             "n_conditions": _n_unique(p.condition_df, CONDITION_ID),
+            "condition_targets": _unique_ids(p.condition_df, TARGET_ID),
             "n_experiments": _n_unique(p.experiment_df, EXPERIMENT_ID),
             "n_measurements": 0 if p.measurement_df is None else int(len(p.measurement_df)),
+            **_steady_state(p.measurement_df),
             "n_reactions_detail": [sm.getReaction(i).getId() for i in range(sm.getNumReactions())],
             "current_version": self.provenance.current_version,
             # The multistart count a fit uses when `n_starts` is omitted. Reported because
@@ -861,11 +990,7 @@ class PetabSession:
             snap = self.provenance.get_version(version)
             self._set_model_from_antimony(snap["model_antimony"])
             self.problem.parameter_df = self.provenance.get_parameter_df(version)
-            self.simulation = snap.get("simulation")
-            if self.simulation and self.simulation.get("status") in ("fit", "scored_at_nominal"):
-                self.simulation["fitted_parameters"] = table_fitted_values(
-                    self.problem.parameter_df
-                )
+            self.simulation = _with_fitted_values(snap.get("simulation"), self.problem.parameter_df)
             self.version_score = (self.problem_hash(), snap.get("neg_log_likelihood"))
             # The branch source moves WITH the model. Without this, a structured edit after a
             # rollback applies its operations to the abandoned branch's text and silently
@@ -878,6 +1003,32 @@ class PetabSession:
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
             # durable resume brings them back rather than dropping them.
             self.optimization = snap.get("optimization")
+
+    def stored_fit(self, version: int) -> SimpleNamespace:
+        """Stored ``version``'s fit as :meth:`apply_version` would restore it, without touching the
+        working state: ``problem`` is the working problem with that version's parameter table,
+        ``simulation`` its stored records with the fitted values that table holds, ``optimization``
+        ``None``. ``get_fit_diagnosis(version=N)`` hands it to the residual reads of
+        :mod:`data_access` in place of the session. Those read the tables and the records, never the
+        model, so ``problem`` keeps the working model and nothing is built or refit. Raises
+        ``UnknownEntityError`` for a version that does not exist."""
+        parameter_df = self.provenance.get_parameter_df(version)
+        return SimpleNamespace(
+            problem=self.problem.replace(parameter_df=parameter_df),
+            simulation=_with_fitted_values(
+                self.provenance.get_version_simulation(version), parameter_df
+            ),
+            optimization=None,
+        )
+
+    def fit_problem(self) -> Any:
+        """The problem :attr:`simulation` was fitted on, whose table reads pair with its records:
+        the working problem, except while a change is being fitted (:attr:`change_began`), when
+        the working table is that change's and the fit's is its version's stored one (#330)."""
+        version = (self.simulation or {}).get("version")
+        if self.change_began is None or not isinstance(version, int) or version < 0:
+            return self.problem
+        return self.problem.replace(parameter_df=self.provenance.get_parameter_df(version))
 
     def _snapshot_version(
         self,
@@ -978,10 +1129,15 @@ class PetabSession:
             optimization=fitting.build_optimization_payload_for_version(self.optimization),
         )
 
-    @staticmethod
-    def _coerce_n_starts(n_starts: int | None) -> int | None:
-        """Validate ``n_starts`` — ``None`` (server default) or an integer >= 1 — returning the
-        coerced int. Raises :class:`ValidationError` otherwise.
+    @property
+    def max_fit_starts(self) -> int:
+        """The most starts one fit may run: :data:`MAX_FIT_STARTS_FACTOR` times the default."""
+        return MAX_FIT_STARTS_FACTOR * int(self.auto_fit_starts)
+
+    def _coerce_n_starts(self, n_starts: int | None) -> int | None:
+        """Validate ``n_starts`` — ``None`` (server default) or an integer from 1 to
+        :attr:`max_fit_starts` — returning the coerced int. Raises :class:`ValidationError`
+        otherwise.
 
         0 used to mean "simulate without optimising". It is refused now: every change is scored,
         and a version whose parameters were never optimised is not a score — it records whatever
@@ -997,6 +1153,12 @@ class PetabSession:
             raise ValidationError(f"n_starts must be an integer >= 1, got {n_starts!r}.")
         if n_starts < 1:
             raise ValidationError(f"n_starts must be an integer >= 1, got {n_starts}.")
+        if n_starts > (cap := self.max_fit_starts):
+            raise ValidationError(
+                f"n_starts must be at most {cap}, {MAX_FIT_STARTS_FACTOR}x the default, got "
+                f"{n_starts}. If a raise still leaves 0 to 2 fresh starts at the best, "
+                f"{_NEEDLE_ADVICE}."
+            )
         return n_starts
 
     # -- fit + simulate ----------------------------------------------------
@@ -1085,28 +1247,33 @@ class PetabSession:
         child_model_ant: str,
         is_new_best: bool = False,
     ) -> str | None:
-        """Advisory for a commit that gained parameters yet fits WORSE than its parent.
+        """Advisory for a commit that gained parameters, or only lost some, yet fits WORSE than its
+        parent.
 
         See :mod:`nesting`: for a NESTED model the ML nll cannot rise when a parameter is added,
-        so "k up AND nll up" means the edit displaced a term or the optimizer under-converged —
-        either way the agent must not read the worse score as "the added structure does not
-        help". Advisory only; the commit is never blocked.
+        so "k up AND nll up" on a nested child is an INVALID COMPARISON, on one with a new
+        parameter at a bound a line naming it, and on any other child a line naming why it is not
+        nested. A deletion gets the objective at the parent's optimum. Advisory only; the commit
+        is never blocked.
 
         Also maintains ``self.invalid_comparison`` — the session's outstanding invalid
         does-adding-structure-help experiment, which ``fit_summary`` surfaces so a client's finish
-        check cannot rest on one. Two things clear it: a later commit that adds parameters
-        WITHOUT worsening the nll (the experiment, redone properly), and a later NEW BEST — the
-        note exists to stop a finish resting on the botched comparison, and a session that has
-        since found a strictly better model is resting on that instead. Without the second path
-        the flag would stick for the rest of any session that pivots to SIMPLIFYING after the
-        botched experiment, since no later commit raises k.
+        check cannot rest on one. Only a nested child sets it: a client's finish gate repeats the
+        re-fit advice, which a not-nested child must not get. Two things clear it: a later commit
+        that adds parameters WITHOUT worsening the nll (the experiment, redone properly), and a
+        later NEW BEST — the note exists to stop a finish resting on the botched comparison, and a
+        session that has since found a strictly better model is resting on that instead. Without
+        the second path the flag would stick for the rest of any session that pivots to
+        SIMPLIFYING after the botched experiment, since no later commit raises k.
 
         Called from ``fit`` while holding ``self.lock``, BEFORE the snapshot, so
         ``provenance.current_version`` is still the parent. Best-effort: ANY failure in here —
         the parent read, the child's parameter table, the comparison itself — leaves the payload
         advisory-free rather than failing a commit whose fit has already run.
         """
-        from . import nesting
+        from petab.v2.C import LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
+
+        from . import fitting, nesting
         from .parameters import estimated_ids
 
         # The model this child DESCENDS FROM, which is not HEAD when the call forked
@@ -1127,12 +1294,15 @@ class PetabSession:
                 "n_estimated": len(parent_ids),
                 "neg_log_likelihood": parent_meta.get("neg_log_likelihood"),
                 "estimated_ids": parent_ids,
-                # LAZY: the Antimony is read only to name a displaced parameter, i.e. only once
-                # the advisory has already fired. The overwhelming majority of commits improve
-                # the nll and never resolve it, so the common path stays off model.ant.
+                # A version's estimated rows' nominal values are its fitted values.
+                "values": parent_df.loc[parent_ids, NOMINAL_VALUE].to_dict(),
+                # LAZY: the Antimony is read only once k rose and the nll got worse. The
+                # overwhelming majority of commits improve the nll and never resolve it, so the
+                # common path stays off model.ant.
                 "model": lambda: self.provenance.get_model_antimony(parent_version),
             }
-            child_ids = estimated_ids(self.problem.parameter_df)
+            child_df = self.problem.parameter_df
+            child_ids = estimated_ids(child_df)
             child = {
                 # Count the estimate=1 ROWS on both sides so the two k's are commensurable;
                 # fitsim's n_estimated can also carry analytically-profiled inner parameters the
@@ -1140,14 +1310,23 @@ class PetabSession:
                 "n_estimated": len(child_ids),
                 "neg_log_likelihood": fitsim.get("neg_log_likelihood"),
                 "estimated_ids": child_ids,
+                "bounds": {
+                    pid: (child_df.at[pid, LOWER_BOUND], child_df.at[pid, UPPER_BOUND])
+                    for pid in child_ids
+                },
+                "at_bound": fitting.parameters_at_bound(
+                    fitsim.get("fitted_parameters"), child_df, problem=self.problem
+                ),
+                "objective_before": fitsim.get("objective_before"),
                 "model": child_model_ant,
             }
-            advisory = nesting.nesting_advisory(parent, child)
-            valid = advisory is None and nesting.valid_added_parameter_experiment(parent, child)
+            found = nesting.nesting_advisory(parent, child)
+            valid = found is None and nesting.valid_added_parameter_experiment(parent, child)
         except Exception:  # noqa: BLE001 - advisory only; never fail a commit over it
             self.logger.warning("nesting check failed; committing without it", exc_info=True)
             return None
-        if advisory is not None:
+        advisory, invalid = found or (None, False)
+        if invalid:
             self.invalid_comparison = advisory
         elif valid or is_new_best:
             self.invalid_comparison = None
@@ -1189,21 +1368,30 @@ class PetabSession:
 
         Called after a fit ran. Restores and simulate-only passes are NOT ops and never perturb
         the streak or the checkpoint.
-        Resets the non-improving streak and adopts this version as the best-score checkpoint when
-        ``is_new_best`` fires, else increments the streak. Since ``is_new_best`` tracks the
-        session's criterion (see :func:`fitting.compute_improvement`), a new best is exactly a new
-        best-score checkpoint — the
-        flag, the streak, and the checkpoint stay in lock step on one score. EXCEPTION: a new best
-        whose better score was bought by an implausible ESTIMATED noise sigma (inflated/collapsed) does
-        NOT reset the streak, and is NOT adopted at all when it would OVERWRITE a currently-plausible
-        best (the sigma gate would fail the gamed model). So a plausible would-pass checkpoint
-        survives a later gamed fit, and an all-gamed session trips the streak cap instead of
-        running to the client's step limit. A gamed fit is still recorded as best over an
-        absent/already-gamed best.
+        A new best the checkpoint adopts (see :meth:`_adopt_checkpoint`) resets the non-improving
+        streak; any other fit increments it. Since ``is_new_best`` tracks the session's criterion
+        (see :func:`fitting.compute_improvement`), the flag, the streak, and the checkpoint stay in
+        lock step on one score.
 
-        Takes ``self.lock`` itself (a reentrant ``RLock``, so this is safe whether or not the
-        caller already holds it) so the write path is self-contained and symmetric with the locked
-        read in :meth:`progress_report`.
+        A fit left unscored (no score, see :func:`fitting._reconcile_objective`) says nothing about
+        whether the model improved, so once a fit has scored it is no op: the streak and the
+        plateau window stay as they are. Before any fit has scored it counts, so a session whose
+        fits never score still stops at the cap, with :data:`_UNSCORED_STALL_ADVICE`.
+
+        Two exceptions, each an adopted new best that increments the streak, its op recording why
+        (``no_reset``), which the cap's ``stop_reason`` counts, and ``streak_not_reset``, which
+        the fit result's ``progress`` carries. One that gains less than
+        ``STREAK_RESET_MIN_SCORE_GAIN`` on ``streak_mark`` is the best but not progress: noise-floor
+        wander would otherwise reset the streak forever. One whose ESTIMATED noise sigma collapsed
+        is the other: the two implausible tails differ in whether a model can keep improving
+        through them. An INFLATED sigma cannot buy a lower score: at the ML optimum sigma_hat is the rms residual, so
+        nll = n/2 * log(2*pi*e*sigma^2) rises with sigma, and the inflation is a symptom of the
+        misfit, not the source of the gain. A COLLAPSED one can: nll is unbounded below as
+        sigma_hat -> 0, checked only by k*ln(n), so a model fitting a small observable group nearly
+        exactly gains without limit. The plateau stop never fires on an estimated sigma (see
+        :meth:`progress_report`), so the cap is the only bound on that.
+
+        Takes :attr:`counters_lock` itself, under which :meth:`progress_report` reads.
         """
         from . import fitting
 
@@ -1235,20 +1423,8 @@ class PetabSession:
             if "noise_sigma_collapsed" in fitsim
             else noise_sigma_collapsed(report)
         )
-        sig_assessable = (
-            fitsim["noise_sigma_assessable"]
-            if "noise_sigma_assessable" in fitsim
-            else _noise_sigma_assessable(report)
-        )
 
-        with self.lock:
-            # Latch BEFORE the streak decision, off EVERY fit (not only new bests): one plausible
-            # sigma anywhere in the session proves the band is satisfiable on this problem, which is
-            # exactly the condition under which "implausible" regains meaning as a progress signal.
-            # sig_assessable guards the vacuous case -- a report whose every entry is status
-            # "unknown" is not evidence the band was cleared, only that it was never tested.
-            if sigma_estimated and sig_assessable and not (sig_inflated or sig_collapsed):
-                self.ever_sigma_plausible = True
+        with self.counters_lock:
             # `score is not None` is NOT enough: a NaN is a float, so a fit whose likelihood
             # came back non-finite would be adopted as the checkpoint and then never beaten
             # (every later `score <= NaN - delta` is False). goodness_of_fit already maps
@@ -1256,6 +1432,8 @@ class PetabSession:
             # so the checkpoint invariant — "score is a real, beatable number" — holds
             # locally no matter how the score was produced.
             usable = score is not None and math.isfinite(score)
+            if not usable and self.best is not None:
+                return
             candidate = (
                 Checkpoint(
                     version=version,
@@ -1265,58 +1443,34 @@ class PetabSession:
                     sigma_estimated=sigma_estimated,
                     sigma_inflated=sig_inflated,
                     sigma_collapsed=sig_collapsed,
-                    sigma_assessable=sig_assessable,
-                    residual_flagged=bool(fitsim.get("residual_flagged", False)),
                 )
                 if usable
                 else None
             )
             adopted = candidate is not None and self._adopt_checkpoint(candidate, is_new_best)
-            if adopted:
-                # A sigma-gamed "improvement" is not genuine progress even when adopted (it can
-                # only be adopted here over an absent/already-gamed best): it does NOT reset the
-                # non-improving streak, so an all-gamed session trips the streak cap instead of
-                # burning to the client's step limit.
-                #
-                # ...but the penalty is only MEANINGFUL once this session has shown a plausible
-                # sigma is reachable at all. On a problem where no fit ever clears the band the term
-                # is a constant: it cannot tell a gamed improvement from an honest one, and blocking
-                # every reset on it converts the cap into a fixed fit budget (on two such problems,
-                # 96 of 96 sessions stopped at exactly cap fits with BIC still falling, and were
-                # told the stop meant "structural inadequacy").
-                #
-                # There IS one case where dropping the penalty would be unsafe, and it is not
-                # the inflated one. With the band unsatisfiable `best.sigma_plausible` is False,
-                # so `best_adequate` is False and the PLATEAU stop cannot fire either -- the cap
-                # is the only stop left. But the two tails differ in whether a session can keep
-                # IMPROVING through them:
-                #
-                #   * INFLATED cannot. At the ML optimum sigma_hat IS the rms residual, so
-                #     nll = n/2 * log(2*pi*e*sigma^2) RISES monotonically with sigma: a model
-                #     cannot buy a lower BIC by widening its noise, and a fit whose sigma is
-                #     inflated is one whose residuals are large. The inflation is a SYMPTOM of
-                #     the misfit, not the mechanism of the gain -- so a new best carrying it is
-                #     genuine BIC progress, and a session that stops making progress still trips the
-                #     cap through the non-improving branch below.
-                #   * COLLAPSED can. nll is unbounded BELOW as sigma_hat -> 0, checked only by
-                #     k*ln(n), so a model that fits a small observable group nearly exactly gains
-                #     without limit. That is a real exploit with no natural floor, and it is the
-                #     case the streak cap has to keep bounding even while the band is
-                #     uninformative.
-                #
-                # Hence: reset on an improvement whose only implausibility is inflation; keep the
-                # penalty when the sigma collapsed. Discounting both tails by a fixed fraction
-                # would be a magic constant guarding a runaway the inflated tail cannot produce.
-                if not candidate.sigma_gamed or (
-                    sig_inflated and not sig_collapsed and not self.ever_sigma_plausible
-                ):
-                    self.non_improving_streak = 0
-                else:
-                    self.non_improving_streak += 1
+            # The adopted new bests that are not progress (see the docstring).
+            no_reset = detail = None
+            if adopted and candidate.sigma_estimated and candidate.sigma_collapsed:
+                no_reset = "a collapsed estimated noise sigma"
+                detail = f"v{version} is the best, but its estimated noise sigma collapsed"
+            elif (
+                adopted
+                and self.streak_mark is not None
+                and score > self.streak_mark - STREAK_RESET_MIN_SCORE_GAIN
+            ):
+                no_reset = (
+                    f"a {self.criterion.name} gain under {STREAK_RESET_MIN_SCORE_GAIN:g} on the "
+                    "best at the last reset"
+                )
+                detail = (
+                    f"v{version} is the best by a {self.criterion.name} gain of "
+                    f"{self.streak_mark - score:.2g} since the streak last reset, under the "
+                    f"{STREAK_RESET_MIN_SCORE_GAIN:g} that counts as progress"
+                )
+            if adopted and no_reset is None:
+                self.non_improving_streak = 0
+                self.streak_mark = score
             else:
-                # Not progress -> advance the streak: a non-improving fit, a non-finite score, OR a
-                # gamed fit blocked from overwriting a plausible best. None is adopted; none resets
-                # the streak, so a stalled/gaming session still trips the cap rather than reset it.
                 self.non_improving_streak += 1
 
             self.op_history.append(
@@ -1327,27 +1481,37 @@ class PetabSession:
                     "best_score": self.best.score if self.best else None,
                     "gof_pvalue": gof_p,
                     "is_new_best": adopted,
+                    **({"no_reset": no_reset, "streak_not_reset": detail} if no_reset else {}),
                 }
             )
 
     def progress_report(self) -> dict[str, Any]:
         """A snapshot of the early-stop chain state — a client polls this to stop a stalled
-        session, and it is surfaced in each commit result so the agent sees progress every turn.
+        session, and each fit result carries its :data:`_PROGRESS_ON_RESULT` keys.
 
         ``should_stop`` (with a human-readable ``stop_reason``) is the deterministic early-stop
-        signal: the hard non-improving-streak cap, or a plateau (best model adequate AND the best
-        the score gained less than ``PLATEAU_MIN_SCORE_GAIN`` over the last ``PLATEAU_WINDOW``
-        ops). When a
-        stop fires and the best model is **still not adequate**, the stall is the signature of
-        STRUCTURAL inadequacy, so ``stop_reason`` also carries the issue-#82 nudge to change the
-        model's FORM rather than re-parameterize. An adequate stop is a success — it gets no such
-        nudge (the model fits; there is nothing structural to fix).
+        signal: the hard non-improving-streak cap, or a plateau (the best model shown adequate, by
+        a check the reason names, AND the best score gained less than ``PLATEAU_MIN_SCORE_GAIN``
+        over the last ``PLATEAU_WINDOW`` ops). When a
+        stop fires and the best model is **shown not adequate** (only the streak cap can, a plateau
+        needing an adequate best), ``stop_reason`` also carries the issue-#82 nudge to change the
+        model's FORM rather than refit or rewrite the same structure. An adequate stop is a success
+        — it gets no such nudge (the model fits; there is nothing structural to fix).
+
+        A model whose noise sigmas are ESTIMATED is never shown adequate, so only the streak cap
+        ends its session: a fitted sigma absorbs a misfit inside the data-std band without a
+        residual flag (bachmann's round-3 run plateau-stopped "adequate" at ΔBIC +62,
+        PEtab-MCP#196). Do not restore it as a ratio against the data-driven noise floor: #140's
+        was deleted because no single threshold held across problems
+        (:func:`fitting._entry_inflated`), and the replicate lack-of-fit arm, its df-aware form,
+        has power against a few large misses, not against a diffuse inflation like that run's.
         """
-        with self.lock:
+        with self.counters_lock:
             hist = self.op_history
             n_ops = len(hist)
             streak = self.non_improving_streak
-            # best-score improvement over the last PLATEAU_WINDOW ops (positive => still falling).
+            # best-score improvement over the last PLATEAU_WINDOW ops (positive => still falling),
+            # on the running best: a gain too small to reset the streak still counts here.
             score_gain_over_window = None
             if n_ops > PLATEAU_WINDOW:
                 prev = hist[-PLATEAU_WINDOW - 1]["best_score"]
@@ -1355,76 +1519,49 @@ class PetabSession:
                 if prev is not None and cur is not None:
                     score_gain_over_window = prev - cur
 
-            # Adequacy of the best model. The right test depends on the noise model:
-            #  * ESTIMATED sigma — the chi2 GoF is uninformative (a free sigma is fit to the
-            #    residual std, so chi2/dof ~= 1 by construction for good AND bad models alike), so
-            #    OMIT it and judge on the sigma's plausibility: an INFLATED sigma (absorbing misfit)
-            #    or a COLLAPSED one (overfitting the noise) means NOT adequate; otherwise adequate.
-            #    Requiring neither mirrors the sigma success gate, so a model that gate would reject
-            #    for its sigma is never plateau-stopped here as "adequate". (Overall adequacy is
-            #    STRICTER than that gate, not lock-step: it ALSO requires structure-free residuals
-            #    below — which the gate does NOT check — so don't drop that to "restore
-            #    lock-step".) This is what caught underfits that used to stop early on a
-            #    meaningless GoF.
-            #  * FIXED sigma — chi2 GoF against the known noise IS a real adequacy test; keep it,
-            #    but TWO-SIDED. p below ADEQUATE_GOF_PVALUE means the residuals are too big for the
-            #    known noise (underfit); p above OVERFIT_GOF_PVALUE means they are far too SMALL —
-            #    the model is fitting the noise, which is not adequacy either. Testing only the
-            #    lower tail scored fits at chi2/n = 0.016 / 0.051 (p = 0.9999999) as
-            #    "adequate". This tail only exists for a fixed sigma: an ESTIMATED sigma absorbs
-            #    residual shrinkage into itself, pinning chi2/n at ~1 from below.
+            # The check that showed the best model adequate, which a plateau stop needs and names,
+            # else None. Only a FIXED-sigma model can be shown adequate: by its chi2 GoF, two-sided
+            # (below ADEQUATE_GOF_PVALUE an underfit, above OVERFIT_GOF_PVALUE a fit to the noise).
+            # An ESTIMATED-sigma model never is. A residual flag is not read here (PEtab-MCP#247).
             best = self.best
-            gof_adequate = (
+            adequate_by = None
+            if (
                 best is not None
+                and not best.sigma_estimated
                 and best.gof_pvalue is not None
                 and ADEQUATE_GOF_PVALUE <= best.gof_pvalue <= OVERFIT_GOF_PVALUE
+            ):
+                adequate_by = f"chi2 GoF p={best.gof_pvalue:.3g} against fixed noise sigmas"
+            # Evidence the best model is NOT adequate, which the structural nudge below needs: a
+            # fixed-sigma GoF that fails, or an estimated sigma outside its band. A plausible
+            # estimated sigma is evidence of neither, and so is a fixed-sigma GoF that could not
+            # be computed (no chi2, or n <= k).
+            inadequate = (
+                best is not None
+                and adequate_by is None
+                and ((not best.sigma_estimated and best.gof_pvalue is not None) or best.sigma_gamed)
             )
-            if best is not None and best.sigma_estimated and best.sigma_assessable:
-                best_adequate = best.sigma_plausible
-            else:
-                # Either no estimated sigma at all, or one we could NOT assess (every entry status
-                # "unknown" — e.g. the observable's std is uncomputable, or its noise formula is
-                # composite). In the unassessable case both sigma predicates fail open to False, so
-                # `not (False or False)` would declare the model adequate on NO evidence at all,
-                # skipping the chi2 branch too and leaving the session with zero adequacy test.
-                # Either way, fall back to the (weak, but real) GoF.
-                best_adequate = gof_adequate
-            # ...AND the residuals must not still show significant STRUCTURE. Every test behind that
-            # flag survives estimated sigmas (unlike chi2 GoF): the sign/runs tests read only residual
-            # SIGNS, and the replicate lack-of-fit test measures each prediction against the
-            # replicate scatter pooled over its noise sigma. So a best model that fits the magnitude
-            # but is systematically biased/trended — or that cannot reach a replicated design point
-            # at all — has an incomplete FORM — not adequate, so the session keeps
-            # searching rather than plateau-stopping (underfits used to stop as "adequate" with
-            # a plausible sigma while flagging structured residuals). A genuinely-better-than-truth
-            # model can still flag residuals (irreducible data structure); it simply forgoes the early
-            # plateau stop and terminates at the streak cap instead. The extra runway can't turn a
-            # PASSING session into a failing one: record_fit_progress won't let a later
-            # better-scoring gamed fit OVERWRITE an already-plausible best (see the gate there), so
-            # once a session has a plausible would-pass checkpoint it survives to the end. (It does
-            # NOT make every best plausible: an all-gamed session whose best was never plausible
-            # still keeps its gamed best, which then fails the sigma gate — as it would have without
-            # this one.)
-            if best is not None and best.residual_flagged:
-                best_adequate = False
             stop_reason = None
             if streak >= NON_IMPROVING_STREAK_CAP:
+                # The new bests inside the streak, by why they did not reset it.
+                kept = Counter(op["no_reset"] for op in hist[n_ops - streak :] if "no_reset" in op)
                 stop_reason = (
                     f"non-improving-streak cap reached ({streak} consecutive fitted ops with no "
-                    f"new best, cap {NON_IMPROVING_STREAK_CAP})."
+                    f"new best{' that counts as progress' if kept else ''}, cap "
+                    f"{NON_IMPROVING_STREAK_CAP}"
+                    + "".join(
+                        f"; {n} of them were new bests with {why}, which does not"
+                        for why, n in kept.items()
+                    )
+                    + ")."
                 )
             elif (
-                best_adequate
+                adequate_by is not None
                 and score_gain_over_window is not None
                 and score_gain_over_window < PLATEAU_MIN_SCORE_GAIN
             ):
-                basis = (
-                    "estimated noise sigma within its plausible range"
-                    if best.sigma_estimated
-                    else f"chi2 GoF p={best.gof_pvalue:.3g}"
-                )
                 stop_reason = (
-                    f"plateau: best model is adequate ({basis}) and "
+                    f"plateau: best model v{best.version} is adequate ({adequate_by}) and "
                     f"best {self.criterion.name} improved by only "
                     f"{score_gain_over_window:.3g} over the last "
                     f"{PLATEAU_WINDOW} ops (< {PLATEAU_MIN_SCORE_GAIN})."
@@ -1449,9 +1586,9 @@ class PetabSession:
             if stop_reason is not None and best is None:
                 stop_reason = f"{stop_reason} {_UNSCORED_STALL_ADVICE}"
             # The structural-inadequacy nudge fires only when a stop coincides with a best model
-            # that is NOT adequate — appending "the model's FORM cannot fit" to an adequate stop
-            # would contradict it. (An adequate plateau is a success stop.)
-            elif stop_reason is not None and not best_adequate:
+            # shown NOT adequate — appending "the model's FORM cannot fit" to an adequate stop
+            # would contradict it, and to an untested one would claim what nothing showed.
+            elif stop_reason is not None and inadequate:
                 stop_reason = f"{stop_reason} {_STRUCTURAL_PLATEAU_ADVICE}"
                 # If the inadequacy is a masking noise model, add the matching noise-side warning so
                 # the agent fixes the mechanism instead of leaning on the sigma.
@@ -1471,19 +1608,28 @@ class PetabSession:
                 "plateau_window": PLATEAU_WINDOW,
                 "should_stop": stop_reason is not None,
                 "stop_reason": stop_reason,
+                # Why the last op, a new best, did not reset the streak.
+                "streak_not_reset": hist[-1].get("streak_not_reset") if hist else None,
             }
 
     @contextlib.contextmanager
     def change(self) -> Iterator[None]:
         """Hold :attr:`lock` for one change and its fit, with :attr:`change_began` set, which
         ``make_changes`` reads to refuse a second change at once
-        (:data:`~petab_mcp.errors.FIT_IN_PROGRESS`) rather than queue it behind this one."""
+        (:data:`~petab_mcp.errors.FIT_IN_PROGRESS`) rather than queue it behind this one. Its fit
+        reports its starts into :attr:`change_progress` (:data:`petab_mcp.multistart.PROGRESS`)."""
+        from .multistart import PROGRESS, Progress
+
         with self.lock:
+            self.change_from = self.provenance.last_version
+            self.change_progress = Progress()
+            token = PROGRESS.set(self.change_progress)
             self.change_began = time.monotonic()
             try:
                 yield
             finally:
                 self.change_began = None
+                PROGRESS.reset(token)
 
     # -- fit ---------------------------------------------------------------
     def _fit_dedup(self, starts: int) -> tuple[dict[str, Any], str]:
@@ -1503,11 +1649,12 @@ class PetabSession:
         from .parameters import structure_fingerprint
 
         structure_hash = structure_fingerprint(self.model.sbml_model, self.problem.parameter_df)
-        fit_key = D.reauthor_key(structure_hash, self.problem.parameter_df)
+        fit_key = D.reauthor_key(structure_hash, self.problem.parameter_df, starts)
         decision = D.decide(
             structure_hash=structure_hash,
             setup=D.estimation_setup_signature(self.problem.parameter_df),
             starts=starts,
+            max_starts=self.max_fit_starts,
             head_version=self.provenance.current_version,
             registry=D.build_registry(self),
             prior_attempts=self._fit_attempts.get(fit_key, 0),  # READ only; incremented on proceed
@@ -1519,6 +1666,7 @@ class PetabSession:
         n_starts: int | None = None,
         justification: str | None = None,
         staged_edits: "list[dict[str, Any]] | None" = None,
+        edit_warnings: "list[dict[str, str]] | None" = None,
     ) -> dict[str, Any]:
         """Fit the current working model, snapshot a version, and score it.
 
@@ -1536,10 +1684,16 @@ class PetabSession:
         Antimony string, and shipping every version's copy of it into the context each turn cost
         far more than the label was worth.
 
-        The result also carries the two adequacy verdicts this method computes anyway for the
-        plateau-adequacy gate: ``residual_structure`` (the compact residual-structure verdict on
-        whether the model's FORM is still incomplete — the sign/runs tests plus the replicate
-        lack-of-fit test) and the noise-model verdict
+        ``edit_warnings`` are the warnings that change and its lint gave, as message-stack entries
+        (:mod:`messages`). They ARE written to the version meta, whole: the result folds a warning
+        the last committed result carried into a count (``operations._unrepeated``), so the meta
+        is the one place a version's warnings can still be read in full. The gemot harness reads
+        them there when its lead finishes, and its finish gate shows them again. bachmann 77's best
+        model kept a dead `pSTAT5n` its results had folded since v7 (PEtab-MCP#286).
+
+        The result also carries the two verdicts this method computes anyway for the version meta
+        and the checkpoint: ``residual_structure`` (the compact residual-structure verdict — the
+        sign/runs tests plus the replicate lack-of-fit test) and the noise-model verdict
         (``noise_sigma_inflated``/``noise_sigma_collapsed`` + advice), plus — when there is any —
         the ``merge_hints`` naming the cheapest parameter ties the criterion would pay for. Returning them
         saves the caller a separate ``get_fit_summary``/``get_fit_diagnosis`` round-trip;
@@ -1551,10 +1705,8 @@ class PetabSession:
         current fitted version the refit is skipped and the stored metrics are returned
         (``committed: false, no_change: true``); a model identical to an EARLIER fitted version is
         refused, naming it, and HEAD stays put — in both cases unless this fit runs MORE
-        multistarts than that version did, which is a more thorough search and does run; a
-        structure revisited under another estimation setup warns that it is already committed and
-        scored; and the same structure fitted too many times is refused, to break an unproductive
-        loop.
+        multistarts than that version did, which is a more thorough search and does run; and the
+        same structure fitted too many times is refused, to break an unproductive loop.
         """
         from . import fitting, identifiability
         from .operations import _compile_fit_failure_message
@@ -1584,8 +1736,11 @@ class PetabSession:
             # tool returns committed=false with an actionable message rather than crashing. Unless
             # the disk is full: the build directory is written to before the model is blamed,
             # since a build whose install step hit the quota fails only at the import after it.
+            began = time.monotonic()
             try:
                 fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+                # The fit's wall time, model build and queue included (PEtab-MCP#331).
+                wall_seconds = round(time.monotonic() - began)
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
                 if isinstance(exc, PetabMcpError):
                     error = disk_full_error(exc) or exc
@@ -1594,7 +1749,7 @@ class PetabSession:
                     error = disk_full_error(exc, build_root) or ModelUpdateError(
                         _compile_fit_failure_message(exc)
                     )
-                if isinstance(error, (ModelBuildBusyError, InfrastructureError, FitCancelledError)):
+                if isinstance(error, (InfrastructureError, FitCancelledError, FitBackendError)):
                     self._fit_attempts[fit_key] -= 1  # nothing was scored, so a retry is not a loop
                 if error is exc:
                     raise
@@ -1603,10 +1758,68 @@ class PetabSession:
             if killed := fitsim.get("n_starts_killed"):
                 warnings = [
                     *warnings,
-                    f"Starts stopped past the {fitting.FIT_PER_START_TIMEOUT_S:.0f}s per-start "
+                    f"Starts stopped past the {self.fit_per_start_timeout:.0f}s per-start "
                     f"cap: {killed} of {starts}. They count as failed starts, and the fit is "
                     f"scored from the other {starts - killed}.",
                 ]
+            # Most starts out of time: Fides' MAXTIME, or stopped past the cap.
+            timed_out = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.MAXTIME", 0) + (
+                killed or 0
+            )
+            if 2 * timed_out > starts:
+                warnings = [
+                    *warnings,
+                    f"{timed_out} of {starts} starts ran out of the "
+                    f"{self.fit_per_start_timeout:.0f}s per-start time limit (MAXTIME). More "
+                    "starts will not fix that: the limit applies to each start, so added starts "
+                    "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
+                    "that allow extreme rates."
+                    + (
+                        _CLOSED_FORM_ADVICE
+                        if _integrates_to_steady_state_only(self.problem)
+                        else ""
+                    ),
+                ]
+            # A raise that still leaves 0 to 2 FRESH starts at the best, fewer than half of the
+            # fresh ones that ran to the end (2 of 2 completed is no needle): more will not help
+            # (#287). Warm starts begin at the previous fit's optima, so they are left out (#334).
+            elif (
+                starts > self.auto_fit_starts
+                and (at_best := fitsim.get("n_starts_at_best")) is not None
+                and (fresh := at_best - (fitsim.get("n_warm_starts_at_best") or 0)) <= 2
+                and 2 * fresh < (ran := starts - (fitsim.get("n_warm_starts") or 0) - (killed or 0))
+            ):
+                warnings = [
+                    *warnings,
+                    f"{fresh} of {ran} fresh starts reached the best value, though this fit ran "
+                    f"more than the default {self.auto_fit_starts}: {_NEEDLE_ADVICE}.",
+                ]
+            # Starts stopped on a value that is not a number (PEtab-MCP#285), and the powers of
+            # states that make one, at any share: fujita's ran 6-25% NOT_FINITE with nothing said,
+            # and the same powers went NaN in its held-out pulses (PEtab-MCP#323).
+            not_finite = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.NOT_FINITE", 0)
+            if not_finite:
+                most = 2 * not_finite > starts
+                text = (
+                    f"{not_finite} of {starts} starts ended NOT_FINITE: the objective or its "
+                    "gradient was not a number where they went"
+                )
+                if most:
+                    text += (
+                        f", so this score comes from the other {starts - not_finite} and need "
+                        "not be the best this structure fits"
+                    )
+                causes = fitting.state_powers(self) or (
+                    "Usual causes: a power with an estimated exponent of a state that goes "
+                    "below 0, a rate that is 0/0 somewhere in the bounds, or bounds wide enough "
+                    "to blow the ODE up."
+                    if most
+                    else ""
+                )
+                text = f"{text}. {causes}".strip()
+                if most:
+                    text += " Fix that before judging the structure on this fit."
+                warnings = [*warnings, text]
 
             staged = list(staged_edits or [])
             nllh = fitsim.get("neg_log_likelihood")
@@ -1621,22 +1834,19 @@ class PetabSession:
                 criterion=self.criterion,
             ).get("chi2_gof_pvalue")
             # Residual-structure verdict of THIS fit (the sign/runs tests and the replicate
-            # lack-of-fit test, all of which survive estimated sigmas),
-            # computed ONCE here and stashed on fitsim like the noise flags below. Three consumers:
-            # the compact rollup rides on the fit RESULT so the agent doesn't spend a
-            # get_fit_diagnosis call to learn its model's form is still incomplete (issue #113);
-            # the bare bool goes into the version meta + event, and feeds the adequacy gate in
-            # record_fit_progress/progress_report so a structurally-mis-specified best model is NOT
-            # treated as adequate (underfits used to plateau-stop as "adequate" while
-            # flagging structured residuals). Must run BEFORE _snapshot_version so the version meta
-            # can carry the flag; safe here since _auto_fit_and_improvement already set
-            # self.simulation, which is what the diagnosis reads.
+            # lack-of-fit test), computed ONCE here and stashed on fitsim like the noise flags
+            # below. The compact rollup rides on the fit RESULT so the agent doesn't spend a
+            # get_fit_diagnosis call on it (issue #113); the bare bool goes into the version meta.
+            # Must run BEFORE _snapshot_version so the version meta can carry the flag; safe here
+            # since _auto_fit_and_improvement already set self.simulation, which is what the
+            # diagnosis reads.
             fitsim["residual_structure"] = residual_structure_rollup(self)
             fitsim["residual_flagged"] = residual_flag(fitsim["residual_structure"])
             # The PARAMETERISATION counterpart of that verdict, on the same reasoning: the cheapest
             # parameter ties the criterion would pay for, priced from the FIM at the optimum this fit just
             # reached (see identifiability.merge_hints). Computed HERE, after
             # _auto_fit_and_improvement, because that is where the fit record it reads was frozen;
+            # the hints are read off it once the snapshot has named the version that priced them.
             # None (and then absent from the result) when there is no such tie at all, or no FIM. ONLY when
             # an optimizer actually ran: with `auto_fit` off the status is "skipped", the values are
             # whatever was authored, and no record was frozen — not a point a local expansion may be
@@ -1649,7 +1859,6 @@ class PetabSession:
                 block = identifiability.fit_diagnosis_block(self)
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
-                fitsim["merge_hints"] = identifiability.merge_hints((block or {}).get("diagnosis"))
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
@@ -1679,7 +1888,7 @@ class PetabSession:
             # because it could never see a report.
             fitsim["noise_sigma_report"] = _nsr
             # The checkpoint's decision, taken here so the version meta, the event and the result
-            # say what `best_version` will: a score that clears the new-best bar with an
+            # say what `best_version` will: a score below the best's with an
             # implausible estimated sigma does not displace a plausible best (see _declines).
             inflated, collapsed = noise_sigma_inflated(_nsr), noise_sigma_collapsed(_nsr)
             if improvement.get("is_new_best") and self._declines(
@@ -1692,8 +1901,8 @@ class PetabSession:
                 )
             # Is this variant actually NESTED in the version it will be compared against? Must run
             # BEFORE _snapshot_version, while provenance.current_version is still the parent. The
-            # Antimony is serialized once and handed to both the check (which diffs parameter
-            # references against the parent's model.ant) and the snapshot.
+            # Antimony is serialized once and handed to both the check (which diffs it against the
+            # parent's model.ant) and the snapshot.
             child_model_ant = self.model.to_antimony()
             nesting_advisory = self._check_nesting_vs_parent(
                 fitsim, child_model_ant, is_new_best=bool(improvement.get("is_new_best"))
@@ -1704,6 +1913,7 @@ class PetabSession:
                     # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
                     "n_starts": fitsim.get("n_starts"),
                     "n_starts_killed": fitsim.get("n_starts_killed"),
+                    "wall_seconds": wall_seconds,
                     "fit_status": fitsim.get("status"),
                     "neg_log_likelihood": nllh,
                     "chi2": fitsim.get("chi2"),
@@ -1713,22 +1923,21 @@ class PetabSession:
                     "noise_sigma_report": _nsr,
                     "noise_sigma_inflated": noise_sigma_inflated(_nsr),
                     "noise_sigma_collapsed": noise_sigma_collapsed(_nsr),
+                    "edit_warnings": list(edit_warnings or []),
                     **improvement,
                 },
                 sim=fitsim,
             )
             fitsim["version"] = version
+            if fitsim.get("status") == "fit":
+                fitsim["merge_hints"] = identifiability.merge_hints(
+                    (fitsim.get(identifiability.STORED_DIAGNOSIS_KEY) or {}).get("diagnosis"),
+                    version=version,
+                    model=identifiability.edit_surface(self),
+                )
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = noise_sigma_collapsed(_nsr)
-            fitsim["noise_sigma_assessable"] = _noise_sigma_assessable(_nsr)
-            # NOTE: fitsim["residual_flagged"] is already set above from the SAME rollup, as the
-            # TRI-STATE bool|None (None = NEITHER arm could run — not merely the sign/runs tests: a
-            # collapsed or unevaluable sigma leaves no weighted residual, and the replicate
-            # lack-of-fit test needs none, so it can still return a definite True/False there). Do not
-            # recompute it here: that both duplicated the residual pass and coerced None -> False,
-            # so the version meta recorded null while the fit event recorded false for one fit, and
-            # a resumed session restored "residuals verified clean" for a model never tested.
             event = self.provenance.append_event(
                 {
                     "type": "fit",
@@ -1743,8 +1952,6 @@ class PetabSession:
                     "noise_sigma_estimated": fitsim["noise_sigma_estimated"],
                     "noise_sigma_inflated": fitsim["noise_sigma_inflated"],
                     "noise_sigma_collapsed": fitsim["noise_sigma_collapsed"],
-                    "residual_flagged": fitsim["residual_flagged"],
-                    "noise_sigma_assessable": fitsim["noise_sigma_assessable"],
                     "nesting_advisory": nesting_advisory,
                     # The OUTSTANDING flag as it stands after this commit (this fit's advisory, an
                     # earlier one this fit did not clear, or None). `nesting_advisory` alone cannot
@@ -1760,27 +1967,32 @@ class PetabSession:
             if fitsim.get("status") == "fit":
                 self.record_fit_progress(version, fitsim, improvement)
 
+        block = fitting.fit_result_block(
+            fitsim,
+            improvement,
+            self.problem.parameter_df,
+            problem=self.problem,
+            criterion=self.criterion,
+        )
+        # The fit's note on its own score goes to `messages` (see :mod:`messages`), not a field.
+        if note := block.pop("objective_note", None):
+            warnings = [*warnings, note]
         return {
             "committed": True,
             "version": version,
+            "wall_seconds": wall_seconds,
             "warnings": warnings,
             "event_timestamp": event["timestamp"],
-            "progress": self.progress_report(),
+            "progress": {
+                k: v
+                for k, v in self.progress_report().items()
+                if k in _PROGRESS_ON_RESULT and v is not None
+            },
             # ABSENT when the variant is a clean nested extension — like `noise_sigma_advice`,
             # this key rides on every fit and is re-sent in the agent's history each turn
             # (PR #23), so it is one line only when there is something to say.
             **({"nesting_advisory": nesting_advisory} if nesting_advisory else {}),
-            **fitting.slim_fit_payload(
-                self,
-                fitting.fit_result_block(
-                    fitsim,
-                    improvement,
-                    self.problem.parameter_df,
-                    problem=self.problem,
-                    criterion=self.criterion,
-                ),
-                version=version,
-            ),
+            **fitting.slim_fit_payload(self, block, version=version),
         }
 
     def _fit_noop_result(
@@ -1916,7 +2128,9 @@ class PetabSession:
                     f"restore_version: version {version} breaks the session's constraints "
                     + ", ".join(f"`{c.id}` ({c.text})" for c in broken)
                     + ", given after it was committed; restore a version that makes them, or "
-                    "build one with `make_changes`.",
+                    "build one.",
                     cause="constraint_violated",
                 )
-        return self.rollback_to(version, justification)
+        out = self.rollback_to(version, justification)
+        self.head_restored = int(version)
+        return out

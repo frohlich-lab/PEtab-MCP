@@ -6,7 +6,14 @@ from __future__ import annotations
 import libsbml
 import pytest
 import sympy
-from indra.statements import Agent, BoundCondition, ModCondition, Phosphorylation, Translocation
+from indra.statements import (
+    Agent,
+    BoundCondition,
+    Dephosphorylation,
+    ModCondition,
+    Phosphorylation,
+    Translocation,
+)
 from petab.v1.models.sbml_model import SbmlModel
 
 from petab_mcp import mechanisms as M
@@ -59,7 +66,7 @@ def test_an_input_is_held_to_its_protocol():
     assert {"EGF_0", "EGF_rate", "EGF_end"} <= {p.getId() for p in sbml.getListOfParameters()}
 
 
-def test_a_species_the_conditions_set_is_held_without_a_rule():
+def test_a_species_the_conditions_set_has_no_rule():
     """Conditions that set the species `Fsk` itself say it is an input: no file declares it a
     second time, and a rule `Fsk := Fsk` would read itself."""
     antimony, _ = PS.to_antimony(
@@ -68,22 +75,20 @@ def test_a_species_the_conditions_set_is_held_without_a_rule():
         targets=frozenset({"Fsk"}),
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
-    assert sbml.getSpecies("Fsk").getBoundaryCondition()
     assert sbml.getAssignmentRuleByVariable("Fsk") is None
     assert sbml.getInitialAssignmentBySymbol("Fsk") is None
 
 
 @pytest.mark.parametrize("name", ["S-1", "S 1"])
-def test_a_condition_target_indra_renames_is_held(name):
-    """INDRA names the monomer of `S-1` `S_1`. Held under the agent's own name, it was looked up
-    among the monomers and not found: a KeyError, not a model."""
+def test_a_condition_target_indra_renames_is_found(name):
+    """INDRA names the monomer of `S-1` `S_1`. Looked up under the agent's own name, it was not
+    found among the monomers: a KeyError, not a model."""
     antimony, _ = PS.to_antimony(
         [(Phosphorylation(Agent(name), Agent("AKT")), INDRA_DEFAULT, "r1")],
         {"Fsk": Agent(name)},
         targets=frozenset({"Fsk"}),
     )
     sbml = SbmlModel.from_antimony(antimony).sbml_model
-    assert sbml.getSpecies("Fsk").getBoundaryCondition()
     assert sbml.getInitialAssignmentBySymbol("Fsk") is None
 
 
@@ -961,3 +966,33 @@ def test_a_written_rate_leaves_no_unread_rules():
     )
     antimony, _ = PS.to_antimony([(_TRANSITION, "sat", "r1")], {"naive": Agent("naive")}, library)
     assert "__obs" not in antimony
+
+
+def test_a_reader_and_writer_naming_a_site_apart_are_told_so_not_to_seed():
+    """`at Y1068` puts 'p' on `Y1068` and `E{p}` reads `phospho`, so the eraser never fired; the
+    refusal said to declare it in `seeds`, which failed again (fujita, all 3 runs, #193)."""
+    rows = [
+        (Phosphorylation(Agent("K"), Agent("E"), "Y", "1068"), INDRA_DEFAULT, "w"),
+        (
+            Dephosphorylation(
+                Agent("P"), Agent("E", mods=[ModCondition("phosphorylation")])
+            ),
+            INDRA_DEFAULT,
+            "e",
+        ),
+    ]
+    with pytest.raises(ModelUpdateError, match=r"rows \['w'\] put 'p' on its site `Y1068`") as exc:
+        PS.to_antimony(rows, {})
+    assert "Name the same residue and position in both" in str(exc.value)
+    assert "declare it in `seeds`" not in str(exc.value)
+
+
+def test_a_readout_and_its_writer_naming_a_site_apart_are_told_both_sites():
+    """A readout reading `Y1068` beside a row writing `phospho` was told only that it read no
+    species, with neither site's naming (12 refusals in 11 runs of gemot round 5, #251)."""
+    rows = [(Phosphorylation(Agent("K"), Agent("E")), INDRA_DEFAULT, "w")]
+    entities = {"pE": Agent("E", mods=[ModCondition("phosphorylation", "Y", "1068")])}
+    with pytest.raises(ModelUpdateError, match=r"Readout 'pE' reads E's site `Y1068`, named by "
+                       r"residue, as 'p', which nothing puts there, while rows \['w'\] put 'p' on "
+                       r"its site `phospho`, named with no residue"):
+        PS.to_antimony(rows, entities)

@@ -167,6 +167,23 @@ def test_a_malformed_row_says_where(text, where):
         N.parse(text)
 
 
+@pytest.mark.parametrize(
+    "text, form",
+    [
+        ("r1: E converts A to B", "a Conversion is written `A -> B by E`"),
+        ("r1: A is converted to B by E", "a Conversion is written `A -> B by E`"),
+        ("r1: A forms B", "a Complex `A binds B`"),
+        ("r1: E produces B", "`E increases B`"),
+    ],
+)
+def test_a_verb_agents_write_is_answered_with_the_form_that_states_it(text, form):
+    """`converts` was refused as any unknown verb, naming no form: 9 of the 13 unknown-verb
+    rejections in gemot's round-4 sweep (#227)."""
+    with pytest.raises(N.NotationError) as refused:
+        N.parse(text)
+    assert form in str(refused.value)
+
+
 def test_a_row_with_its_binding_inline_is_refused_with_the_two_apart():
     """The row is the claim and its binding the maths, given apart: a row still written the way
     the route took before, `<statement> | <binding>`, is refused, one notation, with the row and
@@ -218,6 +235,13 @@ def test_a_derived_kind_is_marked_and_reads_back_as_stated():
     text = N.render(row, {"modulated_by_1": "activated_by"})
     assert text == "r: A becomes B, modulated by C and D (activates, from its rate)"
     assert N.parse(text) == row
+
+
+def test_a_kind_stated_twice_is_refused_saying_several_are_one_clause():
+    """Agents read "each once" as one inhibitor per row and split a row into duplicates (5
+    problems, gemot round 3, #193)."""
+    with pytest.raises(N.NotationError, match=r"inhibited by C and D.*a list"):
+        N.parse("r: A becomes B, inhibited by C, inhibited by D")
 
 
 def test_a_reversed_or_downgraded_kind_is_marked_and_reads_back_as_stated():

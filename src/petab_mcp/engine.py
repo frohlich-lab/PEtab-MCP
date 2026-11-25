@@ -25,11 +25,17 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from petab.v2.C import EXPERIMENT_ID, MEASUREMENT, OBSERVABLE_ID, SIMULATION, TIME
+from petab.v2.C import (
+    EXPERIMENT_ID,
+    MEASUREMENT,
+    NOISE_PARAMETERS,
+    OBSERVABLE_ID,
+    SIMULATION,
+    TIME,
+)
 
 from . import filelock
-from .errors import ModelBuildBusyError
-from .formatting import finite_float
+from .formatting import finite_float, measurement_time
 from .problem import observable_transformation, scale
 
 
@@ -85,34 +91,35 @@ def _looks_finished(output_folder: str | Path, model_name: str) -> bool:
 
 @contextmanager
 def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
-    """Hold ``<output_folder>.lock`` while pyPESTO may build the module ``model_name`` there, or
-    raise :class:`~petab_mcp.errors.ModelBuildBusyError` naming whoever holds it.
+    """Hold ``<output_folder>.lock`` while pyPESTO may build the module ``model_name`` there,
+    waiting while another session or process, on this node or another, holds it.
 
-    The build root is shared by every session and process and keyed by AMICI and module hash, so
+    The build root is shared by every session and process (on a fit pool, every run's server, each
+    building on its own node; the pool's workers only import) and keyed by AMICI and module hash, so
     two of them reaching one structure name one folder — and AMICI deletes the files it finds there
-    before it generates code, so a second build corrupts the first. The second fails fast instead,
-    without waiting (:mod:`petab_mcp.filelock`). A module whose build FINISHED takes no lock:
-    importing it is safe beside anything, and that is what every re-fit of a structure does.
-    Finished means its holder marked it (``.built``) once its own import succeeded — the extension
-    alone is no signal, since the install step writes it before the build is done.
+    before it generates code, so a second build corrupts the first. The second waits for the first
+    (:func:`petab_mcp.filelock.lock`, which holds across the nodes of a GPFS share; ``flock`` does
+    not), then finds the module finished and imports it. Nothing bounds the wait here: it lasts the
+    holder's build, which its client bounds, and a holder that dies releases the lock. A module
+    whose build FINISHED takes no lock: importing it is safe beside anything, and that is what every
+    re-fit of a structure does. Finished means its holder marked it (``.built``) once its own import
+    succeeded — the extension alone is no signal, since the install step writes it before the build
+    is done.
 
     AMICI compiles only into a missing folder and imports whatever folder is there, so a build that
     stopped would fail every later build of its structure. Under the lock, an unfinished folder is
-    one nobody is writing: it is removed before the build, and a build that raises removes its own.
-    A finished one is never removed, since other processes import it without the lock, so the look
-    under the lock lets a read error through rather than count the folder unfinished.
+    one nobody is writing: it is removed before the build, so a waiter whose holder died builds the
+    module itself, and a build that raises removes its own. A finished one is never removed, since
+    other processes import it without the lock, so the look under the lock lets a read error through
+    rather than count the folder unfinished.
     """
     folder = Path(output_folder)
     if _looks_finished(folder, model_name):
         yield
         return
     folder.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = filelock.try_lock(folder.with_name(f"{folder.name}.lock"))
-    except filelock.Held as held:
-        raise ModelBuildBusyError(model_name, held.holder) from None
-    try:
-        if _build_finished(folder, model_name):  # its holder finished before we took the lock
+    with filelock.lock(folder.with_name(f"{folder.name}.lock")):
+        if _build_finished(folder, model_name):  # the build we waited for, or one before the lock
             yield
             return
         if folder.exists():
@@ -125,8 +132,12 @@ def build_lock(output_folder: str | Path, model_name: str) -> Iterator[None]:
                 shutil.rmtree(folder, ignore_errors=True)
             raise
         (folder / ".built").touch()
-    finally:
-        os.close(fd)
+
+
+def resolve_build_root(build_root: str | Path | None) -> Path:
+    """``build_root``, or where a server given none builds its models: under the temporary
+    directory as it is when called, which the test suite sets per xdist worker."""
+    return Path(build_root) if build_root else Path(tempfile.gettempdir()) / "petab_mcp_amici"
 
 
 class AmiciEngine:
@@ -134,9 +145,7 @@ class AmiciEngine:
 
     def __init__(self, session, build_root: str | Path | None = None, fit_engine=None) -> None:
         self.session = session
-        self.build_root = (
-            Path(build_root) if build_root else Path(tempfile.gettempdir()) / "petab_mcp_amici"
-        )
+        self.build_root = resolve_build_root(build_root)
         # Where this AMICI's modules are built and imported; see amici_identity.
         self.module_root = self.build_root / f"amici-{amici_identity()}"
         self.module_root.mkdir(parents=True, exist_ok=True)
@@ -266,23 +275,31 @@ class AmiciEngine:
             out.extend(float(v) for v in r)
         return out or None
 
-    def _objective_evaluate(self, solve_inner: bool = True):
+    def _objective_evaluate(self, solve_inner: bool = True, gradient: bool = False):
         """``(nllh, records, res)`` from the pyPESTO objective at the current nominal values.
         ``solve_inner`` (the fit's objective) solves the noise sigmas and observable scalings at
         every evaluation instead of reading them; ``solve_inner=False`` evaluates at the table's
-        own values. See :func:`fitting.estimation_problem`.
+        own values. See :func:`fitting.estimation_problem`. ``gradient`` evaluates it with its
+        gradient, as the fit's optimizer does.
 
         The single evaluation path for "what is this model's likelihood". It deliberately does
         NOT build a second AMICI model with its own default-configured solver (as a direct
         ``simulate_petab`` call would): evaluating the likelihood there while the fit evaluated
         it through pyPESTO's objective is what let the two disagree — a converged fit could be
-        recorded as NaN because the *other* path failed to integrate its optimum. Here the
-        number the fit minimised and the number reported for it are produced by the same
-        objective, so they cannot drift.
+        recorded as NaN because the *other* path failed to integrate its optimum.
+
+        The same objective still gives two values at one point when one evaluation has the
+        gradient and the other has not. With sensitivities, AMICI integrates a pre- or
+        post-equilibration until they have converged as well as the states (its
+        ``sensi_steady_state_check``), so a slow mode leaves the steady state reached without
+        them short of the one the optimizer scored: a pre-equilibrated toy re-scored 6% worse
+        that way (#265). Hence ``gradient`` on the re-scoring of a fit.
 
         Per-point records still come from AMICI's ``ReturnData``: pyPESTO hands them back when
         the objective is called with ``return_dict=True`` (it switches AMICI to full reporting),
-        so the simulation dataframe is unchanged.
+        so the simulation dataframe is unchanged. Returns ``(nllh, records, res, states,
+        failed)``: :meth:`_state_trajectories` off the same ``ReturnData``, and the experiments
+        whose simulation failed, with AMICI's status (:func:`fitting.amici_failures`).
         """
         from pypesto.C import FVAL, RDATAS
 
@@ -290,7 +307,7 @@ class AmiciEngine:
 
         problem, _ = fitting.estimation_problem(self.session, self, solve_inner=solve_inner)
         x = fitting.problem_x_from_nominal(problem, self.session.problem.parameter_df)
-        ret = problem.objective(x, sensi_orders=(0,), return_dict=True)
+        ret = problem.objective(x, sensi_orders=(0, 1) if gradient else (0,), return_dict=True)
         rdatas = ret[RDATAS]
         # pyPESTO's fval IS the negative log-likelihood it minimises.
         nllh = finite_float(ret[FVAL])
@@ -303,12 +320,51 @@ class AmiciEngine:
             # AMICI's own llh is NaN) -- a 0/0 readout at t=0 scored finite and lower than any
             # real fit.
             nllh = None
-        return nllh, records, self._res_from_rdatas(rdatas)
+        states = self._state_trajectories(problem.objective.amici_model, rdatas)
+        failed = fitting.amici_failures(rdatas)
+        return nllh, records, self._res_from_rdatas(rdatas), states, failed
+
+    def _state_trajectories(self, model, rdatas) -> dict[str, Any] | None:
+        """The model's species and assignment rules at every time AMICI simulated, off the
+        ``rdatas`` of one evaluation: ``{"ids", "points", "values"}``, one ``[experiment_id, time]``
+        and one row of values in ``ids`` order per point, which :mod:`data_access` serves as
+        ``state_trajectories``. ``None`` where an experiment returned no output, as the records then
+        hold no simulation either.
+
+        Those times are the measurement times, each once. AMICI's full reporting holds every
+        state (``x``) and expression (``w``) there, so this needs no simulation of its own, where
+        a time grid would integrate every experiment again for a read. The states are AMICI's
+        state vector, rate-rule targets included. Of the expressions only the SBML model's
+        assignment-rule targets are kept, not the ``flux_*`` AMICI adds per reaction.
+        """
+        import numpy as np
+
+        if self._unusable_rdatas(rdatas):
+            return None
+        sbml = self.session.model.sbml_model
+        rules = {r.getVariable() for r in sbml.getListOfRules() if r.isAssignment()}
+        expressions = list(model.get_expression_ids())
+        kept = [i for i, e in enumerate(expressions) if e in rules]
+        experiments = set(self.session.problem.measurement_df[EXPERIMENT_ID])
+        points, values = [], []
+        for rd in rdatas:
+            # AMICI names an experiment-less simulation with an id of its own: "" here.
+            eid = rd.id if rd.id in experiments else ""
+            x = np.asarray(rd.x)
+            w = np.asarray(rd.w)[:, kept] if kept else np.empty((len(x), 0))
+            ts = list(rd.ts)
+            for j, t in enumerate(ts):
+                if j and t == ts[j - 1]:
+                    continue  # a replicate's repeat of the time before it
+                points.append([eid, finite_float(t)])
+                values.append([finite_float(v) for v in (*x[j], *w[j])])
+        ids = [*model.get_state_ids(), *(expressions[i] for i in kept)]
+        return {"ids": ids, "points": points, "values": values}
 
     def evaluate_objective(self) -> dict[str, Any]:
         """Score the current model + parameters against the fixed measurements."""
         with self.session.lock:
-            nllh, records, res = self._objective_evaluate()
+            nllh, records, res, _, _ = self._objective_evaluate()
 
         chi2 = self._chi2(records, res)
         return {
@@ -319,18 +375,18 @@ class AmiciEngine:
             "simulations": records,
         }
 
-    def residuals(self, solve_inner: bool = True) -> dict[str, Any]:
+    def residuals(self, solve_inner: bool = True, gradient: bool = False) -> dict[str, Any]:
         """Per-point residuals (raw + noise-weighted) with an objective summary; ``solve_inner``
-        as in :meth:`_objective_evaluate`.
+        and ``gradient`` as in :meth:`_objective_evaluate`.
 
         This is the data source for fit inspection: every measurement point is
         returned with its ``residual`` (natural units), noise-weighted
-        ``residual_weighted`` (the chi2 term), and evaluated ``noise``. These records
-        back the ``simulations`` table exposed for SQL analysis via
+        ``residual_weighted`` (signed (m − s)/σ; its square is the chi2 term), and evaluated
+        ``noise``. These records back the ``simulations`` table exposed for SQL analysis via
         :mod:`petab_mcp.data_access`.
         """
         with self.session.lock:
-            nllh, records, res = self._objective_evaluate(solve_inner)
+            nllh, records, res, states, failed = self._objective_evaluate(solve_inner, gradient)
 
         n_expected, n_missing = self.simulation_gap(records)
         return {
@@ -343,6 +399,10 @@ class AmiciEngine:
             "n_expected_points": n_expected,
             "n_missing_simulations": n_missing,
             "records": records,
+            "state_trajectories": states,
+            # Which experiments did not simulate, and AMICI's status for each: the fit's
+            # re-scoring names them where it leaves the fit unscored.
+            "failed_experiments": failed,
         }
 
     # -- helpers -----------------------------------------------------------
@@ -422,12 +482,15 @@ class AmiciEngine:
             return None
 
     @staticmethod
-    def _weighted_residual(ctx, row, m, s):
+    def _weighted_residual(ctx, row, m, s, sigmay=None):
         """petab-consistent (noise, weighted residual) for one point, or (None, None).
 
         The weighted residual is ``(scale(m) - scale(s)) / sigma`` in the coordinate the
         observable's noise distribution is additive in — the quantity that enters chi2 —
-        matching ``petab.v2.calculate.calculate_residuals``.
+        matching ``petab.v2.calculate.calculate_residuals``. ``sigma`` is the noise formula as
+        petab evaluates it from the parameter table and the measurement's overrides, or, where
+        the formula names a model entity petab cannot evaluate (``sd*readout_X``, #289),
+        ``sigmay``: the noise AMICI evaluated for the point, which its likelihood used.
         """
         if ctx is None or m is None or s is None:
             return None, None
@@ -438,13 +501,40 @@ class AmiciEngine:
             obs_id = row.get(OBSERVABLE_ID)
             trafo = observable_transformation(observable_df, obs_id)
             observable = observable_df.loc[obs_id].to_dict()
-            noise = float(evaluate_noise_formula(row, noise_formulas, parameter_df, s, observable))
+            try:
+                noise = float(
+                    evaluate_noise_formula(row, noise_formulas, parameter_df, s, observable)
+                )
+            except Exception:  # the formula names a model entity
+                noise = sigmay
+            if noise is None:
+                return None, None
             if noise == 0.0:
                 return noise, None
             weighted = (scale(m, trafo) - scale(s, trafo)) / noise
             return noise, float(weighted)
-        except Exception:  # noise formula references model states / unresolved params
+        except Exception:  # an observable petab cannot read
             return None, None
+
+    @staticmethod
+    def _sigmay(model, rdatas, experiments) -> dict[tuple, float | None]:
+        """AMICI's ``sigmay`` by ``(experiment_id, observable_id, time, replicate)``, the replicate
+        counted in measurement order as ``ExpData`` lays replicates out: the ``r``-th measurement
+        at a time sits ``r`` rows after the time's first. ``experiments`` are the measurement
+        table's ids; AMICI's id for an experiment-less simulation is ``""`` here."""
+        import numpy as np
+
+        observables = list(model.get_observable_ids())
+        out: dict[tuple, float | None] = {}
+        for rd in rdatas:
+            eid = rd.id if rd.id in experiments else ""
+            sigmay = np.asarray(rd.sigmay)
+            first: dict[float, int] = {}
+            for j, t in enumerate(float(t) for t in rd.ts):
+                r = j - first.setdefault(t, j)
+                for i, obs in enumerate(observables):
+                    out[(eid, obs, t, r)] = finite_float(sigmay[j, i])
+        return out
 
     @staticmethod
     def _unusable_rdatas(rdatas) -> int:
@@ -468,6 +558,12 @@ class AmiciEngine:
         return bad
 
     @staticmethod
+    def _noise_parameters(row) -> str | None:
+        """The measurement row's ``noiseParameters`` cell as text, ``None`` when blank."""
+        value = row.get(NOISE_PARAMETERS)
+        return None if value is None or value != value or value == "" else str(value)
+
+    @staticmethod
     def _records_without_simulation(meas) -> list[dict[str, Any]]:
         """One record per measurement with ``simulation`` unset — the honest shape for an
         evaluation that produced no trajectory. ``simulation_gap`` counts every one of these as
@@ -477,12 +573,13 @@ class AmiciEngine:
             {
                 "observable_id": row.get(OBSERVABLE_ID),
                 "experiment_id": row.get(EXPERIMENT_ID),
-                "time": finite_float(row.get(TIME)),
+                "time": measurement_time(row.get(TIME)),
                 "measurement": finite_float(row.get(MEASUREMENT)),
                 "simulation": None,
                 "residual": None,
                 "residual_weighted": None,
                 "noise": None,
+                "noise_parameters": AmiciEngine._noise_parameters(row),
             }
             for _, row in meas.iterrows()
         ]
@@ -563,6 +660,14 @@ class AmiciEngine:
         merged = meas.merge(
             simdf[keys + [rep, SIMULATION]], on=keys + [rep], how="left", validate="1:1"
         )
+        # Row by row with `merged`, looked up in AMICI's vocabulary like the simulation.
+        sigmay = cls._sigmay(objective.amici_model, rdatas, set(meas[EXPERIMENT_ID]))
+        sigmas = [
+            sigmay.get((e, o, float(t), r))
+            for e, o, t, r in zip(
+                merged[EXPERIMENT_ID], merged[OBSERVABLE_ID], merged[TIME], merged[rep]
+            )
+        ]
         if flattened is not None:
             # Back to the session's vocabulary for everything downstream (records, residual
             # structure, query_data). AMICI's inverse does exactly this and nothing else -- it
@@ -576,21 +681,22 @@ class AmiciEngine:
         ctx = cls._noise_context(problem)
 
         records: list[dict[str, Any]] = []
-        for _, row in merged.iterrows():
+        for (_, row), sigma in zip(merged.iterrows(), sigmas):
             m = finite_float(row.get(MEASUREMENT))
             s = finite_float(row.get(SIMULATION))
             residual = (m - s) if (m is not None and s is not None) else None
-            noise, weighted = cls._weighted_residual(ctx, row, m, s)
+            noise, weighted = cls._weighted_residual(ctx, row, m, s, sigma)
             records.append(
                 {
                     "observable_id": row.get(OBSERVABLE_ID),
                     "experiment_id": row.get(EXPERIMENT_ID),
-                    "time": finite_float(row.get(TIME)),
+                    "time": measurement_time(row.get(TIME)),
                     "measurement": m,
                     "simulation": s,
                     "residual": residual,
                     "residual_weighted": weighted,
                     "noise": noise,
+                    "noise_parameters": cls._noise_parameters(row),
                 }
             )
         return records

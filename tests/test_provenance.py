@@ -156,7 +156,7 @@ def test_durable_resume(yaml_path, tmp_path, reauthor_toy):
 
 def test_one_unreadable_meta_does_not_empty_the_version_listing(session, reauthor_toy):
     """Regression: callers degrade a raise here to an empty list, so one corrupt meta silently
-    switched off de-duplication and the repeated-widening backstop."""
+    switched off de-duplication."""
     reauthor_toy(session, ["J: B => D; k3 * B;"], justification="x")
     reauthor_toy(session, ["J: B => E; k4 * B;"], justification="y")
     before = session.provenance.list_versions()
@@ -167,7 +167,7 @@ def test_one_unreadable_meta_does_not_empty_the_version_listing(session, reautho
     after = session.provenance.list_versions()
     assert len(after) == len(before) - 1, "only the corrupt version should drop out"
     assert 0 not in [m.get("version") for m in after]
-    # ...and the survivors are intact, so de-dup and the widening walk still have history
+    # ...and the survivors are intact, so de-dup still has history
     assert [m.get("version") for m in after] == [
         v for v in (m.get("version") for m in before) if v != 0
     ]

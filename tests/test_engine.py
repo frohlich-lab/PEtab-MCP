@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+
 import pandas as pd
 import pytest
 
@@ -70,7 +72,7 @@ def test_replicate_measurements_not_double_counted(engine, session):
 
 def test_records_carry_weighted_residuals(engine):
     rec = engine.evaluate_objective()["simulations"][0]
-    assert {"residual", "residual_weighted", "noise"} <= set(rec)
+    assert {"residual", "residual_weighted", "noise", "noise_parameters"} <= set(rec)
     # obs_B noise is sigma_B (nominal 0.1); weighted residual = residual / sigma
     assert rec["noise"] == pytest.approx(0.1)
     assert rec["residual_weighted"] == pytest.approx(rec["residual"] / rec["noise"])
@@ -94,6 +96,75 @@ def test_residuals_summary_matches_chi2(engine):
     # cross-validating that our weighted residuals reproduce the fitted likelihood
     nllh = 0.5 * (data["chi2"] + float(np.sum(np.log(2 * math.pi * noise**2))))
     assert nllh == pytest.approx(data["neg_log_likelihood"], rel=1e-6)
+
+
+@pytest.fixture
+def readout_engine(tmp_path, amici_build_root):
+    """An engine on the toy with armistead's noise shape (#289): an assignment rule
+    ``readout_B := B`` that the noise formula ``sigma_B * (1 + readout_B)`` names, so petab cannot
+    evaluate it, and every point measured twice."""
+    from petab_mcp.engine import AmiciEngine
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    work = tmp_path / "readout"
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v2", work)
+    model = work / "model.ant"
+    model.write_text(model.read_text().replace("\nend", "\n  readout_B := B;\nend"))
+    (work / "observables.tsv").write_text(
+        "observableId\tobservableFormula\tnoiseFormula\nobs_B\tB\tsigma_B * (1 + readout_B)\n"
+    )
+    meas = pd.read_csv(work / "measurements.tsv", sep="\t", keep_default_na=False)
+    pd.concat([meas, meas.assign(measurement=meas["measurement"] + 0.05)]).to_csv(
+        work / "measurements.tsv", sep="\t", index=False
+    )
+    session = PetabSession(
+        str(work / "problem.yaml"),
+        provenance_dir=str(tmp_path / "prov"),
+        resolver=StubReferenceResolver(),
+    )
+    return AmiciEngine(session, build_root=str(amici_build_root))
+
+
+def test_a_noise_formula_naming_a_model_entity_still_weights_residuals(readout_engine):
+    """armistead's `sd*readout_X` (#289): petab cannot evaluate a noise formula that names a model
+    entity, which left every weighted residual None and the residual tests unrun. AMICI's sigmay is
+    the noise its likelihood used: the Gaussian identity ties the records back to its nll."""
+    import math
+
+    import numpy as np
+
+    data = readout_engine.residuals()
+    recs = data["records"]
+    assert len(recs) == 12 and all(r["residual_weighted"] is not None for r in recs)
+    for r in recs:
+        assert r["noise"] == pytest.approx(0.1 * (1 + r["simulation"]))
+        assert r["residual_weighted"] == pytest.approx(r["residual"] / r["noise"])
+    noise = np.array([r["noise"] for r in recs])
+    nllh = 0.5 * (data["chi2"] + float(np.sum(np.log(2 * math.pi * noise**2))))
+    assert nllh == pytest.approx(data["neg_log_likelihood"], rel=1e-6)
+
+
+def test_state_trajectories_hold_species_and_assignment_rules(readout_engine):
+    """#289: the species and assignment rules a fit simulated, at the measured times (each once,
+    however many replicates), queryable after a fit like the readouts."""
+    from petab_mcp import data_access
+    from petab_mcp import fitting as F
+
+    session = readout_engine.session
+    payload = F.fit_and_simulate(session, readout_engine, do_fit=False, n_starts=0)
+    traj = payload["state_trajectories"]
+    assert traj["ids"] == ["A", "B", "readout_B"]
+    assert traj["points"] == [["", t] for t in (0.0, 1.0, 2.0, 4.0, 6.0, 10.0)]
+    simulated_b = {r["time"]: r["simulation"] for r in payload["records"]}
+    for (_, t), (a, b, readout) in zip(traj["points"], traj["values"]):
+        assert b == pytest.approx(simulated_b[t]) and readout == pytest.approx(b)
+        assert a + b == pytest.approx(1.0)  # A <=> B conserves A_init + B_init
+    out = data_access.run_query(
+        session,
+        "SELECT time, value FROM state_trajectories WHERE entity_id = 'readout_B' ORDER BY time",
+    )
+    assert [r["value"] for r in out["rows"]] == pytest.approx([v[2] for v in traj["values"]])
 
 
 def test_parameter_change_no_recompile(engine, session):
@@ -176,7 +247,7 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     first = fit_session.fit()
     assert first["fit_status"] == "fit"
     imp1 = first["improvement"]
-    assert imp1["objective_before"] is not None
+    assert fit_session.provenance.get_meta(first["version"])["objective_before"] is not None
     assert imp1["self_improvement"] is not None
     assert imp1["is_new_best"] is True  # nothing to beat yet
     assert imp1["improvement_vs_best_prior"] is None
@@ -188,7 +259,7 @@ def test_fit_tracks_improvement_vs_versions(fit_session):
     )
     second = fit_session.fit()
     imp2 = second["improvement"]
-    assert imp2["best_prior_version"] is not None
+    assert second["progress"]["best_version"] is not None
     assert imp2["improvement_vs_best_prior"] is not None
 
 
@@ -260,6 +331,64 @@ def test_fit_objective_and_reported_nll_are_the_same_number(fit_session):
     problem, _ = fitting.estimation_problem(fit_session, fit_session.engine)
     x = fitting.problem_x_from_nominal(problem, fit_session.problem.parameter_df)
     assert float(problem.objective(x)) == pytest.approx(reported, rel=rtol)
+
+
+def test_the_experiments_are_simulated_on_the_amici_threads_the_server_is_given(
+    tmp_path, amici_build_root, monkeypatch
+):
+    """``PETAB_MCP_FIT_AMICI_N_THREADS`` reaches AMICI's call, whose threads share out the
+    experiments; unset, it is one thread, as before the knob. Each experiment is simulated on its
+    own, so four threads score the problem as one does, gradient included."""
+    import amici.sim.sundials
+
+    from petab_mcp import fitting
+    from petab_mcp.engine import AmiciEngine
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    work = tmp_path / "problem"
+    shutil.copytree(Path(__file__).parent / "data" / "toy_v2", work)
+    (work / "conditions.tsv").write_text(
+        "conditionId\ttargetId\ttargetValue\n" + "".join(f"c{i}\tA\t{i + 1}\n" for i in range(4))
+    )
+    (work / "experiments.tsv").write_text(
+        "experimentId\ttime\tconditionId\n" + "".join(f"e{i}\t0\tc{i}\n" for i in range(4))
+    )
+    header, *rows = (work / "measurements.tsv").read_text().splitlines()
+    measured = [r.replace("obs_B\t\t", f"obs_B\te{i}\t") for i in range(4) for r in rows]
+    (work / "measurements.tsv").write_text("\n".join([header, *measured]) + "\n")
+    yaml = work / "problem.yaml"
+    yaml.write_text(
+        yaml.read_text()
+        + "condition_files:\n- conditions.tsv\nexperiment_files:\n- experiments.tsv\n"
+    )
+
+    calls = []
+    run = amici.sim.sundials.run_simulations
+
+    def counted(model, solver, edatas, *args, num_threads=1, **kwargs):
+        calls.append((len(edatas), num_threads))
+        return run(model, solver, edatas, *args, num_threads=num_threads, **kwargs)
+
+    monkeypatch.setattr(amici.sim.sundials, "run_simulations", counted)
+
+    def score(name):
+        session = PetabSession(
+            str(yaml), provenance_dir=str(tmp_path / name), resolver=StubReferenceResolver()
+        )
+        session.engine = AmiciEngine(session, build_root=str(amici_build_root))
+        problem, _ = fitting.estimation_problem(session, session.engine)
+        x = fitting.problem_x_from_nominal(problem, session.problem.parameter_df)
+        calls.clear()
+        fval, grad = problem.objective(x, sensi_orders=(0, 1))
+        return fval, grad, list(calls)
+
+    one = score("default")
+    monkeypatch.setattr(fitting, "FIT_AMICI_N_THREADS", 4)
+    four = score("four")
+
+    assert one[2] == [(4, 1)] and four[2] == [(4, 4)]
+    assert four[0] == one[0] and (four[1] == one[1]).all()
 
 
 def test_one_amici_build_per_structure(fit_session):

@@ -23,12 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import DATA_DIR
+from conftest import DATA_DIR, confirmed
 
 from petab_mcp.references import StubReferenceResolver
 
 
-def _server(tmp_path, tag="prov"):
+def _server(tmp_path, build_root, tag="prov"):
+    """A server on a copy of the toy. ``build_root`` is the worker's shared one, and the tests write
+    the same few rate laws, so each model compiles once per worker."""
     from petab_mcp.server import create_server
 
     work = tmp_path / f"toy_{tag}"
@@ -38,7 +40,7 @@ def _server(tmp_path, tag="prov"):
     return create_server(
         str(work / "problem.yaml"),
         provenance_dir=str(tmp_path / f"prov_{tag}"),
-        build_root=str(tmp_path / f"amici_{tag}"),
+        build_root=str(build_root),
         resolver=StubReferenceResolver(),
         auto_fit=True,
     ), tmp_path / f"prov_{tag}"
@@ -49,26 +51,15 @@ def _call(mcp, name, args):
 
 
 @pytest.fixture
-def served(tmp_path):
-    return _server(tmp_path)
+def served(tmp_path, amici_build_root):
+    return _server(tmp_path, amici_build_root)
 
 
-def _start_objective(result: dict) -> float:
-    """The objective AT the fit's starting point, before the optimizer moves.
-
-    Lives under `improvement` (`compute_improvement`'s dict, nested by `fitting.py`), not at the
-    top level — and that block is `improvement or None`, so a simulate-only commit has no starting
-    objective at all. Asserted rather than indexed so a payload change fails with THAT as the
-    message instead of a bare KeyError in a test about warm starts."""
-    imp = result.get("improvement")
-    assert imp, (
-        f"the commit response carries no `improvement` block (keys: {sorted(result)}) — "
-        "without it there is no observable for which point a fork started from"
-    )
-    assert "objective_before" in imp, (
-        f"`improvement` no longer carries `objective_before` (keys: {sorted(imp)})"
-    )
-    val = imp["objective_before"]
+def _start_objective(prov: Path, result: dict) -> float:
+    """The objective AT the fit's starting point, before the optimizer moves: the version meta's
+    `objective_before`. A fit result leaves it out, as nll + `self_improvement`."""
+    meta = json.loads((prov / "versions" / f"v{result['version']}" / "meta.json").read_text())
+    val = meta.get("objective_before")
     assert val is not None, "objective_before is None: the starting point was not evaluated"
     return val
 
@@ -86,7 +77,7 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(served):
         "make_changes",
         {
             "justification": "v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1/2 + k1/2)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
         },
     )
     r1 = _call(
@@ -94,7 +85,7 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(served):
         "make_changes",
         {
             "justification": "v1",
-            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2/2 + k2/2)*B"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2*1.0)*B"}],
         },
     )
     assert (r0["version"], r1["version"]) == (0, 1)
@@ -104,7 +95,7 @@ def test_a_fork_is_recorded_as_a_child_of_the_version_it_patched(served):
         "make_changes",
         {
             "justification": "fork from v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1/3 + 2*k1/3)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3)*A"}],
             "base_version": 0,
         },
     )
@@ -132,8 +123,8 @@ def test_an_ordinary_commit_still_descends_from_head(served):
 
     op("v0", "r1", "(k1*1.0)*A")
     op("v1", "r2", "(k2*1.0)*B")
-    forked = op("fork", "r1", "(k1/2 + k1/2)*A", base_version=0)
-    after = op("ordinary commit after a fork", "r2", "(k2*1.00)*B")
+    forked = op("fork", "r1", "(k1*3)*A", base_version=0)
+    after = confirmed(lambda: op("ordinary commit after a fork", "r2", "(k2*1.00)*B"))
     assert forked["committed"] is True and after["committed"] is True, (forked, after)
     assert _meta(prov, forked["version"])["parent"] == 0
     assert _meta(prov, after["version"])["parent"] == forked["version"], (
@@ -204,8 +195,8 @@ def test_a_fork_patches_its_BASE_not_head(served):
     v1's change is absent from it. Under structured edits this is the strong property: the
     operations apply to the source, so `child.source == parent.source + ops` holds exactly.
 
-    (Matching is on symbols, never on exact formatting: libantimony re-renders `(k1*2)*A` as
-    `k1*2*A`, so asserting the literal trips over the very render gap the production failures
+    (Matching is on symbols, never on exact formatting: libantimony re-renders `(k1*3)*A` as
+    `k1*3*A`, so asserting the literal trips over the very render gap the production failures
     came from.)"""
     mcp, prov = served
     _v0 = _call(
@@ -213,7 +204,7 @@ def test_a_fork_patches_its_BASE_not_head(served):
         "make_changes",
         {
             "justification": "v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*2)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
         },
     )
     _v1 = _call(
@@ -221,7 +212,7 @@ def test_a_fork_patches_its_BASE_not_head(served):
         "make_changes",
         {
             "justification": "v1",
-            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2*2)*B"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r2", "antimony": "(k2*1.0)*B"}],
         },
     )
     v2 = _call(
@@ -236,7 +227,7 @@ def test_a_fork_patches_its_BASE_not_head(served):
     assert v2["committed"] is True
     submitted = (prov / "versions" / f"v{v2['version']}" / "model_source.ant").read_text()
     assert "k1*3" in submitted  # this call's patch is in it
-    assert "k2*2" not in submitted, (
+    assert "k2*1.0" not in submitted, (
         "the fork's submitted text carries v1's change — it was patched from HEAD, not v0"
     )
 
@@ -279,7 +270,7 @@ def test_a_fork_restores_the_search_space_not_just_the_model(served):
         {
             "justification": "fork from v0",
             "base_version": v0["version"],
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3.0)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3)*A"}],
         },
     )
     assert fork.get("committed") is True, fork
@@ -293,7 +284,7 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(served):
     name is the one that survives.
 
     Implemented by EXCLUSION, not by overwrite: this call's `parameters` run first, against the
-    pristine table, and the restore then skips the search space of any id they claimed. That order
+    pristine table, and the restore then skips the columns they set. That order
     is load-bearing — the widening backstops compare against the PRE-EDIT bound, so restoring
     first would hand them v0's box as the baseline and let a third widening past the guard."""
     mcp, prov = served
@@ -311,7 +302,7 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(served):
         {
             "justification": "fork and rebound",
             "base_version": v0["version"],
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*2.0)*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*3)*A"}],
             "parameters": [{"parameter_id": "k1", "lower_bound": 0.02, "upper_bound": 20.0}],
         },
     )
@@ -321,6 +312,40 @@ def test_an_explicit_bound_in_the_fork_call_wins_over_the_restored_one(served):
     with open(prov / "versions" / f"v{fork['version']}" / "parameters.tsv") as fh:
         row = next(r for r in _csv.DictReader(fh, delimiter="\t") if r["parameterId"] == "k1")
     assert (float(row["lowerBound"]), float(row["upperBound"])) == (0.02, 20.0)
+
+
+def test_a_refit_keeps_the_base_versions_columns_its_parameters_do_not_set(served):
+    """REGRESSION (PEtab-MCP#202 review): naming a parameter withheld its WHOLE restored search
+    space, so refitting v0 with new bounds kept HEAD's scale, and with a new scale kept HEAD's box."""
+    import csv as _csv
+
+    mcp, prov = served
+
+    def k1(version):
+        with open(prov / "versions" / f"v{version}" / "parameters.tsv") as fh:
+            row = next(r for r in _csv.DictReader(fh, delimiter="\t") if r["parameterId"] == "k1")
+        return row["parameterScale"], float(row["lowerBound"]), float(row["upperBound"])
+
+    edit = [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}]
+    v0 = _call(mcp, "make_changes", {"justification": "v0", "model_edits": edit})["version"]
+    head = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 10.0, "scale": "lin"}
+    _call(mcp, "make_changes", {"justification": "HEAD's k1", "parameters": [head]})
+
+    def refit(**entry):
+        out = _call(
+            mcp,
+            "make_changes",
+            {
+                "justification": "refit v0",
+                "base_version": v0,
+                "parameters": [{"parameter_id": "k1", **entry}],
+            },
+        )
+        assert out.get("committed") is True, out
+        return k1(out["version"])
+
+    assert refit(lower_bound=1e-3, upper_bound=1e3) == ("log10", 1e-3, 1e3)
+    assert refit(scale="log") == ("log", 1e-4, 100.0)
 
 
 def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):
@@ -335,13 +360,13 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):
     optimizer moves: for a fork whose edit is numerically inert, it must land on v0's own fitted
     objective, not the abandoned v1's.
     """
-    mcp, _ = served
+    mcp, prov = served
     v0 = _call(
         mcp,
         "make_changes",
         {
             "justification": "v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
         },
     )
     v0_nllh = v0["neg_log_likelihood"]
@@ -370,8 +395,8 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):
         },
     )
     assert fork.get("committed") is True, fork
-    assert _start_objective(fork) == pytest.approx(v0_nllh, rel=1e-6), (
-        f"the fork started from {(fork.get('improvement') or {}).get('objective_before')}, "
+    assert _start_objective(prov, fork) == pytest.approx(v0_nllh, rel=1e-6), (
+        f"the fork started from {_start_objective(prov, fork)}, "
         f"not v0's optimum {v0_nllh} — "
         f"it inherited the abandoned branch's point (v1 fit to {v1['neg_log_likelihood']})"
     )
@@ -390,7 +415,7 @@ def test_the_starting_point_comes_back_even_for_a_parameter_the_fork_rebounds(se
         "make_changes",
         {
             "justification": "v0",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "k1*A"}],
+            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
         },
     )
     _call(
@@ -412,7 +437,7 @@ def test_the_starting_point_comes_back_even_for_a_parameter_the_fork_rebounds(se
         },
     )
     assert fork.get("committed") is True, fork
-    assert _start_objective(fork) == pytest.approx(v0["neg_log_likelihood"], rel=1e-6), (
+    assert _start_objective(prov, fork) == pytest.approx(v0["neg_log_likelihood"], rel=1e-6), (
         "naming k1 in `parameters` cost the fork k1's restored starting point"
     )
     # ...and the caller's own box is the one that survived.

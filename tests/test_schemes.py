@@ -449,9 +449,19 @@ def test_a_scheme_rate_names_only_the_parameters_it_declares():
         _scheme("kf", ("kf", "kr"))
 
 
-def test_a_scheme_rate_reads_a_role_only_as_its_amount():
-    with pytest.raises(MechanismError, match=r"`sub` is a role: read its amount, `amount\(sub\)`"):
-        _scheme("kf*sub")
+def test_a_scheme_rate_reads_a_role_or_regulator_only_as_its_amount():
+    """A bare regulator was told to be declared in `parameters`, and neither refusal said that a
+    `rate` reads both bare (#193)."""
+    for name in ("sub", "inhibited_by"):
+        with pytest.raises(MechanismError, match=rf"Write `amount\({name}\)`") as exc:
+            _scheme(f"kf*{name}")
+        assert "only as `amount(<pattern>)`" in str(exc.value)
+        assert "`parameters`" not in str(exc.value)
+
+
+def test_a_scheme_rate_says_piecewise_is_a_rates():
+    with pytest.raises(MechanismError, match=r"no function 'piecewise'.*takes no `piecewise`"):
+        _scheme("piecewise(kf, time < 1, 0)")
 
 
 def test_a_scheme_rate_does_not_read_a_starting_amount():
@@ -513,3 +523,17 @@ def test_a_builtin_name_is_refused_for_a_scheme():
              "scheme": "enz() + sub() >> enz() + sub() @ k"},
             M.REGISTRY,
         )
+
+
+def test_a_role_the_statement_leaves_empty_is_refused_naming_the_row():
+    """`the statement gives no subj` named neither row nor statement type, and the agent guessed
+    which row (bachmann, isensee, lucarelli, blasi; #251)."""
+    library = dict(M.REGISTRY)
+    library[("IncreaseAmount", "syn")] = M.written(
+        {"statement_type": "IncreaseAmount", "policy": "syn", "parameters": ["k"],
+         "scheme": "subj() >> subj() + obj() @ k"},
+        library,
+    )
+    with pytest.raises(MechanismError, match=r"row 'b_syn': mechanism 'syn' reads `subj`, which "
+                       r"`B is produced` leaves empty\. `E increases B`"):
+        M.assemble([(IncreaseAmount(None, Agent("B")), "syn", "b_syn")], {}, library)

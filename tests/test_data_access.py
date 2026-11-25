@@ -9,6 +9,7 @@ synthetic ``session.simulation`` payload, so residual analysis — the thing the
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
 
@@ -45,9 +46,9 @@ def test_static_tables_queryable_without_simulation(session):
     assert "measurement" in out["columns"]
 
     params = data_access.run_query(
-        session, "SELECT parameterId FROM parameters ORDER BY parameterId"
+        session, "SELECT parameter_id FROM parameters ORDER BY parameter_id"
     )
-    ids = {r["parameterId"] for r in params["rows"]}
+    ids = {r["parameter_id"] for r in params["rows"]}
     assert ids == {"A_init", "B_init", "k1", "k2", "sigma_B"}
 
 
@@ -71,7 +72,7 @@ def test_empty_parameter_table_does_not_break_queries(session):
     # the empty parameters table is still there, queryable, with its canonical columns
     params = data_access.run_query(session, "SELECT * FROM parameters")
     assert params["row_count"] == 0
-    assert set(data_access.PARAMETER_COLUMNS) <= set(params["columns"])
+    assert {data_access._snake(c) for c in data_access.PARAMETER_COLUMNS} <= set(params["columns"])
 
 
 def test_absent_optional_table_does_not_break_queries(session):
@@ -82,7 +83,7 @@ def test_absent_optional_table_does_not_break_queries(session):
     assert out["rows"][0]["one"] == 1
     cond = data_access.run_query(session, "SELECT * FROM conditions")
     assert cond["row_count"] == 0
-    assert set(data_access.CONDITION_COLUMNS) <= set(cond["columns"])
+    assert {data_access._snake(c) for c in data_access.CONDITION_COLUMNS} <= set(cond["columns"])
 
 
 def test_empty_parameter_table_schema_keeps_columns(session):
@@ -90,27 +91,53 @@ def test_empty_parameter_table_schema_keeps_columns(session):
     session.problem.parameter_df = session.problem.parameter_df.iloc[0:0]
     tables = {t["table"]: t for t in data_access.table_schema(session)["tables"]}
     assert tables["parameters"]["n_rows"] == 0
-    assert set(data_access.PARAMETER_COLUMNS) <= set(tables["parameters"]["columns"])
+    columns = set(tables["parameters"]["columns"])
+    assert {data_access._snake(c) for c in data_access.PARAMETER_COLUMNS} <= columns
 
 
-def test_sql_error_points_at_working_alternatives(session):
-    # A failed query should guide the agent to the tools that DO work rather than being
-    # re-proposed blindly — the error names get_measurements and list_data_tables.
+@pytest.mark.parametrize(
+    "sql, hinted",
+    [
+        ("SELECT nope FROM simulations", True),  # binder: unknown column
+        ("SELECT * FROM nonexistent_table", True),  # catalog: unknown table
+        ("SELECT CAST('a' AS DOUBLE)", False),  # conversion
+        ("SELECT regexp_matches('a', '(')", False),  # invalid regex
+        ("SELEC 1", False),  # parser
+    ],
+)
+def test_only_name_errors_point_at_list_data_tables(session, sql, hinted):
+    """Every SQL error ended "Call `list_data_tables`", cast and regex errors too, where the table
+    list cannot help (#337). The hint names query_data's companion and no other tool (#299)."""
     with pytest.raises(ValidationError) as excinfo:
-        data_access.run_query(session, "SELECT * FROM nonexistent_table")
+        data_access.run_query(session, sql)
     msg = str(excinfo.value)
-    assert "get_measurements" in msg and "list_data_tables" in msg
+    assert ("list_data_tables" in msg) is hinted and "get_measurements" not in msg
 
 
 def test_named_index_promoted_to_column(session):
     # observables are indexed by their id; it must be a queryable column. The condition and
     # experiment tables keep their keys as plain columns, so they are queryable even when empty.
-    obs = data_access.run_query(session, "SELECT observableId FROM observables")
-    assert obs["row_count"] >= 1 and "observableId" in obs["columns"]
-    cond = data_access.run_query(session, "SELECT conditionId FROM conditions")
-    assert "conditionId" in cond["columns"]
-    exps = data_access.run_query(session, "SELECT experimentId FROM experiments")
-    assert "experimentId" in exps["columns"]
+    obs = data_access.run_query(session, "SELECT observable_id FROM observables")
+    assert obs["row_count"] >= 1 and "observable_id" in obs["columns"]
+    cond = data_access.run_query(session, "SELECT condition_id FROM conditions")
+    assert "condition_id" in cond["columns"]
+    exps = data_access.run_query(session, "SELECT experiment_id FROM experiments")
+    assert "experiment_id" in exps["columns"]
+
+
+def test_every_table_names_its_columns_in_snake_case(session):
+    """PEtab tables kept camelCase beside snake_case simulation tables: `experimentId` sent to
+    `simulations` and `experiment_id` to `measurements` were binder errors in 49 of 310
+    transcripts (#337). One convention, so a measurement joins its simulated point by name."""
+    session.simulation = {"records": [_rec("obs_B", "", 1.0, 0.3, 0.25, 0.05, 0.5, 0.1)]}
+    for table in data_access.table_schema(session)["tables"]:
+        assert all(re.fullmatch(r"[a-z0-9_]+", c) for c in table["columns"]), table
+    out = data_access.run_query(
+        session,
+        "SELECT count(*) AS n FROM measurements m JOIN simulations s "
+        "USING (observable_id, experiment_id, time)",
+    )
+    assert out["rows"][0]["n"] == 1
 
 
 def test_simulations_table_empty_but_typed(session):
@@ -162,9 +189,9 @@ def test_join_measurements_against_simulations(session):
     # observables table shows arbitrary cross-table SQL works.
     out = data_access.run_query(
         session,
-        "SELECT s.observable_id, o.observableFormula "
-        "FROM simulations s JOIN observables o ON s.observable_id = o.observableId "
-        "GROUP BY s.observable_id, o.observableFormula",
+        "SELECT s.observable_id, o.observable_formula "
+        "FROM simulations s JOIN observables o ON s.observable_id = o.observable_id "
+        "GROUP BY s.observable_id, o.observable_formula",
     )
     assert out["row_count"] >= 1
 
@@ -196,7 +223,7 @@ def test_query_runs_on_disposable_copy(session):
 
     data_access.run_query(session, "DELETE FROM measurements")
     data_access.run_query(session, "DROP TABLE parameters")
-    data_access.run_query(session, "UPDATE observables SET observableFormula = 'x'")
+    data_access.run_query(session, "UPDATE observables SET observable_formula = 'x'")
 
     # the source DataFrame is untouched ...
     assert len(session.problem.measurement_df) == len(df_before)
@@ -215,7 +242,7 @@ def test_multi_statement_and_temp_tables_allowed(session):
     # The full SQL surface is available; the last statement's result is returned.
     out = data_access.run_query(
         session,
-        "CREATE TEMP TABLE t AS SELECT observableId FROM measurements; SELECT count(*) AS n FROM t",
+        "CREATE TEMP TABLE t AS SELECT observable_id FROM measurements; SELECT count(*) AS n FROM t",
     )
     assert out["rows"][0]["n"] == 6
 
@@ -238,10 +265,13 @@ def test_table_schema(session):
         "parameters",
         "simulations",
         "simulations_history",
+        "state_trajectories",
         "optimization_starts",
         "optimization_trace",
     }
     assert tables["simulations_history"]["n_rows"] == 0  # no versions stored yet
+    assert tables["state_trajectories"]["n_rows"] == 0
+    assert tables["state_trajectories"]["columns"] == data_access.STATE_TRAJECTORY_COLUMNS
     assert set(data_access.SIMULATION_HISTORY_COLUMNS) <= set(
         tables["simulations_history"]["columns"]
     )
@@ -323,7 +353,126 @@ def test_nan_values_cleaned_to_none(session):
     assert val is None or (isinstance(val, float) and not math.isnan(val))
 
 
+def test_a_steady_state_record_reads_inf_not_null(session):
+    """A record at t=inf (a steady-state measurement) keeps its time: SQL counts it as no NULL,
+    and the row writes it "inf"."""
+    session.simulation = {"records": [_rec("o", "c", float("inf"), 1.0, 1.0, 0.0, 0.0, 1.0)]}
+    out = data_access.run_query(session, "SELECT time FROM simulations")
+    assert out["rows"] == [{"time": "inf"}]
+    nulls = data_access.run_query(
+        session, "SELECT count(*) AS n FROM simulations WHERE time IS NULL"
+    )
+    assert nulls["rows"] == [{"n": 0}]
+
+
 # -- fit_diagnosis: the compact, bounded residual read for the agent --------
+def _inner_solved_toy(session, *, sigma: bool, offset: bool):
+    """The toy on 10 time points with fontaine's observation model, ``obs_B = B + offset_B`` with
+    noise ``sigma_B``, either one estimated or fixed, and records as an inner-solved offset and
+    sigma leave them: residuals centred, weighted chi2 equal to the point count."""
+    import pandas as pd
+
+    p = session.problem
+    times = [float(t) for t in range(10)]
+    mdf = pd.DataFrame({"observableId": "obs_B", "experimentId": "", "time": times})
+    mdf["measurement"] = 1.0
+    odf = p.observable_df
+    if offset:
+        odf = odf.assign(
+            observableFormula="B + observableOffset_obs_B",
+            observablePlaceholders="observableOffset_obs_B",
+        )
+        mdf["observableParameters"] = "offset_B"
+    p = session.problem = p.replace(observable_df=odf, measurement_df=mdf)
+    p.parameter_df.loc["offset_B"] = p.parameter_df.loc["k1"]
+    columns = ["parameterScale", "lowerBound", "upperBound", "nominalValue", "estimate"]
+    p.parameter_df.loc["offset_B", columns] = ["lin", -10, 10, 0.0, offset]
+    p.parameter_df.loc["sigma_B", "estimate"] = sigma
+    residuals = [0.1, 0.2, -0.15, 0.05, -0.1, -0.2, 0.3, -0.25, 0.15, -0.1]  # sum 0, 8 runs
+    sd = math.sqrt(sum(r * r for r in residuals) / len(residuals))
+    session.simulation = {
+        "records": [
+            _rec("obs_B", "", t, 1.0, 1.0 - r, r, r / sd, sd) for t, r in zip(times, residuals)
+        ]
+    }
+
+
+@pytest.mark.parametrize("sigma", [True, False])
+@pytest.mark.parametrize("offset", [True, False])
+def test_goodness_of_fit_that_holds_by_construction_says_so(session, sigma, offset):
+    """#267: with per-batch offsets and inner-solved sigmas every fontaine diagnosis read
+    total_chi2 = n (640), mean residual 0 and sign-test p 1.0 with low_power false, and agents cited
+    "zero mean bias" against readout changes. An estimated offset marks its observable's row
+    low-power and says why; a sigma solved over every point notes total_chi2. Neither is said where
+    the parameter is fixed, though the numbers are the same."""
+    _inner_solved_toy(session, sigma=sigma, offset=offset)
+    out = data_access.fit_diagnosis(session)
+    assert out["total_chi2"] == pytest.approx(10.0)
+    assert ("total_chi2_note" in out) is sigma
+    (row,) = out["per_observable"]
+    assert row["mean_weighted_residual"] == pytest.approx(0.0)
+    assert ("by_construction" in row) is offset
+    assert row["structure_flag"] is False
+    # 10 points are enough for both tests, unless an offset centred them
+    assert row["sign_test"]["low_power"] is row["structure_low_power"] is offset
+    assert data_access.residual_structure_rollup(session)["low_power"] is offset
+    if offset:
+        assert row["by_construction"] == data_access._OFFSET_CENTRED
+
+
+def test_chi2_pinned_by_an_estimated_sigma_the_optimizer_fits_says_so(session):
+    """#285: fiedler 31 read "total χ² sits exactly at 72.0 … which no such trajectory could
+    produce" and spent 91 min on it. Its sigmas were estimated by the optimizer, not solved
+    analytically (a log-normal observable keeps the fit joint), which pins chi2 at n all the same."""
+    _inner_solved_toy(session, sigma=True, offset=False)
+    odf = session.problem.observable_df.assign(noiseDistribution="log-normal")
+    session.problem = session.problem.replace(observable_df=odf)
+    note = data_access.fit_diagnosis(session)["total_chi2_note"]
+    assert note == data_access._CHI2_BY_CONSTRUCTION
+
+
+def test_a_fit_result_says_when_chi2_cannot_judge_the_fit(session):
+    """#329: only get_fit_diagnosis said chi2 = n holds by construction; make_changes showed the
+    raw chi2 and agents read it as the noise floor. A fixed-sigma chi2 far below its dof (p = 1,
+    sigmas larger than the scatter) went unremarked. The second note judges the fit, so the
+    progress_signals switch withholds it, and the first note's goodness-of-fit clause."""
+    from petab_mcp import fitting, progress_signals
+
+    _inner_solved_toy(session, sigma=True, offset=False)
+    fitsim = {**session.simulation, "chi2": 10.0, "n_data_points": 10, "n_estimated": 1}
+    block = fitting.fit_result_block({**fitsim, "neg_log_likelihood": 0.0}, problem=session.problem)
+    assert block["chi2_note"] == data_access._CHI2_BY_CONSTRUCTION
+    off = progress_signals.strip(block, False)["chi2_note"]
+    assert off.endswith("says nothing about the model.") and "goodness" not in off
+
+    _inner_solved_toy(session, sigma=False, offset=False)
+    low = {**fitsim, "chi2": 1.0, "neg_log_likelihood": 0.0}  # 9 dof: GoF p = 0.9994
+    block = fitting.fit_result_block(low, problem=session.problem)
+    assert block["chi2_note"] == fitting.CHI2_BELOW_NOISE_NOTE
+    assert "chi2_note" not in progress_signals.strip(block, False)
+    assert "chi2_note" not in fitting.fit_result_block(
+        {**low, "chi2": 9.0}, problem=session.problem
+    )
+
+
+def test_an_offset_under_per_point_sigmas_zeroes_only_the_precision_weighted_mean(session):
+    """#285: dessauges 94 v4 read a mean weighted residual of 0.89 and a sign-test p of 0.0005 on
+    an offset observable whose sigmas are SEMs per point, beside a note that the mean is ~0 and the
+    sign test blind. The offset solves sum(r / sigma^2) = 0, which zeroes mean(r / sigma) only
+    where sigma is one value."""
+    _inner_solved_toy(session, sigma=False, offset=True)
+    sds, residuals = [0.1, 1.0] * 5, [0.01, -1.0] * 5  # sum(r / sd^2) = 5 - 5 = 0
+    session.simulation = {
+        "records": [
+            _rec("obs_B", "", float(t), 1.0, 1.0 - r, r, r / sd, sd)
+            for t, (r, sd) in enumerate(zip(residuals, sds))
+        ]
+    }
+    (row,) = data_access.fit_diagnosis(session)["per_observable"]
+    assert row["mean_weighted_residual"] == pytest.approx(-0.45)
+    assert row["by_construction"] == data_access._OFFSET_CENTRED_PRECISION_WEIGHTED
+
+
 def test_fit_diagnosis_empty_without_simulation(session):
     out = data_access.fit_diagnosis(session)
     assert out["per_observable"] == [] and out["worst_points"] == []
@@ -358,6 +507,36 @@ def test_fit_diagnosis_compact_and_bounded(session):
     assert data_access.residual_structure_rollup(session)["low_power"] is True
 
 
+#: Two species and an assignment rule at two times of experiment e0, as the engine stores them.
+TRAJECTORIES = {
+    "ids": ["A", "B", "total"],
+    "points": [["e0", 0.0], ["e0", 1.0]],
+    "values": [[1.0, 0.0, 1.0], [0.6, 0.4, 1.0]],
+}
+
+
+def test_state_trajectories_are_one_row_per_value(session):
+    """#289: the hidden states a fit simulated are SQL, not reconstructed by hand from readouts."""
+    session.simulation = {"records": SIM_RECORDS, "state_trajectories": TRAJECTORIES}
+    out = data_access.run_query(
+        session,
+        "SELECT time, value FROM state_trajectories WHERE entity_id = 'B' ORDER BY time",
+    )
+    assert [(r["time"], r["value"]) for r in out["rows"]] == [(0.0, 0.0), (1.0, 0.4)]
+    tables = {t["table"]: t for t in data_access.table_schema(session)["tables"]}
+    assert tables["state_trajectories"]["n_rows"] == 6
+
+
+def test_state_trajectories_are_kept_with_a_version():
+    """A restore reads a version's stored simulation back, so the trajectories are stored with it."""
+    from petab_mcp import fitting
+
+    stored = fitting.build_sim_payload_for_version(
+        {"records": SIM_RECORDS, "state_trajectories": TRAJECTORIES}
+    )
+    assert stored["state_trajectories"] == TRAJECTORIES
+
+
 def test_fit_diagnosis_flags_systematic_bias(session):
     """A one-sided residual series must be flagged by the sign test through fit_diagnosis."""
     session.simulation = {
@@ -373,7 +552,55 @@ def test_fit_diagnosis_flags_systematic_bias(session):
     assert rollup["low_power"] is False  # 10 points -> powered
 
 
-# -- the bare structure boolean the session's plateau-adequacy gate consumes ---------------
+def test_the_sign_test_pools_series_too_short_to_test_alone(session):
+    """#329: raimundez's one-point series each gave p = 1, Fisher-combined to 1.0 beside 61/32
+    signs with low_power false, and the finish gate read "sign-random". Short series now pool."""
+    signs = [1.0] * 61 + [-1.0] * 32
+    session.simulation = {
+        "records": [
+            _rec("obs_A", f"e{i}", 0.0, 1.0, 1.0 - r, r, r, 1.0) for i, r in enumerate(signs)
+        ]
+    }
+    (row,) = data_access.fit_diagnosis(session)["per_observable"]
+    assert row["sign_test"]["p"] == pytest.approx(0.0035, abs=1e-4)
+    assert row["sign_test"]["n_series"] == 93 and row["sign_test"]["low_power"] is False
+    # one point per series: no runs test can reach significance, so none is combined
+    assert row["runs_test"] == {"p": None, "n_series": 0, "low_power": True}
+    assert data_access.residual_structure_rollup(session)["flagged_observables"] == ["obs_A"]
+
+
+def test_opposite_biases_in_long_series_do_not_cancel(session):
+    """A series long enough is its own stratum: an over-shoot in e0 and an under-shoot in e1 stay
+    a bias, where one pooled count would read 10/10."""
+    session.simulation = {
+        "records": [
+            _rec("obs_A", exp, float(t), 1.0, 1.0 - r, r, r, 1.0)
+            for exp, r in (("e0", 1.0), ("e1", -1.0))
+            for t in range(10)
+        ]
+    }
+    (row,) = data_access.fit_diagnosis(session)["per_observable"]
+    assert row["sign_test"]["n_pos"] == row["sign_test"]["n_neg"] == 10
+    assert row["sign_test"]["p"] < 0.001 and row["structure_flag"] is True
+
+
+def test_low_power_counts_only_series_that_can_reach_significance(session):
+    """#329: forty two-point series held 80 usable points, so low_power read false while neither
+    test could reach p < 0.05 on any of them. The sign test pools them; the runs test has none."""
+    session.simulation = {
+        "records": [
+            _rec("obs_A", f"e{i}", float(t), 1.0, 1.0 - r, r, r, 1.0)
+            for i in range(40)
+            for t, r in ((0, 1.0), (1, -1.0))
+        ]
+    }
+    (row,) = data_access.fit_diagnosis(session)["per_observable"]
+    assert row["sign_test"]["low_power"] is False and row["sign_test"]["p"] == 1.0
+    assert row["runs_test"]["low_power"] is True and row["structure_low_power"] is True
+    assert data_access.residual_structure_rollup(session)["low_power"] is True
+
+
+# -- the bare structure boolean the version meta records -------------------------------------
 # `PetabSession.fit` derives it as bool(rollup["flagged_observables"]) rather than calling a
 # second helper; these pin that expression against fit_diagnosis's own flagged set.
 def _flagged(session) -> bool:
@@ -467,7 +694,7 @@ def test_residual_structure_rollup_degrades_to_a_well_formed_verdict(session, re
 
 
 def test_residual_structure_rollup_never_raises(session, monkeypatch):
-    """An advisory stat must never take down the fit or the plateau gate that consume it."""
+    """An advisory stat must never take down the fit that computes it."""
     monkeypatch.setattr(
         data_access, "_frames", lambda _s: (_ for _ in ()).throw(RuntimeError("boom"))
     )
@@ -496,6 +723,26 @@ def test_residual_structure_rollup_agrees_with_fit_diagnosis_on_several_flagged(
         sorted(o["observable_id"] for o in diag["per_observable"] if o.get("structure_flag"))
         == rollup["flagged_observables"]
     )
+
+
+def test_a_fit_result_names_three_flagged_observables_and_counts_the_rest():
+    """#190: the rollup named every flagged observable twice, in the list and in the summary, and
+    carried a replicate arm with nothing to test, on every fit result. get_fit_summary keeps the
+    whole list."""
+    from petab_mcp import residual_tests as rt
+
+    silent = data_access._lof_payload(rt.replicate_lof_unavailable("no_replicated_points"))
+    rollup = data_access._rollup_structure(
+        [(f"obs_{i}", {"structure_flag": True}) for i in range(5)], replicate_lof=silent
+    )
+    assert rollup["flagged_observables"] == [f"obs_{i}" for i in range(5)]
+    assert "in obs_0, obs_1, obs_2 (+2 more) (" in rollup["summary"]
+
+    on_fit = data_access.residual_structure_on_fit(rollup)
+    assert on_fit["flagged_observables"] == ["obs_0", "obs_1", "obs_2"]
+    assert on_fit["n_flagged_observables"] == 5
+    assert "replicate_lack_of_fit" not in on_fit
+    assert "replicate_lack_of_fit" in rollup  # a projection, not an edit of the rollup
 
 
 def test_the_two_rollup_callers_produce_IDENTICAL_verdicts(session, monkeypatch):
@@ -880,7 +1127,7 @@ def test_query_pages_without_overlap_or_gap(session):
     while True:
         out = data_access.run_query(
             session,
-            "SELECT time, observableId FROM measurements ORDER BY observableId, time",
+            "SELECT time, observable_id FROM measurements ORDER BY observable_id, time",
             max_rows=2,
             offset=offset,
         )
@@ -922,8 +1169,9 @@ def test_page_args_rejected(session):
 def test_head_simulations_reference_gate():
     # Decides whether query_data pays an AMICI build: HEAD `simulations` reads must, queries
     # touching only the history (or the static tables) must not.
-    ref = data_access.query_references_head_simulations
+    ref = data_access.query_reads_head_simulation
     assert ref("SELECT * FROM simulations WHERE residual_weighted IS NOT NULL")
     assert ref("select s.time from SIMULATIONS s")
+    assert ref("SELECT value FROM state_trajectories WHERE entity_id = 'B'")
     assert not ref("SELECT version FROM simulations_history")
     assert not ref("SELECT count(*) FROM measurements")

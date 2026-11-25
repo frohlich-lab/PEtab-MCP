@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -286,6 +287,30 @@ def test_score_session_refits_the_toy_on_a_transfer_set_and_leaves_the_session_a
     assert session.problem.condition_df is None and session.problem.experiment_df is None
 
 
+def test_a_transfer_refit_runs_at_its_sessions_per_start_cap(session, tmp_path, monkeypatch):
+    """A held-out refit runs at the per-start cap its session's own fits ran on, which a server
+    hosting several problems sets per session (#187); a caller without a session, such as the
+    reference bar's, gets the default every session starts with."""
+    from petab_mcp import fitting
+
+    caps = []
+    monkeypatch.setattr(
+        V, "_refit_one", lambda view, *, cap, **_: caps.append(cap) or {"status": V.STATUS_OK}
+    )
+    build = {"output_folder": str(tmp_path / "build"), "model_name": "m"}
+    engine = SimpleNamespace(pypesto_importer_kwargs=lambda h: build, fit_engine=None)
+    held = V.HeldOut(
+        measurement_df=session.problem.measurement_df,
+        parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]),
+    )
+    session.fit_per_start_timeout = 1200.0
+
+    V.score_session(session, engine, held, n_starts=2)
+    V.refit_problem(session.problem, build_dir=tmp_path / "b", model_name="m", n_starts=1)
+
+    assert caps == [1200.0, fitting.FIT_PER_START_TIMEOUT_S]
+
+
 def test_the_server_tool_takes_n_starts_and_refits_a_transfer_bundle(tmp_path):
     """The registered tool is what whoever runs the session reaches over MCP: it must accept
     `n_starts` (or that call fails and the caller records `unavailable`) and must read the bundle
@@ -381,6 +406,48 @@ def test_score_session_refits_each_unit_on_its_own_and_sums_the_units(session, e
     assert session.problem.experiment_df is None
 
 
+@pytest.mark.parametrize("retry_steps", [V.RETRY_SOLVER["max_steps"], 1])
+def test_a_refit_optimum_that_does_not_simulate_again_is_non_finite(
+    session, engine, monkeypatch, retry_steps
+):
+    """AMICI-backed (#288): the solver is left one step once the multistart is done, so the unit's
+    optimum, finite to the optimizer, fails when simulated again for its records. It is simulated
+    again at `RETRY_SOLVER` (#323), which scores it; where that fails too it is no score:
+    `non_finite`, naming the unit, the experiment and AMICI's status, never `ok` with `nll: null`.
+    `tolerances` records both attempts either way."""
+    import pypesto.optimize
+
+    minimize = pypesto.optimize.minimize
+
+    def _then_one_step(problem, **kwargs):
+        result = minimize(problem, **kwargs)
+        problem.objective.amici_solver.set_max_steps(1)
+        return result
+
+    monkeypatch.setattr(pypesto.optimize, "minimize", _then_one_step)
+    monkeypatch.setattr(V, "RETRY_SOLVER", {**V.RETRY_SOLVER, "max_steps": retry_steps})
+    meas = session.problem.measurement_df
+    held = V.HeldOut(
+        measurement_df=meas.assign(experimentId="e1", measurement=meas.measurement * 2),
+        experiment_df=_experiments(["e1"]),
+        parameter_df=_params([("A_init", "lin", 0.0, 100.0, 2.0, 0)]),
+        units={"e1": "u1"},
+    )
+
+    out = V.score_session(session, engine, held, n_starts=2)
+
+    if retry_steps > 1:
+        assert out["status"] == V.STATUS_OK and math.isfinite(out["nll"]), out
+        tolerances = out["units"]["u1"]["tolerances"]
+    else:
+        assert out["status"] == V.STATUS_NON_FINITE and out["unit"] == "u1", out
+        assert "nll" not in out
+        assert out["reason"].startswith("unit `u1`: the refit's optimum (nll "), out["reason"]
+        assert "fails in `e1` (AMICI_TOO_MUCH_WORK at t=" in out["reason"], out["reason"]
+        tolerances = out["tolerances"]
+    assert len(tolerances) == 2 and tolerances[-1] == V.RETRY_SOLVER
+
+
 def test_a_transfer_score_stores_each_units_records_at_its_own_optimum(session, engine):
     """AMICI-backed, on a committed version: the per-point records of a transfer score (#119) are
     each unit's, at THAT unit's refitted optimum, in the head version's directory. With sigma_B
@@ -433,7 +500,7 @@ def test_a_single_named_unit_is_still_carried_under_units(monkeypatch):
     block is carried the same way — a consumer reading `units` must not find it missing."""
     seen = []
 
-    def _fake_one(view, *, target, n_starts, fit_engine):
+    def _fake_one(view, *, target, n_starts, fit_engine, cap):
         seen.append(view)
         return {
             "status": "ok",
@@ -464,7 +531,7 @@ def _fake_refit(monkeypatch):
     """Replace one system's refit: record the view it was handed, report a fixed optimum."""
     seen = []
 
-    def _fake_one(view, *, target, n_starts, fit_engine):
+    def _fake_one(view, *, target, n_starts, fit_engine, cap):
         seen.append(view)
         return {
             "status": "ok",

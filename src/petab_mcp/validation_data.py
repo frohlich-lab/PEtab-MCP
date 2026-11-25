@@ -60,8 +60,9 @@ from .problem import (
 #: * ``no_data`` — no held-out measurements.
 #: * ``table_mismatch`` — the table names an observable or experiment the problem does not have.
 #: * ``flattening_required`` — see :func:`_unsupported_reason`.
-#: * ``non_finite`` — could not be integrated there, or the likelihood diverged. A result about
-#:   the model, not an infrastructure failure.
+#: * ``non_finite`` — could not be integrated there, or the likelihood diverged. A simulation is
+#:   retried at :data:`RETRY_SOLVER` first; a transfer multistart is not. A result about the model,
+#:   not an infrastructure failure.
 STATUS_OK = "ok"
 STATUS_NO_DATA = "no_data"
 STATUS_TABLE_MISMATCH = "table_mismatch"
@@ -79,6 +80,32 @@ STATUS_V2_REQUIRED = "v2_required"
 #: a caller reads it to refuse subtracting across kinds.
 MODE_FIXED = "fixed"
 MODE_TRANSFER = "transfer"
+
+#: The solver settings a held-out simulation is retried at where the fit's leave it non-finite: the
+#: Figure 3 audit's (gemot_iclr_2026 ``slurm/_fujita_audit.py``, ``stricter``). A state raised to
+#: an estimated non-integer power dips below 0 in a held-out pulse at the fit's atol of 1e-10 and
+#: goes NaN; the audit integrated 9 of 11 such fujita models (PEtab-MCP#323). Each score records
+#: the settings of every attempt in order as ``tolerances`` (:func:`_solver_at`).
+RETRY_SOLVER = {"atol": 1e-16, "rtol": 1e-14, "max_steps": 200_000}
+
+
+def _solver_at(pp, settings: dict | None) -> dict[str, float]:
+    """Put ``pp``'s AMICI solver at the fit's settings
+    (:func:`fitting._apply_amici_solver_defaults`), then at ``settings`` where given, and return
+    what it integrates at: ``{atol, rtol, max_steps}``, read back from the solver."""
+    from .fitting import _apply_amici_solver_defaults
+
+    _apply_amici_solver_defaults(pp)
+    solver = pp.objective.amici_solver
+    if settings is not None:
+        solver.set_absolute_tolerance(settings["atol"])
+        solver.set_relative_tolerance(settings["rtol"])
+        solver.set_max_steps(settings["max_steps"])
+    return {
+        "atol": float(solver.get_absolute_tolerance()),
+        "rtol": float(solver.get_relative_tolerance()),
+        "max_steps": int(solver.get_max_steps()),
+    }
 
 
 @dataclass(frozen=True)
@@ -357,9 +384,9 @@ def _build_target(view, reference, build_dir, model_name) -> dict[str, str]:
     return {"output_folder": str(folder), "model_name": f"{model_name}_{tag[:8]}"}
 
 
-def _solve_held_out_scalings(view, scalings, *, target) -> dict | None:
+def _solve_held_out_scalings(view, scalings, *, target, settings) -> tuple[dict | None, dict]:
     """The held-out scalings at their analytical optimum for ``view``'s model, or ``None`` when
-    the objective is not finite there.
+    the objective is not finite there; with the solver's settings (:func:`_solver_at`).
 
     pyPESTO's hierarchical importer does the work: the scalings are appended to the parameter
     table as estimated ``parameterType: scaling`` rows, everything the model already has keeps the
@@ -374,7 +401,7 @@ def _solve_held_out_scalings(view, scalings, *, target) -> dict | None:
     from petab.v2.C import PARAMETER_ID
     from pypesto.C import FVAL, INNER_PARAMETERS, PARAMETER_TYPE, InnerParameterType
 
-    from .fitting import _apply_amici_solver_defaults, pypesto_problem
+    from .fitting import pypesto_problem
     from .problem import LIN
 
     hier = copy.copy(view)
@@ -393,13 +420,13 @@ def _solve_held_out_scalings(view, scalings, *, target) -> dict | None:
     )
     hier.parameter_df = pd.concat([pdf, rows])
     pp = pypesto_problem(hier, {**target(hier), "hierarchical": True})
-    _apply_amici_solver_defaults(pp)
+    used = _solver_at(pp, settings)
     # The scalings are the only estimated rows, and they are inner: no outer coordinates.
     ret = pp.objective(np.zeros(0), sensi_orders=(0,), return_dict=True)
     if not np.isfinite(float(ret[FVAL])):
-        return None
+        return None, used
     ids = pp.objective.calculator.get_interpretable_inner_par_ids()
-    return {str(i): float(v) for i, v in zip(ids, ret[INNER_PARAMETERS])}
+    return {str(i): float(v) for i, v in zip(ids, ret[INNER_PARAMETERS])}, used
 
 
 def _with_solved_scalings(cells, solved: dict):
@@ -485,19 +512,17 @@ def score_problem(
     already has it. A v1 ``measurement_df`` (simulation condition ids) is refused
     (:data:`STATUS_V2_REQUIRED`).
 
-    Returns ``{status, nll, n, chi2, n_experiments, observables, records}`` or
-    ``{status, reason}``. ``chi2`` is the sum of squares of AMICI's weighted residual vector (via
+    The model is evaluated at the fit's solver settings and, where that is not finite, again at
+    :data:`RETRY_SOLVER`; ``tolerances`` lists the settings of each attempt in order, so the last
+    is the one an ``ok`` score was taken at.
+
+    Returns ``{status, nll, n, chi2, n_experiments, observables, records, tolerances}``,
+    ``{status, reason, tolerances}`` for :data:`STATUS_NON_FINITE`, or ``{status, reason}``.
+    ``chi2`` is the sum of squares of AMICI's weighted residual vector (via
     :meth:`engine.AmiciEngine._res_from_rdatas`), ``None`` where AMICI did not populate it.
     ``records`` holds one row per held-out measurement, built as the training ``simulations.json``
     rows are (:meth:`engine.AmiciEngine._records_from_rdatas`).
     """
-    import numpy as np
-    from pypesto.C import FVAL
-    from pypesto.C import RDATAS as PP_RDATAS
-
-    from .engine import AmiciEngine
-    from .fitting import _apply_amici_solver_defaults, pypesto_problem
-
     if (x_full is None) != (x_names is None):
         raise ValueError("score_problem: pass both x_full and x_names, or neither")
     # Arity UP FRONT: it is a pure statement about the caller's two arguments and needs no
@@ -538,19 +563,38 @@ def score_problem(
         return {"status": STATUS_FLATTENING_REQUIRED, "reason": unsupported}
     _fix_at_point(view, x_full, x_names)
 
+    tolerances = []
+    for settings in (None, RETRY_SOLVER):
+        out, used = _score_fixed_at(view, measurement_df, scalings, target, settings)
+        tolerances.append(used)
+        if out["status"] != STATUS_NON_FINITE:
+            break
+    return {**out, "tolerances": tolerances}
+
+
+def _score_fixed_at(view, measurement_df, scalings, target, settings) -> tuple[dict, dict]:
+    """One attempt of :func:`score_problem` on its fixed ``view``, the solver at ``settings``
+    (:func:`_solver_at`): the score or :data:`STATUS_NON_FINITE`, with the solver's settings."""
+    import numpy as np
+    from pypesto.C import FVAL
+    from pypesto.C import RDATAS as PP_RDATAS
+
+    from .engine import AmiciEngine
+    from .fitting import pypesto_problem
+
     solved = None
     if scalings:
         # The blots' own scale factors, solved for THIS model at THIS point, then written into the
         # table as numbers — so the joint evaluation below is the same code path as for an example
         # that has none, and `nll`/`chi2` come off that one path either way.
-        solved = _solve_held_out_scalings(view, scalings, target=target)
+        solved, used = _solve_held_out_scalings(view, scalings, target=target, settings=settings)
         if solved is None:
             return {
                 "status": STATUS_NON_FINITE,
                 "reason": "the objective is not finite on the held-out experiments while "
-                "solving the held-out scalings (the model could not be integrated "
-                "there, or its likelihood diverged)",
-            }
+                "solving the held-out scalings, at any solver setting in `tolerances` (the model "
+                "could not be integrated there, or its likelihood diverged)",
+            }, used
         view = view.replace(
             measurement_df=view.measurement_df.assign(
                 **{
@@ -563,16 +607,17 @@ def score_problem(
 
     # AFTER the scalings branch, which rewrites the measurement table this build compiles from.
     pp = pypesto_problem(view, target(view))
-    _apply_amici_solver_defaults(pp)
+    used = _solver_at(pp, settings)
     # Every parameter is fixed at the point (`_fix_at_point`): no free coordinates.
     ret = pp.objective(np.zeros(0), sensi_orders=(0,), return_dict=True)
     nll = float(ret[FVAL])
     if not np.isfinite(nll):
         return {
             "status": STATUS_NON_FINITE,
-            "reason": "the objective is not finite on the held-out experiments (the model "
-            "could not be integrated there, or its likelihood diverged)",
-        }
+            "reason": "the objective is not finite on the held-out experiments at any solver "
+            "setting in `tolerances` (the model could not be integrated there, or its "
+            "likelihood diverged)",
+        }, used
     res = AmiciEngine._res_from_rdatas(ret[PP_RDATAS])
     chi2 = float(sum(float(v) ** 2 for v in res)) if res else None
 
@@ -588,7 +633,7 @@ def score_problem(
         # The solved per-blot factors, recorded so a held-out score can be read back against the
         # scale it was computed on. Absent for a set with no curated scalings.
         out["held_out_scalings"] = solved
-    return out
+    return out, used
 
 
 def _data_shape(measurement_df) -> dict[str, Any]:
@@ -748,6 +793,7 @@ def refit_problem(
     units=None,
     reference=None,
     fit_engine=None,
+    per_start_timeout: float | None = None,
 ) -> dict[str, Any]:
     """REFIT ``problem`` on its own measurements and report the optimum — the transfer score.
 
@@ -769,10 +815,10 @@ def refit_problem(
     One implementation, both sides, on the server's own fitting path — Fides on AMICI
     sensitivities, start-0 seeded at the nominal point, whose objective is also taken as a
     candidate optimum (a start whose gradient fails at iteration 0 would otherwise lose a good
-    point). The per-start cap and the worker count are NOT arguments: both sides run on the
-    server's own budget (``PETAB_MCP_FIT_PER_START_TIMEOUT``, ``PETAB_MCP_FIT_N_WORKERS``), the same
-    one the fit that produced the candidate ran on, so neither side can be given a wider search
-    than the other by its caller. ``fit_engine`` only says where the starts run: the server's
+    point). The worker count is NOT an argument: both sides run on the server's own
+    (``PETAB_MCP_FIT_N_WORKERS``). ``per_start_timeout`` is the cap the candidate's own fits ran
+    on: its session's, which :func:`score_session` passes, else ``PETAB_MCP_FIT_PER_START_TIMEOUT``,
+    the cap every session starts with. ``fit_engine`` only says where the starts run: the server's
     :class:`~petab_mcp.dask_engine.DaskEngine`, or local processes when ``None``.
 
     ``build_dir``/``model_name`` are the caller's build target, used as is only for a unit that
@@ -780,10 +826,11 @@ def refit_problem(
     other unit is built beside it (:func:`_build_target`).
 
     Returns ``{status, mode, nll, k, n, chi2, n_experiments, observables, n_starts, n_converged,
-    fitted, records}`` (``units`` and per-unit ``fitted`` when split; ``records`` as
-    :func:`score_problem`'s, each unit's at its own optimum) or ``{status, reason}`` for
-    :data:`STATUS_NO_DATA`, :data:`STATUS_TABLE_MISMATCH`, :data:`STATUS_FLATTENING_REQUIRED` or
-    :data:`STATUS_NON_FINITE`.
+    fitted, records, tolerances}`` (``units`` and per-unit ``fitted`` and ``tolerances`` when split;
+    ``records`` as :func:`score_problem`'s, each unit's at its own optimum; ``tolerances`` as
+    :func:`_refit_one`'s) or ``{status, reason}`` for :data:`STATUS_NO_DATA`,
+    :data:`STATUS_TABLE_MISMATCH`, :data:`STATUS_FLATTENING_REQUIRED` or
+    :data:`STATUS_NON_FINITE`, the last with ``tolerances``.
     """
     import copy
 
@@ -801,19 +848,27 @@ def refit_problem(
     split = _refit_units(measurement_df, units)
     if isinstance(split, str):
         return {"status": STATUS_TABLE_MISMATCH, "reason": split}
+    from .fitting import FIT_PER_START_TIMEOUT_S
+
+    cap = FIT_PER_START_TIMEOUT_S if per_start_timeout is None else per_start_timeout
 
     if units is None:
         uview = _unit_view(view, measurement_df)
         target = _build_target(uview, reference, build_dir, model_name)
-        return _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine)
+        return _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine, cap=cap)
     per_unit: dict[str, dict[str, Any]] = {}
     records: list[dict[str, Any]] = []
     for unit, rows in split.items():
         uview = _unit_view(view, rows)
         target = _build_target(uview, reference, build_dir, model_name)
-        out = _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine)
+        out = _refit_one(uview, target=target, n_starts=n_starts, fit_engine=fit_engine, cap=cap)
         if out["status"] != STATUS_OK:
-            return {**out, "unit": unit, "mode": MODE_TRANSFER}
+            return {
+                **out,
+                "reason": f"unit `{unit}`: {out['reason']}",
+                "unit": unit,
+                "mode": MODE_TRANSFER,
+            }
         records.extend(out.pop("records"))
         per_unit[unit] = {k: v for k, v in out.items() if k not in ("status", "mode", "n_starts")}
     chi2s = [u["chi2"] for u in per_unit.values()]
@@ -870,18 +925,27 @@ def _refit_units(measurement_df, units):
     return {unit: rows for unit, rows in measurement_df.groupby(unit_of, sort=True)}
 
 
-def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> dict[str, Any]:
-    """One system's multistart refit — :func:`refit_problem` for a table that is one unit."""
+def _refit_one(
+    view, *, target: dict[str, str], n_starts: int, fit_engine, cap: float
+) -> dict[str, Any]:
+    """One system's multistart refit — :func:`refit_problem` for a table that is one unit.
+
+    The optimum is simulated again for its records, with the sensitivities the optimizer scored it
+    with (none for the start point, which is scored without): they enter the solver's error
+    control, so a simulation without them takes other steps and can fail where the optimizer's
+    succeeded. Where it is not finite it is simulated again at :data:`RETRY_SOLVER`, and only one
+    that fails there too is :data:`STATUS_NON_FINITE`, never scored on the optimizer's value alone.
+    ``tolerances`` lists the solver settings of the fit and of each simulation of the optimum."""
     import logging
 
     import numpy as np
     import pypesto.optimize
+    from amici.sim.sundials import simulation_status_to_str
     from pypesto.C import FVAL
     from pypesto.C import RDATAS as PP_RDATAS
 
     from .engine import AmiciEngine, _ensure_swig_on_path
     from .fitting import (
-        _apply_amici_solver_defaults,
         _fides_maxtime_options,
         _fit_engine,
         _fitted_values,
@@ -892,17 +956,17 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> di
     measurement_df = view.measurement_df
     _ensure_swig_on_path()
     pp = pypesto_problem(view, target)
-    _apply_amici_solver_defaults(pp)
+    tolerances = [_solver_at(pp, None)]
     x_start = np.asarray(problem_x_full_from_nominal(pp, view.parameter_df), dtype=float)
     pp.set_x_guesses(x_start[None, :])
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=logging.ERROR, options=_fides_maxtime_options()
+        verbose=logging.ERROR, options=_fides_maxtime_options(cap)
     )
     result = pypesto.optimize.minimize(
         pp,
         optimizer=optimizer,
         n_starts=int(n_starts),
-        engine=_fit_engine(int(n_starts), fit_engine),
+        engine=_fit_engine(int(n_starts), cap, fit_engine),
         progress_bar=False,
     )
 
@@ -915,18 +979,37 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> di
     best = min(finite, key=lambda r: float(r["fval"])) if finite else None
     nll = float(best["fval"]) if best is not None else math.inf
     x_best = None if best is None else np.asarray(best["x"], dtype=float)
+    orders = (0, 1)
     x_red_start = pp.get_reduced_vector(x_start)
     fval_start = float(pp.objective(x_red_start))
     if math.isfinite(fval_start) and fval_start < nll:
-        nll, x_best = fval_start, x_start
+        nll, x_best, orders = fval_start, x_start, (0,)
     if not math.isfinite(nll):
         return {
             "status": STATUS_NON_FINITE,
             "reason": "no multistart produced a finite optimum on the held-out system and the "
             "start point has none either (the model could not be integrated there, "
             "or its likelihood diverged)",
+            "tolerances": tolerances,
         }
-    ret = pp.objective(pp.get_reduced_vector(x_best), sensi_orders=(0,), return_dict=True)
+    ret = pp.objective(pp.get_reduced_vector(x_best), sensi_orders=orders, return_dict=True)
+    if not math.isfinite(float(ret[FVAL])):
+        tolerances.append(_solver_at(pp, RETRY_SOLVER))
+        ret = pp.objective(pp.get_reduced_vector(x_best), sensi_orders=orders, return_dict=True)
+    if not math.isfinite(float(ret[FVAL])):
+        failed = [
+            f"`{rd.id}` ({simulation_status_to_str(rd.status)} at t={float(rd.t_last):g})"
+            for rd in ret[PP_RDATAS]
+            if rd.status != 0
+        ]
+        where = f"fails in {', '.join(failed)}" if failed else "has no finite likelihood"
+        return {
+            "status": STATUS_NON_FINITE,
+            "reason": f"the refit's optimum (nll {nll:.6g} to the optimizer) {where} when "
+            "simulated again, at any solver setting in `tolerances`, so nothing reproduces that "
+            "score",
+            "tolerances": tolerances,
+        }
     res = AmiciEngine._res_from_rdatas(ret[PP_RDATAS])
     k = int(view.n_estimated)
     fitted = _fitted_values(
@@ -948,6 +1031,7 @@ def _refit_one(view, *, target: dict[str, str], n_starts: int, fit_engine) -> di
         "records": AmiciEngine._records_from_rdatas(
             view.replace(parameter_df=at_best), pp.objective, ret[PP_RDATAS]
         ),
+        "tolerances": tolerances,
     }
 
 
@@ -959,7 +1043,7 @@ def score_session(
     Fixed-θ: :func:`score_problem` at the parameter table's ``nominalValue``\\ s, which is where
     every fit writes its optimum back — so this scores exactly the model the caller is about to
     score on the training data. Transfer: :func:`transfer_view` then :func:`refit_problem`, with
-    the session's own default multistart when ``n_starts`` is ``None``.
+    the session's own per-start cap and its default multistart when ``n_starts`` is ``None``.
 
     Held under ``session.lock`` so the model and the table are one snapshot. The build target is
     the session's own (:meth:`session.PetabSession.module_hash`), so a held-out view that compiles
@@ -1005,6 +1089,7 @@ def _score_current(session, engine, held_out: HeldOut, n_starts: int | None) -> 
         units=held_out.units,
         reference=session.problem,
         fit_engine=engine.fit_engine,
+        per_start_timeout=session.fit_per_start_timeout,
         **build,
     )
 

@@ -1,5 +1,5 @@
-"""Residual-structure tests: the sign test, the Wald–Wolfowitz runs test, and the replicate
-lack-of-fit test.
+"""Residual-structure tests: the sign test, the Wald–Wolfowitz runs test, the replicate
+lack-of-fit test, and a per-sigma variance-heterogeneity test.
 
 These answer "do the residuals still show systematic structure?" — the half of the
 fit-adequacy question the magnitude-based scores (``reduced_chi2``, the χ² GoF p-value,
@@ -30,27 +30,27 @@ no answer leak).
   reach on a steady-state problem, where a design point IS an observable and every series has
   length 1 (see :func:`replicate_lack_of_fit`).
 
+* **Variance heterogeneity** — whether the series one estimated noise sigma covers share one
+  spread of weighted residuals (:func:`sigma_heterogeneity`), naming the series it was inflated
+  for. It feeds no gate: it ranks where to look.
+
 Everything here is pure numeric code over lists of numbers; :mod:`petab_mcp.data_access`
 feeds it the per-point residuals (and :mod:`petab_mcp.reconcile` the per-point replicate
 statistics, on the coordinate where the noise is additive) and surfaces the results through
 the ``fit`` result's ``residual_structure`` verdict (the per-observable detail behind it goes
 out through ``get_fit_diagnosis``).
 
-ALL THREE TESTS FEED THE SESSION'S PLATEAU-ADEQUACY GATE, through the one ``flagged_observables``
-list ``session.py`` reads via ``data_access.residual_flag`` — the sign/runs tests have fed it since
-PR #111 (underfits that plateau-stopped as "adequate" with a plausible sigma while flagging
-structured residuals), and the replicate test joins the same list rather than adding a gate.
-So loosening any alpha here loosens a STOP CONDITION; none of this is merely advisory. What differs
-is POWER, not consequence: at these sample sizes the sign/runs tests are weak, so a non-significant
-result there is reported as ``low_power`` rather than as a pass, while the replicate test has real
+THE FIRST THREE FEED ONE ``flagged_observables`` list, which a fit result reports and no stop
+condition reads (PEtab-MCP#247). What differs between them is POWER: at these sample sizes the
+sign/runs tests are weak, so a non-significant result there is reported as ``low_power`` rather
+than as a pass, while the replicate test has real
 power wherever design points repeat AND enough LACK-OF-FIT degrees of freedom remain after the fit
 (:func:`lof_power`: below ``REPLICATE_LOF_MIN_LOF_DF`` of them a PASS is reported ``weak``, and with
 none left — or with no replicated design points at all — the arm reports NO EVIDENCE). That df is a
 WHOLE-PROBLEM count — replicated points add across noise families while the structural parameters
 are shared — so :func:`replicate_lack_of_fit` here judges NO df at all: it tests one family's points
-and ``data_access._merge_lof_verdicts`` applies :func:`lof_power` once, to the pooled total. It is
-the FLAG that gates, on all three tests; ``weak`` and ``low_power`` are advisory qualifications of a
-non-flag, read by the prose and by no stop condition.
+and ``data_access._merge_lof_verdicts`` applies :func:`lof_power` once, to the pooled total.
+``weak`` and ``low_power`` qualify a non-flag, in the prose.
 """
 
 from __future__ import annotations
@@ -97,21 +97,29 @@ def sign_test(residuals: list[float]) -> dict[str, Any]:
 
     ``p`` is the probability, under an unbiased model (each sign equally likely), of a split at
     least as lopsided as observed. Small ``p`` ⇒ systematic bias for this observable. ``None``
-    when there are no usable (non-zero, finite) residuals.
+    when there are no usable (non-zero, finite) residuals. ``min_p`` is the smallest ``p`` ``n``
+    signs can give (all one sign), so a series with ``min_p`` above a level cannot reach it.
     """
     signs = _signs(residuals)
     n = len(signs)
     n_pos = sum(1 for s in signs if s > 0)
     n_neg = n - n_pos
     if n == 0:
-        return {"n": 0, "n_pos": 0, "n_neg": 0, "p": None, "low_power": True}
+        return {"n": 0, "n_pos": 0, "n_neg": 0, "p": None, "min_p": None, "low_power": True}
     # Exact two-sided binomial tail at p=0.5. scipy.stats.binomtest is the reference; compute it
     # directly so this module carries no scipy dependency of its own (and matches exactly at the
     # boundary, where binom_test's doubling convention differs across versions).
     k = min(n_pos, n_neg)
     tail = 2.0 * sum(math.comb(n, i) for i in range(0, k + 1)) / (2.0**n)
     p = min(1.0, tail)
-    return {"n": n, "n_pos": n_pos, "n_neg": n_neg, "p": p, "low_power": n < MIN_POWER_N}
+    return {
+        "n": n,
+        "n_pos": n_pos,
+        "n_neg": n_neg,
+        "p": p,
+        "min_p": min(1.0, 2.0 ** (1 - n)),
+        "low_power": n < MIN_POWER_N,
+    }
 
 
 def _runs_pmf(n1: int, n2: int) -> dict[int, float]:
@@ -158,7 +166,8 @@ def runs_test(residuals: list[float]) -> dict[str, Any]:
     least as extreme in either direction), and ``direction``: ``"few_runs"`` (R below expected —
     serial correlation / a systematic time trend) or ``"many_runs"`` (R above — over-alternation),
     or ``None`` when R equals expectation. ``p`` is ``None`` when either sign is absent (a runs
-    test is undefined with only one sign — that is the sign test's job).
+    test is undefined with only one sign — that is the sign test's job). ``min_p`` is the
+    smallest ``p`` this split of signs can give, at its least likely run count.
     """
     signs = _signs(residuals)
     n = len(signs)
@@ -167,15 +176,25 @@ def runs_test(residuals: list[float]) -> dict[str, Any]:
     base = {"n": n, "n_pos": n_pos, "n_neg": n_neg, "runs": _count_runs(signs)}
     if n_pos == 0 or n_neg == 0:
         # All one sign: no runs structure to test (the bias is the sign test's finding).
-        return {**base, "expected_runs": None, "p": None, "direction": None, "low_power": True}
+        return {
+            **base,
+            "expected_runs": None,
+            "p": None,
+            "min_p": None,
+            "direction": None,
+            "low_power": True,
+        }
     pmf = _runs_pmf(n_pos, n_neg)
     expected = 2.0 * n_pos * n_neg / n + 1.0
     r_obs = base["runs"]
-    p_obs = pmf.get(r_obs, 0.0)
+
     # Two-sided by the total-probability convention: sum the mass of every run count no more
     # likely than the observed one. Robust for an asymmetric discrete distribution where a
     # doubled one-sided tail can exceed 1.
-    p = min(1.0, sum(pr for pr in pmf.values() if pr <= p_obs + 1e-12))
+    def tail(mass: float) -> float:
+        return min(1.0, sum(pr for pr in pmf.values() if pr <= mass + 1e-12))
+
+    p = tail(pmf.get(r_obs, 0.0))
     direction = None
     if r_obs < expected:
         direction = "few_runs"
@@ -185,6 +204,7 @@ def runs_test(residuals: list[float]) -> dict[str, Any]:
         **base,
         "expected_runs": round(expected, 3),
         "p": p,
+        "min_p": tail(min(pmf.values())),
         "direction": direction,
         "low_power": n < MIN_POWER_N,
     }
@@ -259,8 +279,8 @@ def holm_adjusted(pvalues: list[float]) -> list[float]:
     non-decreasing along the sorted order and capped at 1. Holm rather than plain Bonferroni
     because the question is "is ANY replicated point off?" across a family of up to ~150 points,
     where Bonferroni on the minimum alone throws away the rest of the family; and rather than a
-    false-discovery rule because the consumer is a GATE — one flagged point blocks a plateau stop,
-    so the error that matters is the family-wise one.
+    false-discovery rule because one flagged point flags its observable, so the error that matters
+    is the family-wise one.
     """
     ps = [float(p) for p in pvalues]
     m = len(ps)
@@ -390,8 +410,8 @@ def replicate_lack_of_fit(
         se_i = s_g / sqrt(n_i)        z_i = (ybar_i - f_i) / se_i
 
     and ``p_i`` is the two-sided Student-t tail on ``df_g``, Holm-adjusted across the family. A
-    point whose adjusted p falls below ``alpha`` is FLAGGED: the model cannot reach that point no
-    matter how its parameters move, which is missing STRUCTURE, not noise.
+    point whose adjusted p falls below ``alpha`` is FLAGGED: the fit misses it by more than its
+    replicates allow, which no sigma absorbs.
 
     Why this arm exists and why it is scoped this way is in ``constants.REPLICATE_LOF_ALPHA``. The
     guards, each with the measured case that forces it:
@@ -527,4 +547,63 @@ def replicate_lof_unavailable(
         "max_abs_z": None,
         "min_p_holm": None,
         "points": [],
+    }
+
+
+# -- variance heterogeneity across the series one noise sigma covers ----------------------------
+
+#: Fewest finite weighted residuals a series needs to enter :func:`sigma_heterogeneity`.
+HETEROGENEITY_MIN_SERIES_N = 2
+
+
+def sigma_heterogeneity(series: dict[str, list[float]]) -> dict[str, Any] | None:
+    """Whether one noise sigma fits every series it covers: Levene's test about ZERO, i.e. a one-way
+    ANOVA of ``|r|`` across the series, ``r`` the weighted residuals.
+
+    ``series`` maps a label to one series' weighted residuals. Under a correct model with one shared
+    sigma every ``r`` has the same spread about 0 whichever series it is in; a sigma inflated to
+    absorb one badly fitted series leaves that series' ``|r|`` larger than the rest. Returns
+    ``{p, n_series, low_power, worst}``, ``worst`` every tested series as ``{series, n, rms}``
+    (``rms`` of its ``r``, against about 1 over the whole sigma at its ML value), largest first;
+    ``None`` below two series of :data:`HETEROGENEITY_MIN_SERIES_N` points. ``low_power`` when a
+    series has fewer than :data:`MIN_POWER_N` points: a 1.5-sigma miss in it is found 0.11-0.30 of
+    the time at alpha 0.05 and about half at 8, whether 2 or 6 series share the sigma.
+
+    Centred on zero, not on each series' mean: the ML sigma is the rms about the prediction, so a
+    series missed by a constant inflates it as much as one missed in shape, and only this centring
+    sees that (power 0.50 against 0.05 for the mean-centred tests, one series of six biased by 1.5
+    sigma). Not Bartlett: it reads a series its own scale and offset fit exactly as p = 0, and under
+    t3 noise it false-alarms 45% at alpha 0.05 where this test holds 4.4%. The p ranks and gates
+    nothing: bachmann's passing fit still shows p = 0.006 on pEpoR (#195).
+    """
+    import warnings
+
+    from scipy.stats import f_oneway
+
+    groups: dict[str, list[float]] = {}
+    for label, values in series.items():
+        finite = []
+        for v in values:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(f):
+                finite.append(f)
+        if len(finite) >= HETEROGENEITY_MIN_SERIES_N:
+            groups[label] = finite
+    if len(groups) < 2:
+        return None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # every |r| equal: scipy warns and returns nan
+        p = float(f_oneway(*([abs(f) for f in v] for v in groups.values())).pvalue)
+    rms = {label: math.sqrt(math.fsum(f * f for f in v) / len(v)) for label, v in groups.items()}
+    return {
+        "p": _sig3(p) if math.isfinite(p) else None,
+        "n_series": len(groups),
+        "low_power": min(map(len, groups.values())) < MIN_POWER_N,
+        "worst": [
+            {"series": label, "n": len(groups[label]), "rms": round(rms[label], 3)}
+            for label in sorted(groups, key=rms.__getitem__, reverse=True)
+        ],
     }

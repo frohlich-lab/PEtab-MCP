@@ -16,11 +16,11 @@ than being swallowed into a degraded "committed but not fitted" state.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import logging
 import math
 import os
-import statistics
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -29,13 +29,13 @@ from petab.v2.C import (
     ESTIMATE,
     EXPERIMENT_ID,
     LOWER_BOUND,
-    NOISE_DISTRIBUTION,
     NOISE_PARAMETERS,
     NOMINAL_VALUE,
-    NORMAL,
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
+    TIME,
+    TIME_PREEQUILIBRATION,
     UPPER_BOUND,
 )
 
@@ -43,21 +43,26 @@ from . import criteria
 from . import literals as _literals
 from . import reconcile as _reconcile
 from .constants import (
+    AT_BEST_NLL_TOL,
     NOISE_SIGMA_MIN_POINTS,
-    NEW_BEST_MIN_DELTA_SCORE,
     NOISE_SIGMA_COLLAPSE_FRACTION,
+    NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
+    OVERFIT_GOF_PVALUE,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
-from .errors import ModelBuildBusyError, ModelUpdateError, PetabMcpError, disk_full_error
+from .errors import ModelUpdateError, PetabMcpError, ValidationError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
+from .progress_signals import signal
 from .problem import (
+    LIN,
     LOG,
     LOG10,
     PARAMETER_SCALE,
     V1_PREEQUILIBRATION_CONDITION_ID,
     V1_SIMULATION_CONDITION_ID,
+    observable_transformation,
     scale,
     split_overrides,
     unscale,
@@ -93,9 +98,10 @@ def _env_int(name: str, default: int) -> int:
     return val if val >= 1 else default
 
 
-# Per-start wall-clock cap for a single Fides optimization start (seconds; env
-# PETAB_MCP_FIT_PER_START_TIMEOUT, default 180). Fides defaults MAXTIME to inf, so one stiff start
-# can run unbounded and out-idle the MCP transport, which a client then mistakes for a hang.
+# Default per-start wall-clock cap for a single Fides optimization start (seconds; env
+# PETAB_MCP_FIT_PER_START_TIMEOUT, default 180): every session's own cap,
+# `PetabSession.fit_per_start_timeout`, starts here. Fides defaults MAXTIME to inf, so one stiff
+# start can run unbounded and out-idle the MCP transport, which a client then mistakes for a hang.
 # Bounding each start makes a full multistart fit's worst-case duration finite and predictable, so
 # a client can size its read timeout and stall watchdog to it; one that exports its own values onto
 # this server's environment has both sides use the SAME cap + worker count. Kept generous — Fides
@@ -129,8 +135,9 @@ FIT_N_WORKERS = _env_int("PETAB_MCP_FIT_N_WORKERS", _default_fit_workers())
 
 # Expected seconds of starts one dask task runs back to back (env PETAB_MCP_FIT_TASK_SECONDS,
 # default 270 = 4.5 min): long against a task's scheduling cost, short enough that concurrent fits
-# still take turns every few minutes. A start is expected to take the previous fit's median, or the
-# per-start cap FIT_PER_START_TIMEOUT_S without one (see _starts_per_task).
+# still take turns every few minutes. A start is expected to take the previous fit's 90th
+# percentile, or the session's per-start cap without one; a pool with idle workers gets shorter
+# tasks (see _starts_per_task).
 FIT_TASK_SECONDS = _env_float("PETAB_MCP_FIT_TASK_SECONDS", 270.0)
 
 # A fixed number of starts per dask task (env PETAB_MCP_FIT_STARTS_PER_TASK); takes precedence over
@@ -156,6 +163,16 @@ FIT_AMICI_ATOL = _env_float("PETAB_MCP_FIT_AMICI_ATOL", 1e-10)
 FIT_AMICI_RTOL = _env_float("PETAB_MCP_FIT_AMICI_RTOL", None)
 FIT_AMICI_RTOL_STEADY_STATE = _env_float("PETAB_MCP_FIT_AMICI_RTOL_STEADY_STATE", None)
 FIT_AMICI_ATOL_STEADY_STATE = _env_float("PETAB_MCP_FIT_AMICI_ATOL_STEADY_STATE", None)
+
+# Threads one objective evaluation simulates its experiments on, at most one per experiment (env
+# PETAB_MCP_FIT_AMICI_N_THREADS, default 1). Every running start uses this many, so they multiply:
+# keep PETAB_MCP_FIT_N_WORKERS x threads within the server's cores. On a fit pool keep jobqueue's
+# `cores` equal to `processes` (one dask thread, so one batch, per worker) and book `job-cpu` =
+# processes x threads; lowering `processes` alone gives each worker cores / processes dask threads,
+# each running a batch on this many threads. Neither worker count is derived from it. A problem with
+# one experiment gains nothing; one with many experiments and fewer starts than cores finishes each
+# start sooner.
+FIT_AMICI_N_THREADS = _env_int("PETAB_MCP_FIT_AMICI_N_THREADS", 1)
 
 
 def _apply_amici_solver_defaults(problem) -> None:
@@ -211,28 +228,43 @@ WARM_START_FRACTION = 0.5
 WARM_START_JITTER = 0.05
 
 
-def _fides_maxtime_options() -> dict[str, Any]:
-    """``{fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}`` when this ``fides`` exposes ``MAXTIME``,
+def _fides_maxtime_options(per_start_timeout: float) -> dict[str, Any]:
+    """``{fides.Options.MAXTIME: per_start_timeout}`` when this ``fides`` exposes ``MAXTIME``,
     else ``{}`` (older/absent fides just runs uncapped)."""
     try:
         import fides
 
-        return {fides.Options.MAXTIME: FIT_PER_START_TIMEOUT_S}
+        return {fides.Options.MAXTIME: per_start_timeout}
     except Exception:  # noqa: BLE001 - no fides / no MAXTIME on this version: run uncapped
         return {}
 
 
-def _starts_per_task(n_starts: int, previous: dict[str, Any] | None) -> int:
-    """How many starts one dask task runs, from 1 to ``n_starts``: ``FIT_STARTS_PER_TASK`` when set,
-    else as many as fill ``FIT_TASK_SECONDS`` at the median start time of ``previous``, the
-    session's last fit (``session.optimization``), or at ``FIT_PER_START_TIMEOUT_S`` without one."""
-    times = [s["time"] for s in (previous or {}).get("starts") or [] if s.get("time")]
-    expected = statistics.median(times) if times else FIT_PER_START_TIMEOUT_S
-    return max(1, int(min(n_starts, FIT_STARTS_PER_TASK or FIT_TASK_SECONDS // expected)))
+def _starts_per_task(
+    n_starts: int, previous: dict[str, Any] | None, per_start_timeout: float, shared
+) -> int:
+    """How many starts one dask task of ``shared`` runs, from 1 to ``n_starts``:
+    ``FIT_STARTS_PER_TASK`` when set. Else as many as fill ``FIT_TASK_SECONDS`` at the 90th
+    percentile start time of ``previous``, the session's last fit (``session.optimization``), or at
+    ``per_start_timeout`` without one, but at most ``ceil(n_starts / free)`` with ``free`` idle
+    workers on the pool (:meth:`~petab_mcp.dask_engine.DaskEngine.free_workers`).
+
+    Few long tasks keep the shared scheduler's state changes few on a busy pool (#189's Check 10).
+    On an idle one they ran a fit's starts one after another on a few workers: a 75-start fujita fit
+    packed 43 to a task took 2,638 s on a mostly idle pool of 384 workers, against 128-197 s on one
+    node (#253). A task runs as long as all its starts together, so the 90th percentile, not the
+    median, sizes it."""
+    if FIT_STARTS_PER_TASK:
+        return max(1, min(n_starts, FIT_STARTS_PER_TASK))
+    times = sorted(s["time"] for s in (previous or {}).get("starts") or [] if s.get("time"))
+    expected = times[math.ceil(0.9 * len(times)) - 1] if times else per_start_timeout
+    free = shared.free_workers()
+    spread = math.ceil(n_starts / free) if free else n_starts
+    return max(1, int(min(n_starts, spread, FIT_TASK_SECONDS // expected)))
 
 
 def _fit_engine(
     n_starts: int,
+    per_start_timeout: float,
     shared=None,
     previous: dict[str, Any] | None = None,
     rerun: frozenset[str] = frozenset(),
@@ -241,16 +273,17 @@ def _fit_engine(
     :class:`~petab_mcp.dask_engine.DaskEngine`, when it has one, batched by :func:`_starts_per_task`;
     otherwise up to ``FIT_N_WORKERS`` local worker processes (never more than there are starts), or
     ``None`` (pyPESTO's sequential ``SingleCoreEngine``) for a single effective worker. Both pools
-    stop a start past its cap, rerunning the starts in ``rerun`` once, and end a fit whose starts
-    stop finishing (:mod:`petab_mcp.multistart`)."""
+    stop a start past ``per_start_timeout``, rerunning the starts in ``rerun`` once, and end a fit
+    whose starts stop finishing (:mod:`petab_mcp.multistart`)."""
     if shared is not None:
-        return shared.batched(_starts_per_task(n_starts, previous), FIT_PER_START_TIMEOUT_S, rerun)
+        k = _starts_per_task(n_starts, previous, per_start_timeout, shared)
+        return shared.batched(k, per_start_timeout, rerun)
     workers = max(1, min(FIT_N_WORKERS, int(n_starts)))
     if workers < 2:
         return None
     from .multistart import ProcessEngine
 
-    return ProcessEngine(workers, FIT_PER_START_TIMEOUT_S, rerun)
+    return ProcessEngine(workers, per_start_timeout, rerun)
 
 
 def _fmt(x: Any) -> str:
@@ -312,11 +345,16 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
     edit that produced it, a held-out view was not. Passes ``hierarchical`` and the output target
     through ``importer_kwargs``.
 
+    Its objective simulates on :data:`FIT_AMICI_N_THREADS` threads. AMICI's PEtab simulator holds
+    the count and pickles with it, so a start on a worker process or a pool runs as many.
+
     The one place a module is compiled — ``create_problem`` builds into a target folder that is not
-    there yet — so it runs under :func:`engine.build_lock`.
+    there yet — so it runs under :func:`engine.build_lock`, in the change's ``compiling`` phase.
     """
     import pypesto.petab
     from petab import v2
+
+    from .multistart import compiling
 
     pdf = problem.parameter_df
     scales = pdf[PARAMETER_SCALE]
@@ -334,8 +372,8 @@ def pypesto_problem(problem, importer_kwargs: dict[str, Any], *, validate: bool 
     importer = pypesto.petab.PetabImporter(
         petab_problem, validate_petab=validate, parameter_scales=dict(scales), **importer_kwargs
     )
-    with build_lock(importer_kwargs["output_folder"], importer_kwargs["model_name"]):
-        return importer.create_problem()
+    with compiling(), build_lock(importer_kwargs["output_folder"], importer_kwargs["model_name"]):
+        return importer.create_problem(n_threads=FIT_AMICI_N_THREADS)
 
 
 def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_problem=None):
@@ -343,15 +381,16 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
 
     Returns ``(pypesto_problem, inner)`` where ``inner`` maps each inner parameter id to its
     pyPESTO type (see :func:`reconcile.classify_inner_parameters`), or ``(None, {})`` when the
-    problem has no cleanly-separable inner parameters, has an observable whose noise is not normal,
-    or pyPESTO rejects the hierarchical setup.
+    problem has none (no cleanly-separable inner parameter, or an observable whose noise is not
+    normal) or pyPESTO rejects the hierarchical setup.
 
     The whole win is optimization efficiency/robustness: the inner parameters (noise sigmas,
     observable-scaling factors) are solved analytically per objective evaluation instead of by
-    the outer multistart, shrinking the outer search (e.g. 13 estimated params → 5 outer). It
-    does NOT change what the parameters converge to — a sigma's analytic optimum is
-    the same RMS the joint optimizer finds — so the fit's nllh/identity is unchanged. pyPESTO
-    solves inner parameters in linear space whatever their ``parameterScale``.
+    the outer multistart, shrinking the outer search (e.g. 13 estimated params → 5 outer). A
+    scaling or offset is clipped to its table bounds, as the joint fit would hold it. A sigma is
+    not: ``correct_parameter_df_bounds`` solves it on [0, inf), so it lands on the RMS of its
+    residuals wherever the table bounds it, and ``operations`` refuses a bound edit on one.
+    pyPESTO solves inner parameters in linear space whatever their ``parameterScale``.
 
     Tagging is applied to a COPY of the parameter table handed to pyPESTO; the session's own
     table is left untouched (the agent keeps seeing ordinary parameters, ``n_estimated``/``k``
@@ -364,13 +403,6 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
     base = petab_problem if petab_problem is not None else session.problem
     inner = _reconcile.classify_inner_parameters(session.problem)
     if not inner:
-        return None, {}
-    # pyPESTO refuses a non-normal noise distribution only on an observable that HAS inner
-    # parameters, and scores every other observable as normal on the linear scale whatever its
-    # distribution (`calculate_quantitative_result`): a log-normal observable beside an
-    # inner-solved sigma comes out with a wrong likelihood, silently (5.8 nll on a two-observable
-    # toy). Such a problem is fitted jointly.
-    if (session.problem.observable_df[NOISE_DISTRIBUTION] != NORMAL).any():
         return None, {}
     try:
         from pypesto.hierarchical.petab import correct_parameter_df_bounds
@@ -388,9 +420,6 @@ def _build_hierarchical_problem(session, importer_kwargs: dict[str, Any], petab_
             pypesto_problem(view, {**importer_kwargs, "hierarchical": True}, validate=False),
             inner,
         )
-    except ModelBuildBusyError:
-        # Not a hierarchical failure: falling back would fit jointly once the other build lands.
-        raise
     except Exception:  # noqa: BLE001 - hierarchical is best-effort; fall back to a joint fit
         session.logger.warning(
             "hierarchical optimization setup failed (%s inner params: %s); "
@@ -639,13 +668,7 @@ def amici_facing_problem(session):
     cached = getattr(session, "_amici_problem_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1], True
-    from amici.importers.petab import flatten_timepoint_specific_output_overrides
-
-    flat_petab = copy.deepcopy(session.problem.to_petab())
-    flatten_timepoint_specific_output_overrides(flat_petab)
-    flat = session.problem.replace(
-        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
-    )
+    flat = _flattened(session.problem)
     session._amici_problem_cache = (key, flat)
     session.logger.info(
         "flattening timepoint-specific output overrides for the AMICI build only "
@@ -654,6 +677,73 @@ def amici_facing_problem(session):
         len(flat.observable_df),
     )
     return flat, True
+
+
+def _flattened(problem):
+    """``problem`` with AMICI's flattening applied to a deep copy of its tables — the one
+    flatten :func:`amici_facing_problem` builds from and :func:`check_flattenable` tries."""
+    from amici.importers.petab import flatten_timepoint_specific_output_overrides
+
+    flat_petab = copy.deepcopy(problem.to_petab())
+    flatten_timepoint_specific_output_overrides(flat_petab)
+    return problem.replace(
+        observable_df=flat_petab.observable_df, measurement_df=flat_petab.measurement_df
+    )
+
+
+def check_flattenable(problem) -> None:
+    """Raise :class:`ValidationError` if ``problem`` needs flattening and AMICI cannot flatten it.
+
+    The flattened observable ids are ``<observableId>__<overrides>``, built by petab's
+    ``get_observable_replacement_id``, which only replaces ``;`` and ``.`` — so an override like
+    ``-1`` or ``1e-3`` yields an id PEtab rejects. Those ids depend only on the observable and
+    measurement tables, which no edit can change, so the failure is decided at load: a problem
+    that passes here cannot fail it at compile time, and one that fails would otherwise fail
+    EVERY fit, labelled as an ill-posed model the agent would keep rewriting.
+
+    The verdict is the real flatten (:func:`_flattened`), never a re-derivation of the ids, so it
+    cannot drift from what gets compiled. Only naming the offending ids is best-effort.
+    """
+    if not needs_flattening(problem):
+        return
+    try:
+        _flattened(problem)
+    except Exception as exc:
+        culprits = _invalid_flattened_ids(problem)
+        named = (
+            "; ".join(
+                f"observable {old!r} with override {new.removeprefix(old + '__')!r} "
+                f"would become {new!r}"
+                for new, old in culprits
+            )
+            if culprits
+            else f"{type(exc).__name__}: {exc}"
+        )
+        raise ValidationError(
+            "this problem cannot be fit: its measurement table varies observable/noise "
+            "parameter overrides within one (observable, experiment) pair, so AMICI must give "
+            "each override its own copy of the observable, and the ids those copies get are not "
+            f"valid PEtab ids ({named}). The observable and measurement tables are fixed, so no "
+            "model change can fix this. Fix the problem files: use named parameters instead of "
+            "numeric literals in those overrides (e.g. a fixed parameter `sign_neg` with "
+            "nominal value -1 in place of -1), or remove the overrides that differ within one "
+            "(observable, experiment) pair.",
+            issues=[f"invalid flattened observable id {new!r}" for new, _ in culprits],
+        ) from exc
+
+
+def _invalid_flattened_ids(problem) -> list[tuple[str, str]]:
+    """``(flattened id, original id)`` for every flattened id PEtab would reject — AMICI's own
+    mapping, which is private, so ``[]`` when it is unavailable or itself fails."""
+    from petab.v1.lint import is_valid_identifier
+
+    try:
+        from amici.importers.petab._petab_importer import _get_flattened_id_mappings
+
+        mappings = _get_flattened_id_mappings(problem.to_petab())
+    except Exception:
+        return []
+    return [(new, old) for new, old in mappings.items() if not is_valid_identifier(new)]
 
 
 def estimation_problem(session, engine, *, solve_inner: bool = True):
@@ -716,8 +806,7 @@ def estimation_problem(session, engine, *, solve_inner: bool = True):
     # After the branch, so the hierarchical and joint objectives are integrated identically.
     _apply_amici_solver_defaults(problem)
     if first_build:
-        session.compile_seconds += time.perf_counter() - t0
-        session.n_compiles += 1
+        session.add_timing(compile_seconds=time.perf_counter() - t0, n_compiles=1)
         engine._pypesto_hashes.add(h)
 
     engine._estimation_problem_cache = (key, problem, inner)
@@ -909,6 +998,22 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
             continue  # a malformed/short vector is one unusable start, not a broken fit
         out.append(point)
     return out
+
+
+def renamed_optimization(optimization, renamed) -> dict[str, Any] | None:
+    """``optimization`` (``session.optimization``) with each id a ``rename`` carried
+    (:func:`model_edits.carried_renames` of ``renamed``) under its new name, so the warm starts
+    hold it at its fitted coordinates, as the reconcile gave it the old id's row. A merge renames
+    nothing here: the target keeps its own coordinate. ``optimization`` itself when nothing
+    moves."""
+    from .model_edits import carried_renames
+
+    names = (optimization or {}).get("x_names")
+    moves = carried_renames(names, renamed)[0] if names and renamed else {}
+    if not moves:
+        return optimization
+    new_of = {old: new for new, old in moves.items()}
+    return {**optimization, "x_names": [new_of.get(str(n), n) for n in names]}
 
 
 def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
@@ -1158,12 +1263,13 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # parameter there are no candidates, so a non-finite objective at the nominal point means
     # exactly what it used to: the warm half would be spent jittering around a region that just
     # failed, where the fresh sample is the only way in.
-    _has_new = bool(set(problem.x_names) - set((session.optimization or {}).get("x_names") or []))
+    # A `rename` in this call carries each previous coordinate to its new id, as the reconcile
+    # carried its row: the renamed parameter is the previous fit's, not a new one.
+    previous = renamed_optimization(session.optimization, session.renamed)
+    _has_new = bool(set(problem.x_names) - set((previous or {}).get("x_names") or []))
     guesses = (
-        warm_start_guesses(
-            problem, session.problem.parameter_df, n_starts, optimization=session.optimization
-        )
-        if (objective_before is not None or (_has_new and session.optimization))
+        warm_start_guesses(problem, session.problem.parameter_df, n_starts, optimization=previous)
+        if (objective_before is not None or (_has_new and previous))
         else np.zeros((0, len(problem.x_names)))
     )
     problem.x_guesses_full = guesses
@@ -1173,27 +1279,29 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # there instead.
     pp_engine = _fit_engine(
         n_starts,
+        session.fit_per_start_timeout,
         engine.fit_engine,
         session.optimization,
-        parent_starts(problem, guesses, session.optimization),
+        parent_starts(problem, guesses, previous),
     )
     workers = getattr(pp_engine, "n_procs", 1) or 1
     if engine.fit_engine is not None:
         workers = f"dask({pp_engine.starts_per_task} starts per task)"
     log.info(
-        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%s n_free=%d "
-        "sbml=%s objective_before=%s",
+        "fit: start optimizer=fides n_starts=%d warm_starts=%d workers=%s amici_threads=%d "
+        "n_free=%d sbml=%s objective_before=%s",
         n_starts,
         len(guesses),
         workers,
+        FIT_AMICI_N_THREADS,
         n_free,
         session.sbml_hash(),
         _fmt(objective_before),
     )
     # Fides: a Newton trust-region optimizer that exploits AMICI's sensitivities; more
     # robust than the default L-BFGS-B on stiff ODE likelihoods. MAXTIME caps each start's
-    # wall time (FIT_PER_START_TIMEOUT_S) so a stiff start can't run unbounded and hang the
-    # transport; Fides returns that start's best-so-far when the cap is hit.
+    # wall time (the session's fit_per_start_timeout) so a stiff start can't run unbounded and
+    # hang the transport; Fides returns that start's best-so-far when the cap is hit.
     #
     # WARNING, not INFO. At INFO fides emits one line PER ITERATION PER START: a single
     # session wrote a 1.85 GB server.log, and ten concurrent sessions put ~18 GB on a SHARED
@@ -1223,7 +1331,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # line, n_starts times per fit. `get_fitting_log` is likewise unaffected: it reads the
     # in-memory HistoryOptions(trace_record=True) trace, not this stream.
     optimizer = pypesto.optimize.FidesOptimizer(
-        verbose=logging.ERROR, options=_fides_maxtime_options()
+        verbose=logging.ERROR, options=_fides_maxtime_options(session.fit_per_start_timeout)
     )
     # Record the per-iteration optimization history in memory (no trace files) so the
     # traces can be exposed as SQL tables. Older pyPESTO without HistoryOptions just runs
@@ -1243,8 +1351,10 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             progress_bar=False,
             **minimize_kwargs,
         )
-        # The starts the engine stopped past their cap and scored as failed (multistart).
+        # The starts the engine stopped past their cap and scored as failed, and the seconds they
+        # waited with none running (multistart).
         killed = getattr(pp_engine, "killed", [])
+        queued = getattr(pp_engine, "queue_seconds", 0.0)
     except Exception as exc:  # noqa: BLE001 - retry sequentially before giving up
         # A parallel multistart can construct its engine fine yet still fail at runtime
         # (pickling/spawn issues, a worker dying). That is a parallel-only failure — the same fit
@@ -1269,12 +1379,11 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             progress_bar=False,
             **minimize_kwargs,
         )
-        killed = []
+        killed, queued = [], 0.0
     duration = time.perf_counter() - t0
     # The multistart optimization is the recurring "fit" cost (a fit-cache hit returns above
-    # without reaching here, so it correctly adds nothing). Under `session.lock`.
-    session.fit_seconds += duration
-    session.n_fits += 1
+    # without reaching here, so it correctly adds nothing).
+    session.add_timing(fit_seconds=duration, queue_seconds=queued, n_fits=1)
 
     # pyPESTO's own multistart report -> pypesto.log (its native logging is otherwise
     # sparse for a successful minimize; warnings/errors it emits are captured there too).
@@ -1307,6 +1416,31 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         # `A/(A + B)` with both starting at 0, measured at t=0). The plain objective drops such a
         # point and stays finite; the hierarchical one, which solves the noise from every residual,
         # is non-finite at every start. Named, with the readout.
+        #
+        # Before that, what AMICI's own check for values that are not finite caught at the nominal
+        # point: a rule or rate that is not a number stops the simulation, and every point after it.
+        # Where the objective is finite there, its gradient may not be (see _non_finite_gradient).
+        if objective_before is None:
+            from pypesto.C import RDATAS
+
+            x = problem_x_from_nominal(problem, session.problem.parameter_df)
+            rdatas = problem.objective(x, sensi_orders=(0,), return_dict=True)[RDATAS]
+            if caught := _non_finite(session, rdatas):
+                raise ModelUpdateError(
+                    "the fit produced NO usable optimum: every multistart failed, because "
+                    f"{caught}, which stops the simulation. Write it so it is a number there."
+                )
+        if sources := _sources_breaking_totals(session.problem):
+            raise ModelUpdateError(
+                "the fit produced NO usable optimum: every multistart failed, because "
+                + _no_steady_state(sources)
+            )
+        if objective_before is not None and (where := _non_finite_gradient(session, problem)):
+            raise ModelUpdateError(
+                "the fit produced NO usable optimum: every multistart failed, though the "
+                "objective is finite at the nominal values: its gradient is not, and every start "
+                f"stops on its first gradient. {where}"
+            )
         undefined = _undefined_points(session, before.get("simulations") or [])
         if undefined:
             raise ModelUpdateError(
@@ -1316,20 +1450,18 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
                 "every species in a ratio starts at 0) or a log of 0. "
                 "Define each readout so it holds at every measured time, t=0 included."
             )
+        if low := _log_readouts_not_positive(session, before.get("simulations") or []):
+            raise ModelUpdateError(
+                "the fit produced NO usable optimum: every multistart failed, and at the nominal "
+                f"values readouts with log noise are 0 or below where measured: {low}"
+            )
+        where = (
+            "The objective is finite at the nominal values, but no start ended on a finite one"
+            if objective_before is not None
+            else "The objective was non-finite at EVERY start"
+        )
         raise ModelUpdateError(
-            "the fit produced NO usable optimum: every multistart failed, so the best result "
-            "carries no parameter vector. The objective was non-finite at EVERY start — a "
-            "property of the problem, not the optimizer. There are two causes and they need "
-            "OPPOSITE fixes, so check which one this is BEFORE editing — the fitting log tells "
-            "them apart (have it read if you cannot read it yourself): (a) the SIMULATION "
-            "fails — 'FORWARD_FAILURE' / 'AMICI simulation failed' appears in the log; the ODE "
-            "is non-integrable or extremely stiff, usually from the last structural change (a "
-            "new pool with no sink, a rate at an extreme default, or writing into a symbol the "
-            "observables use as a normalisation constant), and re-initialising species will NOT "
-            "help. (b) the simulation succeeds but the OBSERVABLE is undefined — a "
-            "log-transformed observable reaching 0 or negative at a measured time (a species "
-            "started at exactly 0 and measured at t=0 gives log10(0) = -inf); there, fixing the "
-            "initial value or the bound that admits it IS the fix."
+            _every_start_failed(session, where, *_failed_starts(session, engine, problem, result))
         )
     df = session.problem.parameter_df
     nllh = float(best["fval"])
@@ -1356,7 +1488,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
         for s in result.optimize_result.list
         if s.get("fval") is not None and math.isfinite(float(s["fval"]))
     ]
-    n_converged = sum(1 for v in fvals if v <= nllh + 1e-3)
+    n_converged = sum(1 for v in fvals if v <= nllh + AT_BEST_NLL_TOL)
     log.info(
         "fit: done best_nllh=%s self_improvement=%s time=%.2fs starts=%d converged~%d "
         "fval[min/max]=%s/%s",
@@ -1375,6 +1507,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # re-enter them as warm starts. See `previous_optima`.
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["n_starts_killed"] = len(killed)
+    optimization.update(_starts_at_best(result, nllh, len(guesses)))
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     return {
         "fitted": fitted,
@@ -1389,18 +1522,85 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     }
 
 
+#: The counts :func:`_starts_at_best` puts on a fit's optimization record and its payload.
+_STARTS_AT_BEST_KEYS = (
+    "n_starts_at_best",
+    "n_warm_starts",
+    "n_warm_starts_at_best",
+    "n_starts_at_best_maxtime",
+)
+
+
+def _starts_at_best(result, nllh: float, n_warm: int) -> dict[str, int]:
+    """How many starts ended within :data:`AT_BEST_NLL_TOL` of ``nllh``, how many of those were
+    warm (pyPESTO numbers the ``n_warm`` seeded starts first, :func:`warm_start_guesses`), and how
+    many of those stopped at Fides' MAXTIME."""
+    at_best = [
+        s
+        for s in result.optimize_result.list
+        if (fval := _flt(s.get("fval"))) is not None and fval <= nllh + AT_BEST_NLL_TOL
+    ]
+    return dict(
+        zip(
+            _STARTS_AT_BEST_KEYS,
+            (
+                len(at_best),
+                n_warm,
+                sum(1 for s in at_best if str(s.get("id")).isdigit() and int(s["id"]) < n_warm),
+                sum(1 for s in at_best if str(s.get("exitflag")) == "ExitFlag.MAXTIME"),
+            ),
+        )
+    )
+
+
 #: Relative gap between the optimizer's objective and the re-simulated one above which the
-#: two are reported as disagreeing. Both evaluate the same likelihood at the same parameters,
-#: so anything past a loose numerical tolerance means the two evaluations differ in substance
-#: (solver settings, or a parameter that did not round-trip), not in rounding.
+#: two disagree and the fit is not scored (see :func:`_reconcile_objective`). Both evaluate the
+#: same likelihood at the same parameters the same way, so anything past a loose numerical
+#: tolerance means the two evaluations differ in substance, not in rounding.
 OBJECTIVE_AGREEMENT_RTOL = 1e-3
+
+#: The factor on each of the fit's AMICI tolerances at which a fit's optimum is re-simulated once
+#: more when the first re-simulation does not reproduce the optimizer's value (:func:`_tightened`).
+RESIMULATION_TIGHTENING = 1e-3
+
+#: The solver tolerances :func:`_tightened` tightens, by their AMICI getter/setter stem.
+_TOLERANCES = (
+    "absolute_tolerance",
+    "relative_tolerance",
+    "absolute_tolerance_steady_state",
+    "relative_tolerance_steady_state",
+)
+
+
+@contextlib.contextmanager
+def _tightened(problem):
+    """``problem``'s AMICI solver with each of :data:`_TOLERANCES` at
+    :data:`RESIMULATION_TIGHTENING` times its value, restored on exit."""
+    solver = problem.objective.amici_solver
+    held = {name: getattr(solver, f"get_{name}")() for name in _TOLERANCES}
+    try:
+        for name, value in held.items():
+            getattr(solver, f"set_{name}")(value * RESIMULATION_TIGHTENING)
+        yield
+    finally:
+        for name, value in held.items():
+            getattr(solver, f"set_{name}")(value)
+
+
+def _unreproduced(fit: dict[str, Any], sim: dict[str, Any]) -> bool:
+    """Whether re-simulating ``fit``'s optimum (``sim``) leaves the optimizer's finite value
+    unreproduced: no value, or one :func:`_disagree` with it."""
+    nll_opt, nll_sim = _flt(fit.get("neg_log_likelihood")), _flt(sim.get("neg_log_likelihood"))
+    return nll_opt is not None and (nll_sim is None or _disagree(nll_opt, nll_sim))
 
 
 def _undefined_points(session, records: list[dict[str, Any]]) -> str:
     """The measured points a simulation that otherwise ran leaves without a value, by observable,
     with the readout each reads; ``""`` when there are none, or when nothing simulated at all (an
     integration failure, a different cause)."""
-    missing = [r for r in records if r.get("measurement") is not None and r.get("simulation") is None]
+    missing = [
+        r for r in records if r.get("measurement") is not None and r.get("simulation") is None
+    ]
     if not missing or len(missing) == len(records):
         return ""
     import libsbml
@@ -1428,58 +1628,474 @@ def _undefined_points(session, records: list[dict[str, Any]]) -> str:
     return "; ".join(parts)
 
 
+def _every_start_failed(session, where: str, starts: str, shown: str | None) -> str:
+    """The refusal of a fit every start of which failed, for none of the named causes: ``where``
+    the objective was not finite, what the ``starts`` report, and the cause they show (``shown``,
+    see :func:`_failed_starts`). It names that cause, else both, whose fixes are opposite, and the
+    powers of states (:func:`state_powers`). The example of a species at 0 measured at t=0 is given
+    only where a log-noise observable is measured at t=0: elsewhere it sent blasi 63612603_5 to
+    re-initialise species (PEtab-MCP#327)."""
+    mdf, odf = session.problem.measurement_df, session.problem.observable_df
+    at_zero = any(
+        observable_transformation(odf, o) == LOG for o in mdf.loc[mdf[TIME] == 0, OBSERVABLE_ID]
+    )
+    simulation = (
+        "the SIMULATION fails: the ODE is non-integrable or extremely stiff, usually from the last "
+        "structural change (a new pool with no sink, a rate at an extreme default, or writing into "
+        "a symbol the observables use as a normalisation constant), and re-initialising species "
+        "will NOT help"
+    )
+    readout = (
+        "the simulation succeeds but a READOUT is undefined at a measured time: one with log noise "
+        "at 0 or below"
+        + (
+            " (a species started at exactly 0 and measured at t=0 gives log(0) = -inf)"
+            if at_zero
+            else ""
+        )
+        + ", or a 0/0; there, fixing the initial value, rate law or bound that admits it IS the fix"
+    )
+    if shown == "simulation":
+        which = f"That is the first of two causes: {simulation}."
+    elif shown == "readout":
+        which = f"That is the second of two causes: {readout}."
+    else:
+        which = (
+            f"There are two causes and they need OPPOSITE fixes: (a) {simulation}. (b) {readout}."
+        )
+    powers = state_powers(session)
+    return (
+        "the fit produced NO usable optimum: every multistart failed, so the best result carries "
+        f"no parameter vector. {where} — a property of the problem, not the optimizer. {starts} "
+        + which
+        + (f" {powers}" if powers else "")
+    )
+
+
+#: How many failed starts an all-failed fit's refusal re-simulates at their start points.
+FAILED_STARTS_RESIMULATED = 3
+
+
+def _failed_starts(session, engine, problem, result) -> tuple[str, str | None]:
+    """What the starts of an all-failed ``result`` report, and the cause that shows: ``(text,
+    cause)``, the cause ``"simulation"`` where AMICI failed at a start point, ``"readout"`` where
+    every experiment simulated there but a readout is not a number, else ``None``.
+
+    The text counts the starts by exit flag, with the first message of each, and re-simulates up to
+    :data:`FAILED_STARTS_RESIMULATED` distinct start points with the gradient, as Fides first
+    evaluated them: a start that ended with no value failed there. It names each experiment AMICI
+    failed in, with its status (:func:`amici_failures`), else the readouts that are not a number.
+    The fitting log holds none of this: AMICI writes to stderr, and on a fit pool the log held
+    nothing of the failed starts (blasi 63612603_5, PEtab-MCP#327)."""
+    import numpy as np
+    from pypesto.C import RDATAS
+
+    flags: dict[str, list] = {}
+    for start in result.optimize_result.list:
+        flag = start.get("exitflag")
+        key = "raised" if flag == -1 else str(flag).removeprefix("ExitFlag.")
+        flags.setdefault(key, [0, start.get("message")])[0] += 1
+    text = "Its starts: " + "; ".join(
+        f"{n} ended {key}" + (f" ({str(message)[:120]})" if message else "")
+        for key, (n, message) in flags.items()
+    )
+    free = getattr(problem, "x_free_indices", None)
+    seen: set[tuple] = set()
+    failed: list[str] = []
+    readouts: list[str] = []
+    for start in result.optimize_result.list:
+        if len(seen) == FAILED_STARTS_RESIMULATED:
+            break
+        x = start.get("x0")
+        if x is None:
+            continue
+        x = np.asarray(x, dtype=float)
+        if free is not None and len(x) == problem.dim_full:
+            x = x[list(free)]
+        if (key := tuple(np.round(x, 10))) in seen:
+            continue
+        seen.add(key)
+        try:
+            rdatas = problem.objective(x, sensi_orders=(0, 1), return_dict=True)[RDATAS]
+        except Exception:  # noqa: BLE001 - the refusal stands without this start's evidence
+            continue
+        if found := amici_failures(rdatas):
+            failed += [f for f in found if f not in failed]
+            continue
+        records = engine._simulation_records(problem.objective, rdatas)
+        if low := _log_readouts_not_positive(session, records):
+            readouts.append(f"readouts with log noise are 0 or below where measured: {low}")
+        elif undefined := _undefined_points(session, records):
+            readouts.append(f"readouts are not a number at measured points: {undefined}.")
+    at = f"Re-simulated at {len(seen)} of their start points"
+    if failed:
+        shown = "; ".join(failed[:3]) + ("; ..." if len(failed) > 3 else "")
+        return f"{text}. {at}, AMICI fails: {shown}.", "simulation"
+    if readouts:
+        return f"{text}. {at}, every experiment simulates, but {readouts[0]}", "readout"
+    return f"{text}.", None
+
+
+def amici_failures(rdatas) -> list[str]:
+    """Each experiment of ``rdatas`` whose simulation failed, as "`id` ends STATUS (AMICI's last
+    message)". AMICI writes these to its own logger, on stderr, which on a fit pool's worker
+    reaches no log the agent can read (PEtab-MCP#327)."""
+    from amici.sim.sundials import AMICI_SUCCESS, simulation_status_to_str
+
+    out = []
+    for rd in rdatas:
+        if rd.status == AMICI_SUCCESS:
+            continue
+        said = [m.message for m in rd.messages]
+        detail = f" ({said[-1][:160]})" if said else ""
+        out.append(f"`{rd.id}` ends {simulation_status_to_str(rd.status)}{detail}")
+    return out
+
+
+def _log_readouts_not_positive(session, records: list[dict[str, Any]]) -> str:
+    """The measured points of an observable with log noise whose readout is 0 or below, by
+    observable with the lowest value and the times, and the likely origin of each; ``""`` when
+    there are none. Its likelihood takes the readout's log, which is not a number there: blasi
+    63612603_5 lost five fits to readouts its zero-order rate laws drove below 0 (PEtab-MCP#327)."""
+    obs = session.problem.observable_df
+    low = [
+        r
+        for r in records
+        if r.get("measurement") is not None
+        and r.get("simulation") is not None
+        and r["simulation"] <= 0
+        and observable_transformation(obs, r["observable_id"]) == LOG
+    ]
+    if not low:
+        return ""
+    parts = []
+    for obs_id in sorted({str(r["observable_id"]) for r in low}):
+        mine = [r for r in low if str(r["observable_id"]) == obs_id]
+        times = sorted({r["time"] for r in mine})
+        shown = ", ".join(f"t={t:g}" for t in times[:4]) + (", ..." if len(times) > 4 else "")
+        parts.append(f"`{obs_id}` (down to {min(r['simulation'] for r in mine):g}, at {shown})")
+    origins = []
+    if any(r["time"] == 0 and r["simulation"] == 0 for r in low):
+        origins.append("a readout of 0 at t=0 reads a species that starts at 0")
+    if any(r["simulation"] < 0 for r in low):
+        origins.append(
+            "one below 0 reads a species a rate consumes without reading it (`A -> ; k`, not "
+            "`A -> ; k*A`)"
+        )
+    origin = "; ".join(origins)
+    return (
+        f"{'; '.join(parts)}: under log noise the likelihood takes the readout's log, which is not "
+        "a number at 0 or below." + (f" {origin[:1].upper()}{origin[1:]}." if origin else "")
+    )
+
+
+def _non_finite(session, rdatas) -> str:
+    """What AMICI's check for values that are not finite caught in ``rdatas``: the expression as
+    written (an assignment rule, or a reaction's rate), else the state whose rate of change, with
+    the time and the experiment; ``""`` when it caught nothing.
+
+    When a state's rate of change is not finite, AMICI checks every expression and names the first
+    in its evaluation order that is not (``check_finite`` in its ``model.cpp``). A rule comes before
+    the rates that read it, so that is where a 0/0 starts rather than where it spread to. A rule only
+    a readout reads, not finite there too and earlier in that order, is named instead.
+    """
+    import re
+
+    import libsbml
+
+    sm = session.problem.model.sbml_model
+    caught = [
+        (rd, m.identifier, found.groups())
+        for rd in rdatas
+        for m in rd.messages
+        if m.identifier in ("AMICI:NaN", "AMICI:Inf")
+        and (found := re.search(r"value for (\w+)\[\d+\] \(([^)]*)\)(?: at t=(\S+))?", m.message))
+    ]
+    if not caught:
+        return ""
+    rd, identifier, (quantity, sid, t) = next((c for c in caught if c[2][0] == "w"), caught[0])
+    text = libsbml.formulaToL3String
+    if quantity == "w" and (rule := sm.getAssignmentRuleByVariable(sid)) is not None:
+        what = f"`{sid} := {text(rule.getMath())}`"
+    elif quantity == "w" and (reaction := sm.getReaction(sid.removeprefix("flux_"))) is not None:
+        what = f"the rate of `{reaction.getId()}` (`{text(reaction.getKineticLaw().getMath())}`)"
+    elif quantity == "xdot":
+        what = f"the rate of change of `{sid}`"
+    else:
+        what = f"`{sid}`"
+    where = f"experiment `{rd.id}`" if rd.id else "the simulation"
+    statuses = [int(s) for s in rd.preeq_status]
+    if any(statuses) and 1 not in statuses:  # a pre-equilibration ran, and did not succeed
+        where = f"the pre-equilibration of {where}"
+    when = f" at t={float(t):g}" if t else ""
+    return f"{what} is {'NaN' if identifier == 'AMICI:NaN' else 'infinite'}{when} in {where}"
+
+
+def _non_finite_gradient(session, problem) -> str:
+    """Where the objective is finite at the nominal point and its gradient is not, what the
+    gradient fails on: each power of a state that reaches 0 or below there to an estimated exponent
+    (:func:`state_powers`), else the parameters whose derivative is not finite; ``""`` when the
+    gradient is finite. bachmann 78 lost every start on a finite objective, was told the objective
+    was non-finite at every start, and read that as the mechanism refuted (PEtab-MCP#285)."""
+    import numpy as np
+    from pypesto.C import FVAL, GRAD, RDATAS
+
+    x = problem_x_from_nominal(problem, session.problem.parameter_df)
+    ret = problem.objective(x, sensi_orders=(0, 1), return_dict=True)
+    grad = np.ravel(np.asarray(ret.get(GRAD), dtype=float))
+    if np.isfinite(ret[FVAL]) and np.all(np.isfinite(grad)):
+        return ""
+    lowest: dict[str, float] = {}
+    for rd in problem.objective(x, sensi_orders=(0,), return_dict=True)[RDATAS]:
+        if rd.x0 is not None and rd.x is not None:
+            states = np.vstack([np.atleast_2d(rd.x0), np.atleast_2d(rd.x)])
+            for sid, col in zip(rd.state_ids, states.T):
+                lowest[sid] = min(lowest.get(sid, np.inf), float(np.nanmin(col)))
+    if found := state_powers(session, {s: v for s, v in lowest.items() if v <= 0}):
+        return found
+    free = [problem.x_names[i] for i in getattr(problem, "x_free_indices", range(len(grad)))]
+    if len(free) == len(grad) and np.isfinite(grad).any():
+        bad = [name for name, g in zip(free, grad) if not np.isfinite(g)]
+        return f"Its derivative in `{'`, `'.join(bad)}` is not a number there."
+    return "The simulation with sensitivities fails there."
+
+
+def state_powers(session, low: dict[str, float] | None = None) -> str:
+    """Each power in the model whose base reads a state or a condition target and whose exponent
+    an estimated parameter, and what to send instead; ``""`` when there is none. ``low`` (a
+    state's lowest value, where it reached 0 or below) keeps only the powers of those states,
+    saying how low. Below 0 a power with a non-integer exponent is not a number, and at 0 one with
+    an exponent below 1 has an infinite slope (AMICI writes the derivative in the exponent as 0 at
+    a base of exactly 0): lun 109's `xM2*M2d^hM2`, its input 0 in most conditions and `hM2` at
+    0.998, lost 64-74 of 100 starts NOT_FINITE. Read for a fit any of whose starts ended NOT_FINITE
+    (``PetabSession.fit``), and where every start failed on a gradient
+    (:func:`_non_finite_gradient`)."""
+    import libsbml
+
+    wp = session.problem
+    sm = wp.model.sbml_model
+    states = (
+        set(low)
+        if low is not None
+        else {s.getId() for s in sm.getListOfSpecies() if not s.getConstant()}
+        | {r.getVariable() for r in sm.getListOfRules() if r.isRate()}
+        | _reconcile.condition_target_symbols(wp)
+    )
+    estimated = {str(p) for p in wp.parameter_df.index if _reconcile.is_parameter_estimated(wp, p)}
+    found = []
+    for node in _reconcile._math_nodes(sm):
+        if node.getType() not in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+            continue
+        base = sorted(_reconcile._ast_names(node.getChild(0)) & states)
+        exponent = sorted(_reconcile._ast_names(node.getChild(1)) & estimated)
+        if base and exponent:
+            what = (
+                f"a base that is not above 0 ({', '.join(f'`{b}` reaches {low[b]:g}' for b in base)})"
+                if low is not None
+                else _names(base)
+            )
+            found.append(
+                f"`{libsbml.formulaToL3String(node)}` raises {what} to the estimated "
+                f"{_names(exponent)}"
+            )
+    if not found:
+        return ""
+    return (
+        "; ".join(dict.fromkeys(found)) + ". Below 0 a power with a non-integer exponent is "
+        "not a number, and at 0 one with an exponent below 1 has no finite slope: keep that "
+        "base above 0, or write the exponent as a number."
+    )
+
+
+def _names(ids: list[str], limit: int = 3) -> str:
+    """``ids`` in backticks, comma-separated, the first ``limit`` and how many more."""
+    shown = ", ".join(f"`{i}`" for i in ids[:limit])
+    return shown + (f" and {len(ids) - limit} more" if len(ids) > limit else "")
+
+
 def _reconcile_objective(
     session, fit: dict[str, Any] | None, sim: dict[str, Any]
 ) -> tuple[float | None, str | None]:
-    """Pick the authoritative neg-log-likelihood for a fit, returning ``(nllh, note)``.
+    """The neg-log-likelihood a pass is scored on, and a note when a fit has none: ``(nllh,
+    note)``.
 
-    Two numbers claim to be "the" nll of a fitted model: the objective pyPESTO minimised
-    (``fit["neg_log_likelihood"]``, its best start's ``fval``) and the one obtained by
-    re-simulating at the written-back parameters (``sim["neg_log_likelihood"]``). They are
-    the same quantity at the same point and normally agree — but not always: the
-    re-simulation goes through :meth:`AmiciEngine.residuals`, whose ``simulate_petab`` call
-    uses AMICI's default solver settings rather than the ones pyPESTO's objective was
-    configured with. At a stiff optimum (parameters pinned at their bounds) the default
-    solver can fail to integrate the full time course where the optimizer's succeeded,
-    yielding a NaN llh for a fit that in fact converged.
+    A fit is scored on the objective pyPESTO minimised (``fit["neg_log_likelihood"]``, its best
+    start's ``fval``) only where re-simulating the written-back point (``sim``) reproduces it.
+    The re-simulation evaluates the same objective at the same point the same way, gradient
+    included (see :meth:`engine.AmiciEngine._objective_evaluate`), so a gap, or a value only one
+    side has, means one of the two evaluations is wrong, and nothing here says which. The fit is
+    then not scored: ``None``, which no gate ranks (see :func:`compute_improvement`). Scoring it
+    on the optimizer's value ranked a model on a number nothing reproduced, beside a ``chi2``
+    from the re-simulation that contradicted it, and its agent refit it for 116 min into the same
+    gap (#265). The note names the experiments the re-simulation failed in, with AMICI's status,
+    and what a second re-simulation at tighter tolerances gave (``sim["tightened"]``, see
+    :func:`fit_and_simulate`). Where a pre-equilibrated model has no steady state
+    (:func:`_sources_breaking_totals`), it says so; otherwise it names what makes two evaluations of
+    one point differ, without blaming either: told it was the server's fault, agents abandoned
+    whole mechanism families whose real fault was a sink a condition switched off (#335).
 
-    Taking the re-simulated value unconditionally — as this did — meant a converged fit
-    could be recorded as NaN, which then propagated into a NaN BIC and, via
-    :meth:`session.record_fit_progress`, into a best-BIC checkpoint that no later fit could
-    ever beat (NaN comparisons are always False). So the optimizer's value wins whenever it
-    is finite: it is what was actually optimised, and it is defined over the complete
-    dataset. The re-simulated value is kept in the payload either way, and a disagreement
-    is surfaced as a note rather than silently resolved.
-
-    A simulate-only pass (no fit) has only the simulated value, which is then authoritative.
+    A pass with no fit has only the simulated value, which is then its score.
     """
     nll_sim = _flt(sim.get("neg_log_likelihood"))
     if fit is None:
         return nll_sim, None
     nll_opt = _flt(fit.get("neg_log_likelihood"))
-    n_missing = sim.get("n_missing_simulations") or 0
+    if nll_opt is not None and nll_sim is not None and not _disagree(nll_opt, nll_sim):
+        return nll_opt, None
     if nll_opt is None:
-        # The optimizer itself has no usable objective (every start non-finite). Nothing to
-        # prefer; the fit genuinely failed to produce a score.
-        return nll_sim, ("optimizer returned no finite objective" if nll_sim is None else None)
+        note = "This fit is not scored: the optimizer reached no finite objective."
+        session.logger.warning("fit: %s", note)
+        return None, note
+    tight = sim.get("tightened")
+    nll_tight = _flt((tight or {}).get("neg_log_likelihood"))
+    again = ""
+    if tight is not None:
+        again = f" At {1 / RESIMULATION_TIGHTENING:g} times tighter tolerances it gives " + (
+            f"{_fmt(nll_tight)}." if nll_tight is not None else "no value either."
+        )
     if nll_sim is None:
+        failed = sim.get("failed_experiments") or []
         note = (
-            f"re-simulating the fitted point did not reach {n_missing} of "
-            f"{sim.get('n_expected_points')} measured points, so its likelihood is "
-            f"undefined; reporting the optimizer's objective ({_fmt(nll_opt)}) instead. "
-            "The fit converged — this is a solver/integration gap at the optimum, not a "
-            "failed fit."
+            f"This fit is not scored: re-simulating its optimum leaves "
+            f"{sim.get('n_missing_simulations')} of {sim.get('n_expected_points')} measured points "
+            "without a value"
+            + (f" ({'; '.join(failed[:3])}{'; ...' if len(failed) > 3 else ''})" if failed else "")
+            + f", where the optimizer's evaluation of the same point gave {_fmt(nll_opt)}."
         )
-        session.logger.warning("fit: %s", note)
-        return nll_opt, note
-    if _disagree(nll_opt, nll_sim):
+    else:
         note = (
-            f"optimizer objective {_fmt(nll_opt)} disagrees with the re-simulated "
-            f"{_fmt(nll_sim)} at the same parameters; reporting the optimizer's."
+            f"This fit is not scored: the optimizer reached {_fmt(nll_opt)}, but re-simulating "
+            f"its optimum gives {_fmt(nll_sim)} at the same parameters."
         )
-        session.logger.warning("fit: %s", note)
-        return nll_opt, note
-    return nll_opt, None
+    note += again
+    if sources := _sources_breaking_totals(session.problem):
+        note += " That is because " + _no_steady_state(sources)
+    else:
+        note += (
+            " Two evaluations of one point differ when its simulation depends on more than the "
+            "parameters, as a pre-equilibration does that has no single steady state, or reaches "
+            "one only from near it. Neither value judges the structure: check that whatever a "
+            "reaction makes, a sink that keeps up with it removes in every pre-equilibration."
+        )
+    session.logger.warning("fit: %s", note)
+    return None, note
+
+
+def _no_steady_state(sources: list[str]) -> str:
+    """Why a problem with :func:`_sources_breaking_totals` ``sources`` fails to pre-equilibrate,
+    and what to send instead."""
+    return (
+        f"pre-equilibration has no steady state to reach: {', '.join(sources)} "
+        f"{'makes' if len(sources) == 1 else 'make'} a species from nothing that the other "
+        "reactions only pass around, so their total grows for as long as the source runs, and "
+        "pre-equilibration stops where its convergence check gives out, if at all. Write the "
+        "species a source converts as its reactant (`A -> B`, not `-> B; k*A`), or give what it "
+        "makes a sink that runs in every pre-equilibration."
+    )
+
+
+def _sources_breaking_totals(problem) -> list[str]:
+    """The reactions with no reactant that add to a total every reaction with a reactant
+    conserves, each as ``"`id` (`-> P; rate`)"``, on a problem that pre-equilibrates.
+    That total grows for as long as such a source runs, so the model has no steady state, and the
+    pre-equilibration stops where its convergence check happens to give out: brannmark 42 wrote
+    ``IRS1_bas: -> IRS1p; k_basal*IRS1`` under one, and its fits went unscored as a server fault
+    (PEtab-MCP#285).
+
+    Checked again under each pre-equilibration's conditions. A reaction whose rate law is 0 there
+    (:func:`validation._vanishes_at`, given the targets those conditions set to 0 that no reaction
+    changes, and the parameters the table fixes at 0) does not run, so a sink a condition switches
+    off leaves the total growing in that pre-equilibration alone. Such a source is named with the
+    conditions and the reactions they stop that consume what it makes: in raimundez 86 a condition
+    switched off a receptor's only sink, and the static check missed it (PEtab-MCP#335)."""
+    import libsbml
+    import numpy as np
+    from petab.v2.C import CONDITION_ID, TARGET_ID, TARGET_VALUE
+
+    from .validation import _fixed_zero_parameters, _is_zero, _vanishes_at
+
+    edf = problem.experiment_df
+    sm = getattr(problem.model, "sbml_model", None)
+    if sm is None or edf is None or not (edf[TIME] == TIME_PREEQUILIBRATION).any():
+        return []
+    species = [s.getId() for s in sm.getListOfSpecies() if not s.getBoundaryCondition()]
+    row = {sid: i for i, sid in enumerate(species)}
+    reactions = []
+    for rxn in sm.getListOfReactions():
+        column = np.zeros(len(species))
+        for sign, refs in ((-1.0, rxn.getListOfReactants()), (1.0, rxn.getListOfProducts())):
+            for ref in refs:
+                if ref.getSpecies() in row:
+                    column[row[ref.getSpecies()]] += sign * ref.getStoichiometry()
+        reactions.append((rxn, column))
+    changed = {sid for sid, i in row.items() if any(c[i] for _, c in reactions)}
+    ruled = {r.getVariable(): r.getMath() for r in sm.getListOfRules() if r.isAssignment()}
+    fixed = _fixed_zero_parameters(problem)
+
+    def stopped_at(zero: set[str]) -> set[str]:
+        return {
+            rxn.getId()
+            for rxn, _ in reactions
+            if (law := rxn.getKineticLaw()) is not None
+            and law.getMath() is not None
+            and _vanishes_at(law.getMath(), zero, ruled)
+        }
+
+    def breaking(stopped: set[str]) -> set[str]:
+        running = [(rxn, c) for rxn, c in reactions if rxn.getId() not in stopped]
+        sources = [(rxn, c) for rxn, c in running if not rxn.getNumReactants() and c.any()]
+        columns = [c for rxn, c in running if rxn.getNumReactants() or not c.any()]
+        if not sources:
+            return set()
+        stoichiometry = np.array(columns).reshape(len(columns), len(species))
+        _, singular, vh = np.linalg.svd(stoichiometry)
+        totals = vh[int((singular > 1e-9).sum()) :]  # the left null space: what they conserve
+        return {
+            rxn.getId() for rxn, c in sources if totals.size and np.abs(totals @ c).max() > 1e-9
+        }
+
+    zeroed: dict[str, set[str]] = {}
+    cdf = problem.condition_df
+    if cdf is not None and {CONDITION_ID, TARGET_ID, TARGET_VALUE} <= set(cdf.columns):
+        for cid, target, value in zip(cdf[CONDITION_ID], cdf[TARGET_ID], cdf[TARGET_VALUE]):
+            if _is_zero(value) and str(target) not in changed:
+                zeroed.setdefault(str(cid), set()).add(str(target))
+    base_stopped = stopped_at(fixed)
+    base = breaking(base_stopped)
+    gated: dict[str, tuple[list[str], set[str]]] = {}
+    preeq = edf[edf[TIME] == TIME_PREEQUILIBRATION]
+    groups = (
+        {tuple(sorted(map(str, g[CONDITION_ID].dropna()))) for _, g in preeq.groupby(EXPERIMENT_ID)}
+        if CONDITION_ID in preeq.columns
+        else set()
+    )
+    for group in sorted(groups):
+        zero = fixed.union(*(zeroed.get(c, set()) for c in group))
+        stopped = stopped_at(zero) - base_stopped
+        for rid in breaking(base_stopped | stopped) - base:
+            entry = gated.setdefault(rid, ([], stopped))
+            entry[0].append(group)
+    columns = {rxn.getId(): c for rxn, c in reactions}
+    named = []
+    for rxn, column in reactions:
+        rid = rxn.getId()
+        if rid not in base and rid not in gated:
+            continue
+        law = rxn.getKineticLaw()
+        rate = libsbml.formulaToL3String(law.getMath()) if law is not None else ""
+        products = " + ".join(p.getSpecies() for p in rxn.getListOfProducts())
+        where = ""
+        if rid in gated:
+            groups_, stopped = gated[rid]
+            consumers = [r for r in stopped if (columns[r][column > 0] < 0).any()]
+            sinks = sorted(consumers or stopped)
+            conditions = sorted({c for g in groups_ for c in g if c in zeroed})
+            where = (
+                f", where condition{'s' if len(conditions) > 1 else ''} "
+                f"{_names(conditions)} stop{'' if len(conditions) > 1 else 's'} {_names(sinks)}"
+            )
+        named.append(f"`{rid}` (`-> {products}; {rate}`{where})")
+    return named
 
 
 def _disagree(expected: float, nll: float) -> bool:
@@ -1541,8 +2157,15 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
                 fit["record"].x_free,
                 k=complexity_k({"n_estimated": n_estimated, "hardcoded_constants": constants}),
             )
-        # A pass with no fit scores the table's sigmas and scalings as they stand.
-        sim = engine.residuals(solve_inner=do_fit)
+        # A pass with no fit scores the table's sigmas and scalings as they stand; a fit's point
+        # is re-scored as its optimizer scored it, gradient included.
+        sim = engine.residuals(solve_inner=do_fit, gradient=do_fit)
+        if fit is not None and _unreproduced(fit, sim):
+            # Once more at tighter tolerances: a gap the fit's own tolerances open closes there,
+            # and that re-simulation is then the one scored (PEtab-MCP#335).
+            with _tightened(estimation_problem(session, engine)[0]):
+                tight = engine.residuals(solve_inner=True, gradient=True)
+            sim = tight if not _unreproduced(fit, tight) else {**sim, "tightened": tight}
         records = sim["records"]
         nllh, nll_note = _reconcile_objective(session, fit, sim)
         if fit is None:
@@ -1571,15 +2194,16 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # ...and the count the data actually see, which is what TIC charges for. Otherwise
             # not agent-facing: fit_result_block and goodness_of_fit deliberately do not copy it.
             "k_eff": k_eff,
-            # The OPTIMIZER's objective at its best start when that is available (see
-            # _reconcile_objective) — the quantity actually minimised, and the one every
-            # downstream score (bic, is_new_best, a client's own scoring) must agree with.
+            # The OPTIMIZER's objective at its best start where the re-simulation reproduces it,
+            # else None (see _reconcile_objective) — the quantity actually minimised, and the one
+            # every downstream score (bic, is_new_best, a client's own scoring) must agree with.
             "neg_log_likelihood": nllh,
             # What re-simulating the fitted point produced, kept alongside so a
             # disagreement between the two stays visible rather than silently resolved.
             "neg_log_likelihood_simulated": sim["neg_log_likelihood"],
             "objective_note": nll_note,
-            "chi2": sim["chi2"],
+            # None on a fit left unscored, as `neg_log_likelihood` is.
+            "chi2": None if fit is not None and nllh is None else sim["chi2"],
             "n_data_points": sim["n_data_points"],
             "n_missing_simulations": sim.get("n_missing_simulations"),
             # Per-start exit histogram, set HERE rather than bridged from `session.optimization`
@@ -1593,7 +2217,11 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # ...and, the same way, how many starts were stopped past their cap (see
             # :mod:`multistart`): scored as failed, so the fit searched less than `n_starts` names.
             "n_starts_killed": (fit["optimization"] or {}).get("n_starts_killed") if fit else None,
+            **{
+                k: (fit["optimization"] or {}).get(k) if fit else None for k in _STARTS_AT_BEST_KEYS
+            },
             "records": records,
+            "state_trajectories": sim["state_trajectories"],
             "objective_before": fit["objective_before"] if fit else None,
             "version": None,
         }
@@ -1682,6 +2310,7 @@ def parameters_at_bound(
     fitted: dict[str, float] | None,
     parameter_df: Any,
     tol: float = PARAMETER_AT_BOUND_RELATIVE_TOL,
+    problem: Any = None,
 ) -> list[dict[str, Any]]:
     """Fitted parameters sitting within ``tol`` (fraction of the scaled bound span) of their
     lower or upper bound — the standard fit report's early-warning for "the optimum is
@@ -1690,6 +2319,11 @@ def parameters_at_bound(
     (or any parameter) that re-pins to whatever bound you set, widening after widening, is a
     sign the model is missing a mechanism — not that the box needs to move again.
 
+    Two are never listed, as neither bound can be widened. A linear-scale lower bound of 0: a
+    value there has its term switched off. And, given ``problem``, a noise sigma the fit solves
+    analytically (:func:`reconcile.classify_inner_parameters`): it is solved on [0, inf) whatever
+    its row says, and a bound on it is refused.
+
     Returns ``[]`` when there is nothing to flag (no fit yet, or every value sits mid-range).
     Each flagged entry is ``{parameter_id, side, value, bound_value}`` with ``side`` "lower" or
     "upper".
@@ -1697,8 +2331,9 @@ def parameters_at_bound(
     if not fitted or parameter_df is None:
         return []
     flags = []
+    inner = _inner_sigmas(problem)
     for pid, value in fitted.items():
-        if pid not in parameter_df.index:
+        if pid not in parameter_df.index or pid in inner:
             continue
         row = parameter_df.loc[pid]
         scale = str(row[PARAMETER_SCALE])
@@ -1711,11 +2346,22 @@ def parameters_at_bound(
         if span <= 0:
             continue
         frac = (v - lo) / span
-        if frac <= tol:
+        if frac <= tol and not (scale == LIN and lb == 0):
             flags.append({"parameter_id": pid, "side": "lower", "value": value, "bound_value": lb})
         elif frac >= 1 - tol:
             flags.append({"parameter_id": pid, "side": "upper", "value": value, "bound_value": ub})
     return flags
+
+
+def _inner_sigmas(problem: Any) -> set[str]:
+    """The noise sigmas a fit of ``problem`` solves analytically; none without a problem."""
+    if problem is None:
+        return set()
+    try:
+        inner = _reconcile.classify_inner_parameters(problem)
+    except Exception:  # noqa: BLE001 - a report aid: list them rather than fail the result
+        return set()
+    return {pid for pid, kind in inner.items() if kind == _reconcile.INNER_TYPE_SIGMA}
 
 
 def _entry_inflated(entry: "dict[str, Any]") -> bool:
@@ -1764,7 +2410,8 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
     ever gets there. Keyed by parameter id; each entry is ``{fitted, upper_bound_cap, data_std,
     fraction_of_data_std}`` (the last two ``None`` if the observable's std can't be computed).
     This is purely informational/for the commit-time guard in ``operations`` — it never rewrites
-    the parameter table's actual bounds.
+    the parameter table's actual bounds. A flagged entry also states its limit in the parameter's
+    own units (:func:`_fitted_limit`).
 
     ``{}`` is normal — most parameters aren't noise sigmas at all.
     """
@@ -1879,6 +2526,7 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             entry["status"] = "collapsed"  # overfitting the noise for a good-looking score
         else:
             entry["status"] = "ok"
+        entry.update(_fitted_limit(problem, pid, value, entry, fitted))
         # Whether this sigma's NUMBER can be compared to another model's fitted sigma at all. The
         # data-driven verdicts above are unaffected (the gain cancels from sd/spread), but a
         # comparison against a reference divides one model's sigma by another's, and that ratio is
@@ -1889,6 +2537,30 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             entry["scale_coupled"] = False
         out[pid] = entry
     return out
+
+
+def _fitted_limit(
+    problem: Any, pid: str, value: float, entry: dict[str, Any], fitted: dict[str, float]
+) -> dict[str, float]:
+    """A flagged entry's deciding comparison in the parameter's own units: the value of ``pid`` at
+    its cap (``fitted_cap``, inflated) or at its collapse floor (``fitted_floor``). ``effective_sigma``
+    is an sd on the noise coordinate (ln for a log-normal observable), which ``fitted`` need not
+    share (PEtab-MCP#329). ``{}`` unless that sd is proportional to ``pid``, checked at twice its
+    value."""
+    eff = entry.get("effective_sigma")
+    if entry["status"] == "inflated":
+        key, limit = "fitted_cap", entry.get("upper_bound_cap")
+    elif entry["status"] == "collapsed":
+        key, limit = "fitted_floor", NOISE_SIGMA_COLLAPSE_FRACTION * (entry.get("data_std") or 0.0)
+    else:
+        return {}
+    try:
+        doubled = _reconcile.sigma_effective_value(problem, pid, 2 * value, fitted_values=fitted)
+        if not eff or not limit or doubled is None or not math.isclose(doubled, 2 * eff):
+            return {}
+        return {key: value * limit / eff}
+    except Exception:  # noqa: BLE001 - a report field must never break a fit
+        return {}
 
 
 def noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
@@ -1914,39 +2586,87 @@ def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
     return any(_entry_collapsed(e) for e in report.values() if isinstance(e, dict))
 
 
-# Agent-facing advice when the fit's noise model is implausible. Surfaced proactively on every
-# get_fit_summary (not just at a plateau stop) and echoed by a client's finish gate, so the agent
-# learns WHY a good-looking BIC won't be accepted and fixes the mechanism instead of the noise.
-NOISE_SIGMA_INFLATED_ADVICE = (
-    "an ESTIMATED noise sigma is inflated above its data-driven cap, absorbing the model misfit — "
-    "the chi2 goodness-of-fit is not genuine adequacy here. Do NOT widen or lean on the noise; fix "
-    "the mechanism so the residuals shrink at a plausible sigma (this result's residual_structure "
-    "verdict still flags the structure). A fit resting on an inflated sigma will "
-    "NOT be accepted as finished."
-)
-NOISE_SIGMA_COLLAPSED_ADVICE = (
-    "an ESTIMATED noise sigma has collapsed far below the data's own variability — the fit is "
-    "overfitting the noise for a good-looking score, not genuine adequacy. Prefer a simpler / more "
-    "parsimonious mechanism at a plausible sigma rather than one that drives the residuals to ~0. "
-    "A fit resting on a collapsed sigma will NOT be accepted as finished."
-)
+def _sigma_clause(pid: str, entry: "dict[str, Any]") -> "tuple[str, bool]":
+    """One flagged sigma against its limit, in the parameter's own units where
+    :func:`_fitted_limit` gave them, and whether replicate scatter alone is above its cap."""
+    if _entry_collapsed(entry):
+        at = entry.get("fitted_floor")
+        if at is not None:
+            return f"`{pid}` {entry['fitted']:.3g} against a floor of {at:.3g}", False
+        return f"`{pid}` at {entry['fraction_of_data_std']:.3g} x its data std", False
+    cap = float(entry["upper_bound_cap"])
+    at = entry.get("fitted_cap")
+    # One coordinate for all three numbers: the parameter's own where known, else the noise sd's.
+    if at is not None:
+        scale, value, where = at / cap, entry["fitted"], ""
+    else:
+        scale, value, where = 1.0, entry.get("effective_sigma", entry.get("fitted")), " (noise sd)"
+    text = f"`{pid}` {float(value):.3g} against a cap of {cap * scale:.3g}{where}"
+    floor = entry.get("data_noise_estimate")
+    if entry.get("data_noise_method") != "replicate" or floor is None:
+        return text, False
+    text += f", replicate scatter alone {floor * scale:.3g}"
+    if floor < cap:
+        return text, False
+    return f"{text}, above the cap, so no model brings this sigma under it", True
 
 
-def noise_sigma_advice_for(inflated: bool, collapsed: bool) -> str | None:
-    """Advice from already-computed inflated/collapsed flags (so a caller that needs both the flags
-    AND the advice — e.g. :func:`fit_summary` — computes the two predicates ONCE). Inflation is
-    reported first when both tails are present, since it is the more common misfit-masking case."""
+def _inner_sigmas(problem: Any) -> set[str]:
+    """The noise sigmas ``problem``'s fit solves analytically, whose bounds are refused."""
+    try:
+        inner = _reconcile.classify_inner_parameters(problem)
+    except Exception:  # noqa: BLE001 - advisory: then every sigma reads as optimized
+        return set()
+    return {pid for pid, kind in inner.items() if kind == _reconcile.INNER_TYPE_SIGMA}
+
+
+def noise_sigma_advice(
+    report: "dict[str, Any] | None",
+    problem: Any = None,
+    residual: "dict[str, Any] | None" = None,
+) -> str | None:
+    """Agent-facing advice for an implausible noise model, built from THIS fit, or ``None`` when its
+    estimated sigmas are plausible. Names every flagged sigma at once (:func:`_sigma_clause`), the
+    cap rule, a cap that replicate scatter alone breaks, whether the fit's ``residual`` verdict
+    (:func:`data_access.residual_structure_rollup`) flags anything, and which bounds not to widen:
+    none of a sigma ``problem``'s fit solves analytically, whose bounds are refused. Fixed strings
+    said the verdict "still flags the structure" beside a verdict that flagged nothing
+    (PEtab-MCP#333)."""
+    entries = [(pid, e) for pid, e in (report or {}).items() if isinstance(e, dict)]
+    inflated = [_sigma_clause(pid, e) + (pid,) for pid, e in entries if _entry_inflated(e)]
+    collapsed = [_sigma_clause(pid, e)[0] for pid, e in entries if _entry_collapsed(e)]
+    if not inflated and not collapsed:
+        return None
+    parts = []
     if inflated:
-        return NOISE_SIGMA_INFLATED_ADVICE
+        parts.append(
+            "ESTIMATED noise sigma above its cap, absorbing misfit, so the chi2 goodness-of-fit is "
+            f"not adequacy here: {'; '.join(c for c, _, _ in inflated)}. A cap is "
+            f"{NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:g} x the data std of the sigma's observables."
+        )
+        meetable = [pid for _, unmeetable, pid in inflated if not unmeetable]
+        outer = [f"`{pid}`" for pid in meetable if pid not in _inner_sigmas(problem)]
+        if meetable:
+            parts.append(
+                "Fix the mechanism so the residuals shrink at a plausible sigma"
+                + (f"; widening the bounds of {', '.join(outer)} does not help." if outer else ".")
+            )
     if collapsed:
-        return NOISE_SIGMA_COLLAPSED_ADVICE
-    return None
-
-
-def noise_sigma_advice(report: "dict[str, Any] | None") -> str | None:
-    """Concise agent-facing advice for an implausible noise model, or ``None`` when the fit's
-    estimated sigmas are plausible."""
-    return noise_sigma_advice_for(noise_sigma_inflated(report), noise_sigma_collapsed(report))
+        parts.append(
+            f"ESTIMATED noise sigma below {NOISE_SIGMA_COLLAPSE_FRACTION:g} x its data std, "
+            f"overfitting the noise for a good-looking score: {'; '.join(collapsed)}. Prefer a "
+            "simpler mechanism at a plausible sigma over one that drives the residuals to ~0."
+        )
+    flagged = (residual or {}).get("flagged_observables")
+    if isinstance(flagged, list):
+        # The count alone: the fix_pointers switch withholds which observables (withheld.strip).
+        n = (residual or {}).get("n_flagged_observables", len(flagged))
+        parts.append(
+            f"This fit's residual_structure verdict flags {n or 'no'} observable{'' if n == 1 else 's'}."
+        )
+    if collapsed or any(not unmeetable for _, unmeetable, _ in inflated):
+        parts.append("A fit resting on an implausible sigma is not accepted as finished.")
+    return " ".join(parts)
 
 
 def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
@@ -1962,16 +2682,91 @@ def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
     returned on its first guard. That made this a silent no-op on all three of make_changes,
     the duplicate-commit result and rollback -- i.e. on the dominant instance it was written for,
     leaving the 84-118-entry dict riding on every one of them. Only `get_fit_summary`, which
-    happens to build `version` into its own out dict, was ever slimmed."""
-    if version is not None and "version" not in out:
-        out = {**out, "version": version}
-        _slim_fitted_parameters(session, out)
-        return {k: v for k, v in out.items() if k != "version"}
-    _slim_fitted_parameters(session, out)
-    return out
+    happens to build `version` into its own out dict, was ever slimmed.
+
+    Past what it shares with `get_fit_summary`, a fit result names a scale and a merge hint only
+    where it is new since the parent, and splits its pins into new and held
+    (:func:`_since_parent`)."""
+    own = {**out, "version": version} if version is not None and "version" not in out else out
+    scales = own.get("parameter_scales")
+    parent = _slim_fitted_parameters(session, own)
+    if parent is not None:
+        own["parameter_scales"] = scales
+        _since_parent(session, own, *parent)
+    return own if own is out else {k: v for k, v in own.items() if k != "version"}
 
 
-def _slim_fitted_parameters(session, out: dict) -> None:
+def _sig(value: Any, digits: int = 4) -> Any:
+    """``value`` to ``digits`` significant digits when it is a finite number, else unchanged."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return value
+    return float(f"{f:.{digits}g}") if math.isfinite(f) else value
+
+
+def _since_parent(session, out: dict, parent_v: int, parent_df: Any) -> None:
+    """Cut a slimmed fit result's ``parameter_scales`` and ``merge_hints`` to what is new since
+    the parent version, and split its ``parameters_at_bound``, in place.
+
+    A scale is listed where the parameter is newly estimated or re-scaled, whether or not its value
+    moved; an earlier result named every other one. A pin goes in ``parameters_newly_at_bound``
+    unless the parent sat at the same side and bound, so a re-pin after a widening shows there;
+    the ids of the others go in ``parameters_still_at_bound``, so no pin goes unnamed. A hint is
+    listed unless the parent's fit hinted the same pair at the same price; a re-priced one is listed
+    again, or the agent acts on the parent's price (PEtab-MCP#336). ``n_merge_hints`` counts every
+    hint when any is left out, beside a possibly empty list. Best-effort, like the slimming before
+    it."""
+    _new_merge_hints(session, out, parent_v)
+    try:
+        parent_fitted = table_fitted_values(parent_df)
+        prior = {pid: str(parent_df.loc[pid, PARAMETER_SCALE]) for pid in parent_fitted}
+        held = {
+            (f["parameter_id"], f["side"]): f["bound_value"]
+            for f in parameters_at_bound(parent_fitted, parent_df)
+        }
+    except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
+        return
+    scales = out.get("parameter_scales") or {}
+    out["parameter_scales"] = {k: v for k, v in scales.items() if prior.get(k) != v}
+    new, still = [], []
+    for f in out.get("parameters_at_bound") or []:
+        if math.isclose(held.get((f["parameter_id"], f["side"]), math.nan), f["bound_value"]):
+            still.append(f["parameter_id"])
+        else:
+            new.append({**f, "value": _sig(f["value"])})
+    # In the list's place, so the pair reads where the full list did.
+    items = list(out.items())
+    out.clear()
+    for key, value in items:
+        if key == "parameters_at_bound":
+            out.update(parameters_newly_at_bound=new, parameters_still_at_bound=still)
+        else:
+            out[key] = value
+
+
+def _new_merge_hints(session, out: dict, parent_v: int) -> None:
+    """:func:`_since_parent`'s ``merge_hints`` cut, against the parent's own
+    (:func:`identifiability.version_merge_hints`): a parent without any leaves every hint new."""
+    from .identifiability import version_merge_hints
+
+    def price(h):
+        return frozenset(h["parameters"]), h.get("dnll"), h.get("dscore"), h.get("move_scaled")
+
+    hints = out.get("merge_hints")
+    if not hints:
+        return
+    try:
+        seen = {price(h) for h in version_merge_hints(session.provenance, parent_v)}
+    except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
+        return
+    new = [h for h in hints if price(h) not in seen]
+    out["merge_hints"] = new
+    if len(new) < len(hints):
+        out["n_merge_hints"] = len(hints)
+
+
+def _slim_fitted_parameters(session, out: dict) -> Any:
     """Replace the full fitted-values dict with a CHANGED-vs-previous-commit view, in place.
 
     The full dict is 84-118 entries on the large problems and rides on every make_changes /
@@ -1983,15 +2778,19 @@ def _slim_fitted_parameters(session, out: dict) -> None:
     (parameters.tsv), so only the push is slimmed — the pull is intact.
 
     Semantics: `fitted_parameters_changed` = entries NEW or moved >1% (relative, absolute floor
-    for zeros) vs the PREVIOUS version's stored fit; `n_parameters_unchanged` counts the rest.
+    for zeros) vs the stored fit of the version this one was made from (a fork's base), to 4
+    significant digits;
+    `n_parameters_unchanged` counts the rest.
     The FIRST fit keeps the full dict under the original key — nothing to diff against, and the
     first read is where the whole vector genuinely informs. Best-effort: any failure keeps the
     full dict, because a slimming aid must never degrade the score payload.
+
+    Returns the parent's version and parameter table when it slimmed, else ``None``.
     """
     fitted = out.get("fitted_parameters")
     version = out.get("version")
     if not isinstance(fitted, dict) or not isinstance(version, int) or version <= 0:
-        return
+        return None
     try:
         # The PARENT, not version-1: after a restore/rollback the tip of the abandoned branch is
         # not what this fit descends from, and diffing against it reports parameters identical to
@@ -2000,9 +2799,10 @@ def _slim_fitted_parameters(session, out: dict) -> None:
         base_v = meta.get("parent")
         if not isinstance(base_v, int) or base_v < 0:
             base_v = version - 1
-        before = table_fitted_values(session.provenance.get_parameter_df(base_v))
+        parent = session.provenance.get_parameter_df(base_v)
+        before = table_fitted_values(parent)
         if not before:
-            return
+            return None
 
         def _num(x):
             try:
@@ -2026,14 +2826,13 @@ def _slim_fitted_parameters(session, out: dict) -> None:
         # otherwise be invisible, since the loop above only walks the current vector.
         removed = sorted(set(before) - set(fitted))
         scales = out.get("parameter_scales") or {}
-        out["fitted_parameters_changed"] = changed
+        out["fitted_parameters_changed"] = {pid: _sig(val) for pid, val in changed.items()}
         if removed:
             out["parameters_removed"] = removed
         out["n_parameters_unchanged"] = len(fitted) - len(changed)
         out["fitted_parameters_note"] = (
-            f"only parameters NEW, REMOVED or moved >1% vs version {base_v} (this fit's parent) "
-            f"are listed; {len(fitted) - len(changed)} unchanged "
-            "(read any value via get_parameters)."
+            f"only parameters NEW, REMOVED or moved >1% vs v{base_v}, which v{version} was made "
+            f"from, are listed; {len(fitted) - len(changed)} unchanged."
         )
         out["fitted_parameters"] = None
         # Scales for everything the payload still NAMES (changed + removed). Nulling them
@@ -2043,7 +2842,8 @@ def _slim_fitted_parameters(session, out: dict) -> None:
         named = set(changed) | set(removed)
         out["parameter_scales"] = {k: v for k, v in scales.items() if k in named}
     except Exception:  # noqa: BLE001 - never degrade the score payload over a slimming aid
-        return
+        return None
+    return base_v, parent
 
 
 def fit_summary(session, engine) -> dict[str, Any]:
@@ -2078,14 +2878,20 @@ def fit_summary(session, engine) -> dict[str, Any]:
             "version",
         )
     }
-    pdf = session.problem.parameter_df
+    problem = session.fit_problem()
+    pdf = problem.parameter_df
     out["parameter_scales"] = _parameter_scales_for(
         out.get("fitted_parameters"), out.get("parameter_scales"), pdf
     )
-    # Live counts, not the payload's: `ensure_simulation` guarantees the simulation matches the
-    # working model, and a restored legacy payload may predate either field.
-    out["n_estimated"] = int(session.problem.n_estimated)
-    out["hardcoded_constants"] = _literals.hardcoded_constants(session.model.sbml_model)
+    # The fit's own counts, which a fit and a restore both stamp on the payload: while a change
+    # is being fitted the working model is that change's, and its k beside this nll is no
+    # version's score (#330). Live only for a payload without them.
+    if sim.get("n_estimated") is not None:
+        out["n_estimated"] = int(sim["n_estimated"])
+        out["hardcoded_constants"] = list(sim.get("hardcoded_constants") or [])
+    else:
+        out["n_estimated"] = int(session.problem.n_estimated)
+        out["hardcoded_constants"] = _literals.hardcoded_constants(session.model.sbml_model)
     out["k"] = complexity_k(out)
     out.update(
         goodness_of_fit(
@@ -2097,8 +2903,12 @@ def fit_summary(session, engine) -> dict[str, Any]:
             k_eff=sim.get("k_eff"),
         )
     )
-    out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
-    _report = noise_sigma_report(session.problem, out.get("fitted_parameters"))
+    if note := chi2_note(session.problem, sim, out):
+        out["chi2_note"] = note
+    out["parameters_at_bound"] = parameters_at_bound(
+        out.get("fitted_parameters"), pdf, problem=session.problem
+    )
+    _report = noise_sigma_report(problem, out.get("fitted_parameters"))
     out["noise_sigma_report"] = _report
     # Proactive plausibility verdict on EVERY read (not just at a plateau stop): a good BIC bought
     # with an inflated/collapsed estimated sigma is not real adequacy and will not be accepted as
@@ -2107,13 +2917,13 @@ def fit_summary(session, engine) -> dict[str, Any]:
     _collapsed = noise_sigma_collapsed(_report)
     out["noise_sigma_inflated"] = _inflated
     out["noise_sigma_collapsed"] = _collapsed
-    _advice = noise_sigma_advice(_report)  # report-based: quotes the replicate ratio when reliable
-    if _advice is not None:
-        out["noise_sigma_advice"] = _advice
     # Cheap: the rollup reads the STORED records, no re-simulation. Lazy — data_access imports us.
     from .data_access import residual_structure_rollup
 
     out["residual_structure"] = residual_structure_rollup(session, sims=None)
+    _advice = noise_sigma_advice(_report, session.problem, out["residual_structure"])
+    if _advice is not None:
+        out["noise_sigma_advice"] = _advice
     # The PARAMETERISATION counterpart, on the same reasoning: the cheapest ties BIC would pay for
     # (see :func:`identifiability.merge_hints`). They ride on the fit RESULT, which only the caller
     # that RAN the fit holds — so a caller reading the score afterwards (another agent, a client's
@@ -2153,29 +2963,23 @@ def compute_improvement(
     complexity criterion** (``bic`` unless configured otherwise — see :mod:`criteria`).
 
     ``is_new_best`` tracks ``criterion_value`` — the same complexity-penalised score the
-    early-stop checkpoint stores — so the flag, the non-improving-streak reset, and the
-    best-model checkpoint all move on one coherent notion of "better". A fit is a new best only
-    when that score beats the reference by at least ``NEW_BEST_MIN_DELTA_SCORE`` (the conventional
-    "positive evidence" bar), so a raw nll drop bought by an extra parameter that actually RAISES
-    the score does NOT count, and neither does a 1e-6 noise-floor twitch.
+    early-stop checkpoint stores — and is set when that score is strictly below the session's
+    best-score :class:`~petab_mcp.session.Checkpoint` (:func:`beats_best`), so the best is the
+    strict minimum, as a client's judge takes it. A raw nll drop bought by an extra parameter that
+    RAISES the score does not count. What counts as progress for the non-improving streak is a
+    separate, larger bar (:meth:`session.PetabSession.record_fit_progress`).
 
-    The reference is the session's best-score :class:`~petab_mcp.session.Checkpoint`, set on the
-    previous new best — not the raw running minimum. Comparing against
-    the checkpoint is what lets a slow, steady creep of < ``NEW_BEST_MIN_DELTA_SCORE`` per op
-    still register a new best once it CUMULATIVELY clears the bar, instead of starving the streak
-    while the fit genuinely improves. Must be called BEFORE :meth:`session.record_fit_progress`
-    updates the checkpoint, so a fit never compares against itself. The first scored fit (no
-    checkpoint yet) is always a new best. :meth:`session.PetabSession.fit` withdraws the flag
-    before stamping it where the checkpoint declines the fit, naming why in
-    ``new_best_declined``, so ``is_new_best`` marks exactly the versions that became the best.
+    Must be called BEFORE :meth:`session.record_fit_progress` updates the checkpoint, so a fit
+    never compares against itself. The first scored fit (no checkpoint yet) is always a new best.
+    :meth:`session.PetabSession.fit` withdraws the flag before stamping it where the checkpoint
+    declines the fit, naming why in ``new_best_declined``, so ``is_new_best`` marks exactly the
+    versions that became the best.
 
     The returned block carries the ranked pair ``criterion``/``criterion_value`` beside the
     canonical ``bic``, and is stamped into the fit event and the version meta — which is what
-    lets a resumed session and the de-dup registry recover the score. Only those three: this block
-    rides on every fit result and is re-sent in the agent's history each turn, and the full
-    criterion table is already on the fit block (and in the version meta) one level up. It also
-    states its own gate: past the first fit, ``is_new_best`` is ``improvement_vs_best_prior``
-    (over ``best_prior_criterion_value``) reaching ``new_best_min_improvement``.
+    lets a resumed session and the de-dup registry recover the score. A fit result carries only
+    :data:`IMPROVEMENT_ON_RESULT` of it; the gate itself is a constant, stated in the
+    ``make_changes`` description.
     """
     fitsim = fitsim or {}
     scores = goodness_of_fit(
@@ -2194,7 +2998,6 @@ def compute_improvement(
     _best = session.best
     best_prior_score = _flt(_best.score) if _best else None
     best_prior_version = _best.version if _best else None
-    best_prior_nllh = _best.nll if _best else None
 
     self_improvement = None
     if objective_before is not None and nllh is not None:
@@ -2203,7 +3006,7 @@ def compute_improvement(
     improvement_vs_best_prior = None
     if best_prior_score is not None and score is not None:
         improvement_vs_best_prior = best_prior_score - score
-    is_new_best = clears_new_best_bar(score, best_prior_score)
+    is_new_best = beats_best(score, best_prior_score)
 
     return {
         "neg_log_likelihood": nllh,
@@ -2214,26 +3017,32 @@ def compute_improvement(
         "criterion_value": score,
         "best_prior_version": best_prior_version,
         "best_prior_criterion_value": best_prior_score,
-        "best_prior_neg_log_likelihood": best_prior_nllh,
         "improvement_vs_best_prior": improvement_vs_best_prior,
-        # The gate itself, so an `is_new_best: false` says what the fit needed: an improvement
-        # over `best_prior_criterion_value` of at least this.
-        "new_best_min_improvement": NEW_BEST_MIN_DELTA_SCORE,
         "is_new_best": is_new_best,
     }
 
 
-def clears_new_best_bar(score: float | None, best_score: float | None) -> bool:
-    """The ``is_new_best`` gate: there is a ``score``, and no checkpoint yet or it beats the
-    checkpoint by at least ``NEW_BEST_MIN_DELTA_SCORE``. One function because a durable resume
-    replays it over the fit events (:meth:`session.PetabSession._seed_progress_from_provenance`),
-    and a resume that gated differently would rebuild a checkpoint the live run never had.
+#: The :func:`compute_improvement` keys a fit result carries; the fit event and the version meta
+#: keep them all. The rest are the block's own ``neg_log_likelihood``/``bic``/``criterion_value``
+#: or follow from them: ``objective_before`` is nll + ``self_improvement``, the prior best's score
+#: is ``criterion_value`` + ``improvement_vs_best_prior``, and its version is
+#: ``progress.best_version`` unless ``is_new_best``.
+IMPROVEMENT_ON_RESULT = (
+    "self_improvement",
+    "improvement_vs_best_prior",
+    "is_new_best",
+    "new_best_declined",
+)
+
+
+def beats_best(score: float | None, best_score: float | None) -> bool:
+    """The ``is_new_best`` test: there is a ``score``, and no checkpoint yet or it is strictly
+    below the checkpoint's, so a tie keeps the earlier version. One function because a durable
+    resume replays it over the fit events
+    (:meth:`session.PetabSession._seed_progress_from_provenance`), and a resume that ranked
+    differently would rebuild a checkpoint the live run never had.
     """
-    # ``<=`` so an improvement EXACTLY at the threshold counts as a new best — i.e. Δscore >= the
-    # gate (a strict ``<`` would exclude the boundary and leave the streak un-reset there).
-    return score is not None and (
-        best_score is None or score <= best_score - NEW_BEST_MIN_DELTA_SCORE
-    )
+    return score is not None and (best_score is None or score < best_score)
 
 
 def complexity_k(fitsim: dict[str, Any] | None) -> int | None:
@@ -2348,6 +3157,24 @@ def _parameter_scales_for(fitted, stored, parameter_df) -> "dict[str, str] | Non
     return derived or None
 
 
+def _starts_at_best_text(fitsim: dict[str, Any]) -> str | None:
+    """How many starts reached the best objective, fresh and warm apart, out of how many ran, and
+    how many of those MAXTIME cut short; ``None`` without a fit. Warm starts begin at or around the
+    previous fit's optima, so only the fresh count says how often the optimum is found."""
+    at_best, n = fitsim.get("n_starts_at_best"), fitsim.get("n_starts")
+    if at_best is None:
+        return None
+    warm, warm_at_best = fitsim.get("n_warm_starts"), fitsim.get("n_warm_starts_at_best")
+    text = (
+        f"{at_best - warm_at_best}/{n - warm} fresh, {warm_at_best}/{warm} warm"
+        if warm and warm_at_best is not None and n is not None
+        else f"{at_best}/{n}"
+    ) + f" (within {AT_BEST_NLL_TOL:g} nll)"
+    if maxtime := fitsim.get("n_starts_at_best_maxtime"):
+        text += f"; {maxtime} of them stopped at MAXTIME, unconverged"
+    return text
+
+
 def fit_result_block(
     fitsim: dict[str, Any] | None,
     improvement: dict[str, Any] | None = None,
@@ -2367,17 +3194,17 @@ def fit_result_block(
     when the fit is already at the noise floor and stop adding parameters,
     ``parameters_at_bound`` (see :func:`parameters_at_bound`; empty when ``parameter_df`` is
     not passed) so a parameter pinned to its bound is flagged in the SAME report instead of
-    requiring a separate ``get_parameters()`` comparison, the noise-model verdict
-    (``noise_sigma_report`` plus ``noise_sigma_inflated`` / ``noise_sigma_collapsed`` and, only
-    when implausible, ``noise_sigma_advice`` — the same flat keys :func:`fit_summary` reports, so
-    a score read off ``fit`` names things exactly as one read off ``get_fit_summary``), and the
-    compact
+    requiring a separate ``get_parameters()`` comparison, the noise-model verdict (see
+    :func:`noise_sigma_block`), and the compact
     ``residual_structure`` verdict the caller stashed on ``fitsim`` (see
-    :func:`data_access.residual_structure_rollup`) so the agent learns whether its model's FORM is
+    :func:`data_access.residual_structure_on_fit`) so the agent learns whether its model's FORM is
     still incomplete without spending a separate ``get_fit_diagnosis`` call — and, on the same
     reasoning for the model's PARAMETERISATION, the ``merge_hints`` the caller stashed there (see
     :func:`identifiability.merge_hints`), present only when a tie is worth taking.
+    ``get_fit_summary`` carries the noise report and the rollup in full.
     """
+    from .data_access import residual_structure_on_fit
+
     fitsim = fitsim or {}
     fitted = fitsim.get("fitted_parameters")
     nll = fitsim.get("neg_log_likelihood")
@@ -2402,8 +3229,9 @@ def fit_result_block(
         # How many of them were stopped past their cap and scored as failed, ABSENT when none was:
         # this block is re-sent in the caller's history every turn.
         **({"n_starts_killed": killed} if killed else {}),
-        # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.EXCEEDED_BOUNDARY":
-        # 19}): how many starts CONVERGED on their own criterion vs hit the per-start time cap.
+        "starts_at_best": _starts_at_best_text(fitsim),
+        # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.MAXTIME": 19}): how
+        # many starts CONVERGED on their own criterion vs hit the per-start time cap.
         # A fit dominated by boundary exits is optimiser-budget-limited, not structure-limited --
         # the distinction that decides whether "fit harder" or "change the model" is the right
         # next move, previously only recoverable by grepping optimizer stdout that is no longer
@@ -2430,27 +3258,30 @@ def fit_result_block(
         "parameter_scales": _parameter_scales_for(
             fitted, fitsim.get("parameter_scales"), parameter_df
         ),
-        # The ranked pair is stripped from the AGENT's copy: it is already at the top level of
-        # this block, and this dict is re-sent in the agent's history every turn (PR #23). The
-        # RAW `improvement` keeps it — the fit event is spread from that one, and the durable
-        # resume seeds its checkpoint off exactly those two keys.
+        # The RAW `improvement` keeps every key: the fit event is spread from it, and the durable
+        # resume seeds its checkpoint off its `criterion`/`criterion_value`.
         "improvement": (
-            {k: v for k, v in improvement.items() if k not in ("criterion", "criterion_value")}
+            {k: improvement[k] for k in IMPROVEMENT_ON_RESULT if k in improvement}
             if improvement
             else None
         ),
-        "parameters_at_bound": parameters_at_bound(fitted, parameter_df),
+        "parameters_at_bound": parameters_at_bound(fitted, parameter_df, problem=problem),
         # Prefer the report PetabSession.fit already computed and stashed, so the event, the
         # adequacy gate and this block cannot disagree; computed here for the paths that don't
         # stash one (a restore).
-        **noise_sigma_block(problem, fitted, report=fitsim.get("noise_sigma_report")),
-        # The COMPACT residual-structure verdict only — which observables the sign/runs tests or the
-        # replicate lack-of-fit test flag, a one-line summary, and the bounded replicate verdict
-        # (`replicate_lack_of_fit`: the counts plus at most REPLICATE_LOF_MAX_REPORTED_POINTS named
-        # points). Deliberately not the per-observable table or worst_points: those would ride on
-        # EVERY fit result and pile up in the agent's re-sent history, so they stay behind
-        # get_fit_diagnosis (issue #113).
-        "residual_structure": fitsim.get("residual_structure"),
+        **noise_sigma_block(
+            problem,
+            fitted,
+            report=fitsim.get("noise_sigma_report"),
+            residual=fitsim.get("residual_structure"),
+        ),
+        # The COMPACT residual-structure verdict only — the first few observables the sign/runs
+        # tests or the replicate lack-of-fit test flag, a one-line summary, and the bounded
+        # replicate verdict where the design has replicates (see
+        # data_access.residual_structure_on_fit). Deliberately not the per-observable table or
+        # worst_points: those would ride on EVERY fit result and pile up in the agent's re-sent
+        # history, so they stay behind get_fit_diagnosis (issue #113).
+        "residual_structure": residual_structure_on_fit(fitsim.get("residual_structure")),
     }
     # The cheapest parameter ties BIC would pay for (see :func:`identifiability.merge_hints`), ABSENT
     # when there are none — like `noise_sigma_advice` and `nesting_advisory`: this rides on every fit
@@ -2462,38 +3293,62 @@ def fit_result_block(
     if hints:
         block["merge_hints"] = hints
     block.update(goodness_of_fit(nll, chi2, k, n, criterion=criterion, k_eff=fitsim.get("k_eff")))
+    if note := chi2_note(problem, fitsim, block):
+        block["chi2_note"] = note
     return block
+
+
+#: A fit result's ``chi2_note`` where its chi2 GoF p is above ``OVERFIT_GOF_PVALUE`` and no
+#: estimated sigma pins chi2 (:func:`data_access.chi2_by_construction_note`).
+CHI2_BELOW_NOISE_NOTE = signal(
+    f"chi2 sits far below its degrees of freedom (goodness-of-fit p above {OVERFIT_GOF_PVALUE:g}): "
+    "the fit follows the noise, or the fixed noise sigmas are larger than the data's scatter, so "
+    "it is not shown adequate."
+)
+
+
+def chi2_note(problem: Any, fitsim: dict[str, Any], gof: dict[str, Any]) -> str | None:
+    """Why a fit's chi2 and its goodness-of-fit p do not judge the model, or ``None``: estimated
+    sigmas pin chi2 at the point count, or chi2 sits below its noise. ``gof`` holds the fit's
+    :func:`goodness_of_fit`. Rides on every fit result and ``get_fit_summary`` (PEtab-MCP#329)."""
+    from .data_access import chi2_by_construction_note
+
+    pinned = chi2_by_construction_note(problem, fitsim.get("records"))
+    p = gof.get("chi2_gof_pvalue")
+    if pinned is None and p is not None and p > OVERFIT_GOF_PVALUE:
+        return CHI2_BELOW_NOISE_NOTE
+    return pinned
 
 
 def noise_sigma_block(
     problem: Any,
     fitted: dict[str, float] | None,
     report: dict[str, Any] | None = None,
+    residual: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The noise-model verdict as it appears on any fit-bearing result.
 
-    The raw ``noise_sigma_report`` plus the ``noise_sigma_inflated`` / ``noise_sigma_collapsed``
-    verdict and — ONLY when implausible — ``noise_sigma_advice``, mirroring :func:`fit_summary`'s
-    flat keys so a score read off ``fit`` names things exactly as one read off ``get_fit_summary``.
+    The ``noise_sigma_inflated`` / ``noise_sigma_collapsed`` verdict, named as in
+    :func:`fit_summary`, and — ONLY when one is set — ``noise_sigma_advice`` and the
+    ``noise_sigma_report`` entries of the sigmas it flags. ``get_fit_summary`` keeps every entry.
 
-    Shared by :func:`fit_result_block` and the ``fit`` no-op deliberately: because the advice key
-    is ABSENT when the noise model is plausible, a result that omits these keys entirely reads to
-    an agent as "plausible". Any fit-bearing shape must therefore carry the whole verdict or none of
-    it, and the agent may have no ``get_fit_summary`` to fall back on. ``report`` short-circuits the
-    computation for a caller that already has one.
+    Shared by every fit-bearing result deliberately: because the advice key is ABSENT when the
+    noise model is plausible, a result that omits these keys entirely reads to an agent as
+    "plausible". Any fit-bearing shape must therefore carry the whole verdict or none of it, and
+    the agent may have no ``get_fit_summary`` to fall back on. ``report`` short-circuits the
+    computation for a caller that already has one; ``residual`` is the fit's residual verdict the
+    advice reads (:func:`noise_sigma_advice`).
     """
     if report is None:
         report = noise_sigma_report(problem, fitted)
     inflated = noise_sigma_inflated(report)
     collapsed = noise_sigma_collapsed(report)
-    block = {
-        "noise_sigma_report": report,
-        "noise_sigma_inflated": inflated,
-        "noise_sigma_collapsed": collapsed,
-    }
-    advice = noise_sigma_advice(report)  # report-based: quotes the replicate ratio when reliable
-    if advice is not None:
-        block["noise_sigma_advice"] = advice
+    block = {"noise_sigma_inflated": inflated, "noise_sigma_collapsed": collapsed}
+    if inflated or collapsed:
+        block["noise_sigma_advice"] = noise_sigma_advice(report, problem, residual)
+        block["noise_sigma_report"] = {
+            pid: e for pid, e in report.items() if _entry_inflated(e) or _entry_collapsed(e)
+        }
     return block
 
 
@@ -2520,6 +3375,7 @@ def build_sim_payload_for_version(payload: dict[str, Any] | None) -> dict[str, A
         # restore) cannot reproduce without a build. This blob is where a client's scoring reads it.
         "k_eff": payload.get("k_eff"),
         "records": payload.get("records"),
+        "state_trajectories": payload.get("state_trajectories"),
     }
     # The PARAMETER-GEOMETRY verdict of this fit (see identifiability.fit_diagnosis_block). Persisted
     # because it cannot be recomputed later without the built problem the optimizer used: a process

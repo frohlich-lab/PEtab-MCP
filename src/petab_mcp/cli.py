@@ -2,8 +2,8 @@
 
 Starts the local MCP server (stdio transport) for the given PEtab problem (v2; a v1 problem
 is upgraded on load). The process's stderr goes to ``<store>/stderr.log``. With
-``--slurm-max-jobs N`` the fits run on a pool of up to N SLURM jobs that the server submits and
-cancels (README, "Fitting on SLURM").
+``--fit-pool ADDRESS`` the fits run on the pool ``petab-mcp-pool`` runs there (README, "Fitting on
+SLURM").
 """
 
 from __future__ import annotations
@@ -91,20 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="MCP transport (default: stdio).",
     )
     parser.add_argument(
-        "--slurm-max-jobs",
-        type=int,
-        default=0,
-        metavar="N",
-        help="Run fits on a pool of at most N SLURM jobs that this server submits and cancels "
-        "(default 0: on this node). The jobs are set up in dask's jobqueue.slurm config; needs "
-        "the dask extra and a --build-root the compute nodes share.",
-    )
-    parser.add_argument(
-        "--slurm-min-jobs",
-        type=int,
-        default=0,
-        metavar="M",
-        help="SLURM jobs the pool keeps while idle, at most N (default 0).",
+        "--fit-pool",
+        default=os.environ.get("PETAB_MCP_FIT_POOL"),
+        metavar="ADDRESS",
+        help="Run fits on the petab-mcp-pool whose scheduler is at ADDRESS (tcp://host:port, or "
+        "set PETAB_MCP_FIT_POOL); needs the dask extra and a --build-root its workers share.",
     )
     return parser
 
@@ -144,29 +135,11 @@ def _reserve_stdout_for_the_protocol() -> None:
     sys.stdout = _ProtocolStdout(channel)
 
 
-def _slurm_pool(min_jobs: int, max_jobs: int) -> Any:
-    """A ``dask_jobqueue.SLURMCluster`` that grows to ``max_jobs`` jobs while fits wait for workers
-    and shrinks to ``min_jobs`` when idle. It is given no SLURM settings here: partition, cores,
-    processes, memory, walltime, worker lifetime and directories all come from dask's own
-    ``jobqueue.slurm`` config."""
-    from dask_jobqueue import SLURMCluster  # the optional `dask` extra
-
-    cluster = SLURMCluster()
-    cluster.adapt(minimum_jobs=min_jobs, maximum_jobs=max_jobs)
-    return cluster
-
-
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.petab_yaml:
         print(
             "error: no PEtab YAML given. Pass --petab-yaml PATH or set PETAB_MCP_YAML.",
-            file=sys.stderr,
-        )
-        return 2
-    if not 0 <= args.slurm_min_jobs <= args.slurm_max_jobs:
-        print(
-            "error: the SLURM pool needs 0 <= --slurm-min-jobs <= --slurm-max-jobs.",
             file=sys.stderr,
         )
         return 2
@@ -184,11 +157,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.slurm_max_jobs > 0 and not args.build_root:
+    if args.fit_pool and not args.build_root:
         print(
-            "error: --slurm-max-jobs needs --build-root (or PETAB_MCP_BUILD_ROOT) on storage the "
-            "compute nodes share: the workers import the compiled models by the same path, and "
-            "the default temp dir is local to this node.",
+            "error: --fit-pool needs --build-root (or PETAB_MCP_BUILD_ROOT) on storage the pool's "
+            "workers share: they import the compiled models by the same path, and the default "
+            "temp dir is local to this node.",
             file=sys.stderr,
         )
         return 2
@@ -196,26 +169,19 @@ def main(argv: list[str] | None = None) -> int:
     _send_stderr_to(store_root(args.petab_yaml, args.provenance_dir) / "stderr.log")
     if args.transport == "stdio":
         _reserve_stdout_for_the_protocol()
-    cluster = None
-    if args.slurm_max_jobs > 0:
-        cluster = _slurm_pool(args.slurm_min_jobs, args.slurm_max_jobs)
-    try:
-        server = create_server(
-            args.petab_yaml,
-            build_root=args.build_root,
-            provenance_dir=args.provenance_dir,
-            reference_mode=args.reference_validation,
-            skills_dir=args.skills_dir,
-            criterion=args.criterion,
-            entity_map=args.entity_map,
-            constraints=args.constraints,
-            constraint_updates=args.constraint_updates,
-            cluster=cluster,
-        )
-        server.run(transport=args.transport)
-    finally:
-        if cluster is not None:
-            cluster.close()  # cancels its SLURM jobs
+    server = create_server(
+        args.petab_yaml,
+        build_root=args.build_root,
+        provenance_dir=args.provenance_dir,
+        reference_mode=args.reference_validation,
+        skills_dir=args.skills_dir,
+        criterion=args.criterion,
+        entity_map=args.entity_map,
+        constraints=args.constraints,
+        constraint_updates=args.constraint_updates,
+        cluster=args.fit_pool,
+    )
+    server.run(transport=args.transport)
     return 0
 
 

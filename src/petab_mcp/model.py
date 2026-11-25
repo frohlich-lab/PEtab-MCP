@@ -43,23 +43,34 @@ def model_structure(
     two facts appear at all: which IC parameter belongs to which species, and which species are
     driven by a condition target (those have no parameter row, so `get_parameters` cannot show
     them). It lives here, on an on-demand read, rather than on every call.
+
+    Until a model is authored (``session.model_authored()``) the species, parameters and initial
+    conditions are empty: the working model is then the seed, whose species are placeholders for
+    the names the observable formulas and condition table use. The species the server mints for
+    a model with none (:data:`reconcile.PLACEHOLDER_SPECIES`) is never listed.
     """
     from . import reconcile as R
 
     sm = session.model.sbml_model
     readouts = R.readouts(session.problem)
+    authored = session.model_authored()
     out = {
         "model_id": session.model.model_id,
         "compartments": [sm.getCompartment(i).getId() for i in range(sm.getNumCompartments())],
-        "species": [sm.getSpecies(i).getId() for i in range(sm.getNumSpecies())],
-        "parameters": [p for p in session.model.get_parameter_ids() if p not in readouts],
+        "species": R.authored_species(sm) if authored else [],
+        "parameters": (
+            [p for p in session.model.get_parameter_ids() if p not in readouts] if authored else []
+        ),
         "readouts": readouts,
         "n_reactions": sm.getNumReactions(),
     }
     if initial_conditions is not None:
         match = _search("initial_conditions", initial_conditions)
+        report = R.initial_conditions_report(session.problem) if authored else []
         out["initial_conditions"] = [
-            row for row in R.initial_conditions_report(session.problem) if match(row["species"])
+            row
+            for row in report
+            if match(row["species"]) and row["species"] != R.PLACEHOLDER_SPECIES
         ]
     if reactions is not None:
         match = _search("reactions", reactions)

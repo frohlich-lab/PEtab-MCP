@@ -277,13 +277,21 @@ def test_an_ic_row_follows_each_redeclared_initial():
     from petab_mcp.problem import LIN, LOG10, PARAMETER_SCALE
 
     prob = _bare_problem(_DECLARED_P.format(1.0))
-    rows = []
-    for value in (1.0, 5.0, 0.0, 1.0):
+    rows, fixed = [], []
+    for value in (1.0, 5.0, 0.0, 1.0, 1.0):
         prob.model = SbmlModel.from_antimony(_DECLARED_P.format(value))
-        R.reconcile(prob)
+        fixed.append(R.reconcile(prob)["parameters"]["fixed"])
         row = prob.parameter_df.loc["P_init"]
         rows.append((row[NOMINAL_VALUE], bool(row[ESTIMATE]), row[PARAMETER_SCALE]))
-    assert rows == [(1.0, False, LIN), (5.0, True, LOG10), (0.0, False, LIN), (1.0, False, LIN)]
+    assert rows == [
+        (1.0, False, LIN),
+        (5.0, True, LOG10),
+        (0.0, False, LIN),
+        (1.0, False, LIN),
+        (1.0, False, LIN),
+    ]
+    # named each time the convention takes or moves it, not while it stays (PEtab-MCP#325)
+    assert fixed == [["P_init"], [], ["P_init"], ["P_init"], []]
 
 
 def test_a_redeclared_guess_keeps_its_fit():
@@ -298,6 +306,48 @@ def test_a_redeclared_guess_keeps_its_fit():
     row = prob.parameter_df.loc["P_init"]
     assert bool(row[ESTIMATE]) and row[NOMINAL_VALUE] == 7.3
     assert (row[LOWER_BOUND], row[UPPER_BOUND]) == (0.01, 50.0)
+
+
+# A species started at ``CIS_0`` alone (``{}`` empty) or times a fold ``cis_oe`` (``{}`` = `*cis_oe`).
+_FOLD = (
+    "model m\n  compartment c = 1;\n  species CIS in c; CIS = CIS_0{};\n  CIS_0 = 1; cis_oe = {};\n"
+    "  kd = 0.1;\n  deg: CIS -> ; kd*CIS*cis_oe;\nend\n"
+)
+
+
+def test_a_fold_in_a_compound_start_declared_at_1_is_minted_estimated():
+    """REGRESSION (PEtab-MCP#325): the add-loop held every name of a species' initial assignment
+    to the 0/1 convention, so bachmann 23's `CIS = (...)*cis_oe` minted `cis_oe` FIXED at 1, with
+    no message. Only a direct start is held; the sync names it in ``fixed``."""
+    from petab.v2.C import ESTIMATE
+    from petab_mcp.problem import LOG10, PARAMETER_SCALE
+
+    prob = _bare_problem(_FOLD.format("*cis_oe", 1.0))
+    out = R.reconcile(prob)["parameters"]
+    row = prob.parameter_df.loc["cis_oe"]
+    assert (bool(row[ESTIMATE]), row[PARAMETER_SCALE]) == (True, LOG10)
+    assert out["fixed"] == []  # `CIS_0` is a participant too: estimated
+    prob.model = SbmlModel.from_antimony(_FOLD.format("", 1.0))
+    assert R.reconcile(prob)["parameters"]["fixed"] == ["CIS_0"]  # now CIS's whole start
+
+
+def test_a_convention_fixed_row_follows_its_redeclaration_outside_a_direct_start():
+    """REGRESSION (PEtab-MCP#325): the re-sync reached direct starts only, so a row the convention
+    fixed stayed at 1 once its name sat in a compound start: bachmann 23's `cis_oe = 5` left it
+    fixed at 1. Such a row is estimated again, from the value declared now."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+    from petab_mcp.problem import LIN, LOG10, PARAMETER_SCALE
+
+    prob = _bare_problem(_FOLD.format("", 1.0))
+    R.reconcile(prob)
+    prob.parameter_df.loc["cis_oe"] = [LIN, 0.0, 100.0, 1.0, False]  # as the old add-loop left it
+    prob.model = SbmlModel.from_antimony(_FOLD.format("*cis_oe", 5.0))
+    assert R.reconcile(prob)["parameters"]["fixed"] == []
+    rows = prob.parameter_df.loc[["CIS_0", "cis_oe"], [NOMINAL_VALUE, ESTIMATE, PARAMETER_SCALE]]
+    assert [tuple(r) for r in rows.itertuples(index=False)] == [
+        (1.0, True, LOG10),
+        (5.0, True, LOG10),
+    ]
 
 
 def test_a_shipped_ic_row_does_not_follow_the_declaration():
@@ -863,7 +913,8 @@ def test_an_unassigned_parameter_is_seeded_not_exported_empty():
     from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
     prob = _bare_problem(_UNASSIGNED)
-    R.reconcile(prob)
+    # Named for operations._orphans (#264); `k_third`'s assignment is its value.
+    assert R.reconcile(prob)["parameters"]["seeded"] == ["k_deg", "n"]
     row = prob.parameter_df.loc["k_deg"]
     assert (row[NOMINAL_VALUE], row[PARAMETER_SCALE]) == (R.SEED_INITIAL_VALUE, LOG10)
     assert bool(row[ESTIMATE])
@@ -890,7 +941,7 @@ def test_an_unassigned_parameter_takes_its_rows_nominal():
     shipped.loc["n", NOMINAL_VALUE] = 2.0
     prob.parameter_df = prob.parameter_df.drop(index="n")
     prob.model = SbmlModel.from_antimony(_UNASSIGNED)
-    R.reconcile(prob, shipped=shipped)
+    assert R.reconcile(prob, shipped=shipped)["parameters"]["seeded"] == []  # a row is a definition
     sm = prob.model.sbml_model
     assert (sm.getParameter("k_deg").getValue(), sm.getParameter("n").getValue()) == (0.0019, 2.0)
     assert prob.parameter_df.loc["k_deg", NOMINAL_VALUE] == 0.0019
@@ -1117,3 +1168,31 @@ def test_the_report_declares_an_amount_as_the_concentration_it_is():
     )
     (row,) = [r for r in R.initial_conditions_report(prob) if r["species"] == "A"]
     assert row["declared_t0"] == 2.5
+
+
+def test_fixed_table_parameters_say_how_the_tables_name_each_row(session):
+    """PEtab-MCP#283: what a merge hint may not offer and a rename refuses with its reason. A sigma
+    the fit solves analytically says so, as its bound refusal does (#274); an observation scale or
+    offset is named only by the observable and measurement tables; a rate only the model reads is
+    not named; one the observable reads too is kept by a tie."""
+    p = session.problem
+    p = session.problem = p.replace(
+        observable_df=p.observable_df.assign(
+            observableFormula="observableScale_obs_B * B + observableOffset_obs_B",
+            observablePlaceholders="observableScale_obs_B;observableOffset_obs_B",
+        ),
+        measurement_df=p.measurement_df.assign(observableParameters="scale_B;offset_B"),
+    )
+    for pid, value in (("scale_B", 1.0), ("offset_B", 0.0)):
+        p.parameter_df.loc[pid] = p.parameter_df.loc["k1"]
+        p.parameter_df.loc[pid, ["parameterScale", "lowerBound", "upperBound"]] = ["lin", -10, 10]
+        p.parameter_df.loc[pid, ["nominalValue", "estimate"]] = [value, True]
+    assert R.fixed_table_parameters(p) == {
+        "sigma_B": "measurement_tables_only",  # shipped fixed: nothing for the fit to solve
+        "scale_B": "measurement_tables_only",
+        "offset_B": "measurement_tables_only",
+    }
+    p.parameter_df.loc["sigma_B", "estimate"] = True
+    assert R.fixed_table_parameters(p)["sigma_B"] == "solved_analytically"
+    p = p.replace(observable_df=p.observable_df.assign(observableFormula="B / k2"))
+    assert R.fixed_table_parameters(p)["k2"] == R.READ_BY_TABLES_TOO

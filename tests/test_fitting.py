@@ -34,6 +34,34 @@ class _Result:
         self.optimize_result = type("OL", (), {"list": starts})()
 
 
+def test_starts_at_best_counts_fresh_and_warm_apart_and_those_maxtime_cut_short():
+    """#334: a same-model refit reported 431/1000 at the best, 402 of them warm starts seeded at
+    the previous optimum, where fresh starts reached it about 1% of the time. #331: 82/100 were at
+    the best with every start stopped at MAXTIME. pyPESTO numbers the seeded starts first."""
+    starts = [
+        _OptimizerResult(id="0", fval=1.0, exitflag="ExitFlag.FTOL"),
+        _OptimizerResult(id="1", fval=1.5, exitflag="ExitFlag.MAXTIME"),
+        _OptimizerResult(id="3", fval=1.9, exitflag="ExitFlag.MAXTIME"),
+        _OptimizerResult(id="2", fval=2.5, exitflag="ExitFlag.FTOL"),
+        _OptimizerResult(id="4", fval=float("inf"), exitflag="ExitFlag.NOT_FINITE"),
+    ]
+    counts = fitting._starts_at_best(_Result(starts), 1.0, 2)
+    assert counts == {
+        "n_starts_at_best": 3,
+        "n_warm_starts": 2,
+        "n_warm_starts_at_best": 2,
+        "n_starts_at_best_maxtime": 2,
+    }
+    assert fitting._starts_at_best_text({**counts, "n_starts": 5}) == (
+        "1/3 fresh, 2/2 warm (within 1 nll); 2 of them stopped at MAXTIME, unconverged"
+    )
+    # No warm starts, or a stored payload from before the split: one count.
+    plain = {"n_starts_at_best": 3, "n_starts": 5}
+    assert fitting._starts_at_best_text(plain) == "3/5 (within 1 nll)"
+    assert fitting._starts_at_best_text({**plain, "n_warm_starts": 0}) == "3/5 (within 1 nll)"
+    assert fitting._starts_at_best_text({"n_starts": 5}) is None
+
+
 def test_extracts_starts_and_trace():
     res = _Result(
         [
@@ -224,6 +252,24 @@ def test_the_amici_tolerance_knobs_are_read_from_the_env_and_default_to_amicis(m
         importlib.reload(fitting)
 
 
+def test_the_amici_thread_count_is_read_from_the_env_and_defaults_to_one(monkeypatch):
+    """Unset or unreadable, every objective simulates on one thread, as before the knob. The env
+    name is what a launcher exports."""
+    import importlib
+
+    try:
+        monkeypatch.delenv("PETAB_MCP_FIT_AMICI_N_THREADS", raising=False)
+        importlib.reload(fitting)
+        assert fitting.FIT_AMICI_N_THREADS == 1
+        for raw, threads in (("4", 4), ("0", 1), ("garbage", 1)):
+            monkeypatch.setenv("PETAB_MCP_FIT_AMICI_N_THREADS", raw)
+            importlib.reload(fitting)
+            assert fitting.FIT_AMICI_N_THREADS == threads, raw
+    finally:
+        monkeypatch.undo()
+        importlib.reload(fitting)
+
+
 def test_each_amici_tolerance_knob_reaches_the_solver(monkeypatch):
     """Every knob that is set lands on the objective's AMICI solver, and one that is not is never
     set: AMICI's default is not a value to restate."""
@@ -335,6 +381,67 @@ def test_slim_fit_payload_slims_a_block_that_carries_no_version_of_its_own():
     assert out["fitted_parameters"] is None, "the block was not slimmed"
     assert out["fitted_parameters_changed"] == {"b": 2.5, "d": 7.0}
     assert "version" not in out, "version must stay the caller's sibling, not ride in the block"
+
+
+def test_a_fit_result_names_only_what_is_new_since_the_parent():
+    """#190: every make_changes result re-sent "log10" for each moved parameter, 16-digit values,
+    and every pin the parent's result had already reported. A re-pin at a widened bound is new, and
+    so is the scale of a parameter re-scaled in place (`e`) or estimated for the first time (`f`).
+    A pin the parent held is still named, by id: agents read an empty list of new pins as "all
+    interior" and reported a value at its bound as 3.28 (sneyd 63612603_28, #334)."""
+    from petab.v2.C import ESTIMATE, LOWER_BOUND, UPPER_BOUND
+
+    from petab_mcp.fitting import slim_fit_payload
+    from petab_mcp.problem import PARAMETER_SCALE
+
+    parent = _table({"a": 1e3, "b": 2.0, "c": 1e-3, "e": 5.0, "f": 1.0})
+    parent[PARAMETER_SCALE], parent[LOWER_BOUND], parent[UPPER_BOUND] = "log10", 1e-3, 1e3
+    parent.loc["f", ESTIMATE] = False
+
+    class _Prov:
+        def get_meta(self, n):
+            return {"parent": 4}
+
+        def get_parameter_df(self, n):
+            return parent
+
+    class _S:
+        provenance = _Prov()
+
+    pins = [
+        {"parameter_id": "a", "side": "upper", "value": 99990.123, "bound_value": 1e5},
+        {"parameter_id": "c", "side": "lower", "value": 1e-3, "bound_value": 1e-3},
+        {"parameter_id": "d", "side": "upper", "value": 9.99999999, "bound_value": 10.0},
+    ]
+    block = {
+        "fitted_parameters": {
+            "a": 99990.123,
+            "b": 3.14159265,
+            "c": 1e-3,
+            "d": 9.99999999,
+            "e": 5.0,
+            "f": 1.0,
+        },
+        "parameter_scales": {
+            "a": "log10",
+            "b": "lin",
+            "c": "log10",
+            "d": "log10",
+            "e": "lin",
+            "f": "log10",
+        },
+        "parameters_at_bound": pins,
+    }
+    out = slim_fit_payload(_S(), block, version=5)
+
+    assert out["fitted_parameters_changed"] == {"a": 99990.0, "b": 3.142, "d": 10.0, "f": 1.0}
+    assert out["parameter_scales"] == {"b": "lin", "d": "log10", "e": "lin", "f": "log10"}
+    assert [p["parameter_id"] for p in out["parameters_newly_at_bound"]] == ["a", "d"]
+    assert out["parameters_newly_at_bound"][0]["value"] == 99990.0
+    assert out["parameters_still_at_bound"] == ["c"]
+    assert "parameters_at_bound" not in out and "n_parameters_at_bound" not in out
+    keys = list(out)
+    assert keys.index("parameters_still_at_bound") == keys.index("parameters_newly_at_bound") + 1
 
 
 def test_slim_fitted_parameters_keeps_the_first_fit_whole():
@@ -476,3 +583,101 @@ def test_overrides_that_vary_only_across_conditions_are_taken_natively():
         ]
     )
     assert needs_flattening(_problem(mdf)) is False
+
+
+_LUN = """model lun
+  species R = 1;
+  EGF = 0; P2dose = 0; kpE = 1; k = 1; Kd = 0;
+  EGFdrive := EGF/(EGF + kpE*P2dose)
+  J1: R -> ; k*EGFdrive*R
+  J2: R -> ; k*R/Kd
+end
+"""
+
+
+def _caught(*messages, preeq_status=(0, -1, 0)):
+    """What `_non_finite` names in one experiment `e1` whose ReturnData carries ``messages``,
+    ``(identifier, text)`` as AMICI logs them."""
+    import types
+
+    from petab.v2.models.sbml_model import SbmlModel
+
+    session = types.SimpleNamespace(
+        problem=types.SimpleNamespace(model=SbmlModel.from_antimony(_LUN, model_id="lun"))
+    )
+    rdata = types.SimpleNamespace(
+        id="e1",
+        preeq_status=list(preeq_status),
+        messages=[types.SimpleNamespace(identifier=i, message=m) for i, m in messages],
+    )
+    return fitting._non_finite(session, [rdata])
+
+
+def test_the_expression_amici_finds_not_finite_is_named_as_written():
+    """lun 13 (sweep 63372750): `EGFdrive := EGF/(EGF + kpE*P2dose)` was 0/0 at
+    pre-equilibration, where both inputs are 0. Every start failed, the refusal named two other
+    causes, and the agent took three failed fits and a bisection to find it (PEtab-MCP#266).
+    AMICI names the state first and then the expression it reads, which is the cause."""
+    assert _caught(
+        ("AMICI:NaN", "AMICI encountered a NaN value for xdot[0] (R) at t=0.000000 "),
+        ("AMICI:NaN", "AMICI encountered a NaN value for w[0] (EGFdrive) at t=0.000000 "),
+        ("OTHER", "AMICI equilibration failed at t=0."),
+    ) == (
+        "`EGFdrive := EGF / (EGF + kpE * P2dose)` is NaN at t=0 in the pre-equilibration of "
+        "experiment `e1`"
+    )
+    # A reaction's rate is AMICI's expression `flux_<reaction>`.
+    assert _caught(
+        ("AMICI:Inf", "AMICI encountered an Inf value for w[2] (flux_J2) at t=3.500000 "),
+        preeq_status=(0, 0, 0),
+    ) == ("the rate of `J2` (`k * R / Kd`) is infinite at t=3.5 in experiment `e1`")
+
+
+def test_nothing_is_named_where_amici_caught_no_value_that_is_not_finite():
+    """An integration that fails on stiffness reports no NaN, so the refusal keeps its two
+    causes."""
+    assert _caught(("CVODES:CVode:TOO_MUCH_WORK", "mxstep steps taken before tout")) == ""
+
+
+def test_a_gradient_that_is_not_finite_where_the_objective_is_says_what_it_fails_on(monkeypatch):
+    """#285: bachmann 78 [33] lost every start on a finite objective, was told the objective was
+    non-finite at EVERY start, and concluded "that direction is settled". AMICI writes the
+    derivative of `S^n` in `n` as 0 at `S` = 0, so a power with an estimated exponent fails where
+    its base reaches 0 or below, named with the value it reaches; otherwise the parameters whose
+    derivative is not a number."""
+    import types
+
+    import numpy as np
+    import pandas as pd
+    from petab.v2.models.sbml_model import SbmlModel
+    from pypesto.C import FVAL, GRAD, RDATAS
+
+    model = SbmlModel.from_antimony(
+        "model m\n species A, S; A = 1; S = 0; k = 1; Ki = 1; n = 2;\n"
+        " r1: A => ; k*A*Ki^n/(Ki^n + S^n);\n r2: => S; k*A;\nend\n"
+    )
+    table = pd.DataFrame({"estimate": [True, True, True]}, index=["k", "Ki", "n"])
+    session = types.SimpleNamespace(problem=types.SimpleNamespace(model=model, parameter_df=table))
+    monkeypatch.setattr(fitting, "problem_x_from_nominal", lambda problem, df: [1.0, 1.0, 2.0])
+
+    def said(grad, s_low):
+        rdata = types.SimpleNamespace(
+            state_ids=["A", "S"], x0=np.array([1.0, 0.1]), x=np.array([[0.5, s_low]])
+        )
+
+        def objective(x, sensi_orders, return_dict):
+            if 1 in sensi_orders:
+                return {FVAL: 1.0, GRAD: np.array(grad)}
+            return {FVAL: 1.0, RDATAS: [rdata]}
+
+        problem = types.SimpleNamespace(
+            objective=objective, x_names=["k", "Ki", "n"], x_free_indices=[0, 1, 2]
+        )
+        return fitting._non_finite_gradient(session, problem)
+
+    nan = float("nan")
+    assert said([1.0, 1.0, nan], -1e-12).startswith(
+        "`S^n` raises a base that is not above 0 (`S` reaches -1e-12) to the estimated `n`. "
+    )
+    assert said([1.0, nan, nan], 0.1) == "Its derivative in `Ki`, `n` is not a number there."
+    assert said([1.0, 1.0, 1.0], -1e-12) == ""

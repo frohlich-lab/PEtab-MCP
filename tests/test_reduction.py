@@ -438,6 +438,11 @@ def test_a_readout_across_many_blocks_is_charged_no_constant():
             id="two-seed-forms",
         ),
         pytest.param([], {"targets": frozenset({"S"})}, id="species-the-conditions-set"),
+        pytest.param(
+            [],
+            {"seeds": [("S", Agent("S"), "S_total")], "targets": frozenset({"S_total"})},
+            id="seeded-at-a-condition-target",
+        ),
         pytest.param([], {"inputs": (Input("S", "S_0", ("S_0",)),)}, id="input"),
     ],
 )
@@ -458,7 +463,7 @@ def test_a_monomer_stays_whole(extra, kwargs):
         pytest.param({"seeds": [("S", Agent("S"), "0")]}, id="seeds-empty-as-text"),
         pytest.param({"seeds": [("S", Agent("S"), "2")]}, id="seeds-at-a-number-as-text"),
         pytest.param(
-            {"seeds": [("S", Agent("S"), "S_total")], "targets": frozenset({"S_total"})},
+            {"seeds": [("S", Agent("S"), "2*S_total")], "targets": frozenset({"S_total"})},
             id="seed-the-conditions-set",
         ),
     ],

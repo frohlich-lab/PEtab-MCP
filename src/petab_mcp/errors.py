@@ -91,9 +91,8 @@ class MechanismError(PetabMcpError):
 
 
 class FitBackendError(PetabMcpError):
-    """The cluster a fit's starts run on failed them (scheduler gone, a worker killed, a start
-    cancelled or unable to run on a worker), or cannot run them at all because this AMICI cannot
-    pickle a start (see :mod:`petab_mcp.dask_engine`)."""
+    """The cluster a fit's starts run on failed them (a worker killed, a start cancelled). A pool
+    lost or unusable is :data:`FIT_POOL` instead."""
 
 
 class FitCancelledError(PetabMcpError):
@@ -108,44 +107,6 @@ class FitCancelledError(PetabMcpError):
 FIT_IN_PROGRESS = "fit_in_progress"
 
 
-class NoSessionBoundError(PetabMcpError):
-    """A call arrived on a connection that has no session bound to it."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "no session is open on this connection: open_session starts one, resume_session "
-            "continues an existing one by its id"
-        )
-
-
-class SessionLockedError(PetabMcpError):
-    """The session is live in another server process: ``holder`` is the line that process wrote
-    into the session's ``LOCK`` file (``pid host time``)."""
-
-    def __init__(self, session_id: str, holder: str) -> None:
-        self.session_id = session_id
-        self.holder = holder
-        super().__init__(
-            f"session {session_id!r} is locked by another process (holder: "
-            f"{holder or 'unknown'}); a session is live in one server at a time, so stop that "
-            "one or wait for it to exit"
-        )
-
-
-class ModelBuildBusyError(PetabMcpError):
-    """Another session or process is compiling the AMICI module this call needs: ``holder`` is the
-    line that build wrote into the module's lock file (``pid host time``)."""
-
-    def __init__(self, module: str, holder: str) -> None:
-        self.module = module
-        self.holder = holder
-        super().__init__(
-            f"another session or process is compiling this exact model right now ({module}, "
-            f"held by {holder or 'unknown'}); nothing was built or scored here, so retrying the "
-            "change is safe once that build finishes"
-        )
-
-
 #: What every :class:`InfrastructureError` reads as, before its cause: the text of the MCP error a
 #: tool call ends with is ``infrastructure_error: <cause>: <detail>``.
 INFRASTRUCTURE_ERROR = "infrastructure_error"
@@ -156,6 +117,10 @@ DISK_FULL = "disk_full"
 #: The cause a fit whose starts stopped finishing is reported under (see
 #: :mod:`petab_mcp.multistart`): its workers were stopped and nothing was scored.
 FIT_WEDGED = "fit_wedged"
+
+#: The cause a fit pool that failed the server is reported under (see :mod:`petab_mcp.dask_engine`):
+#: its scheduler lost, a worker unable to import a model, or a pool from another environment.
+FIT_POOL = "fit_pool"
 
 _DISK_FULL_ERRNOS = frozenset({errno.ENOSPC, errno.EDQUOT})
 
@@ -173,7 +138,7 @@ _PROBE_BYTES = 1 << 20
 
 class InfrastructureError(PetabMcpError):
     """The host failed the call, so nothing the agent can change fixes it: ``cause`` names how
-    (:data:`DISK_FULL`, :data:`FIT_WEDGED`).
+    (:data:`DISK_FULL`, :data:`FIT_WEDGED`, :data:`FIT_POOL`).
 
     Not a rejection. The tool call ends as an MCP error reading ``infrastructure_error: <cause>:
     <detail>``, which a client takes as the end of the run; the edit it carried is not counted
@@ -182,8 +147,11 @@ class InfrastructureError(PetabMcpError):
     """
 
     def __init__(self, cause: str, detail: str) -> None:
-        self.cause = cause
+        self.cause, self.detail = cause, detail
         super().__init__(f"{INFRASTRUCTURE_ERROR}: {cause}: {detail}")
+
+    def __reduce__(self):  # raised on a worker, it reaches the server pickled
+        return type(self), (self.cause, self.detail)
 
 
 def _chain(exc: BaseException | None) -> Iterator[BaseException]:

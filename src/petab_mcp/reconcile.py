@@ -15,6 +15,8 @@ Enforces the invariants:
   observable/noise formulas (e.g. ``sigma_*``).
 * **Orphan pruning** — species/parameters left unreferenced by any reaction, rule,
   initial assignment, event, or fixed table are dropped.
+* **Declared inputs** — a condition target the model does not declare becomes a constant parameter
+  at 0 (:func:`declare_inputs`).
 """
 
 from __future__ import annotations
@@ -29,9 +31,11 @@ from petab.v2.C import (
     EXPERIMENT_ID,
     LOWER_BOUND,
     MEASUREMENT,
+    NOISE_DISTRIBUTION,
     NOISE_FORMULA,
     NOISE_PARAMETERS,
     NOMINAL_VALUE,
+    NORMAL,
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
     OBSERVABLE_PARAMETERS,
@@ -172,24 +176,60 @@ def _exponent_symbols(sm) -> set[str]:
     count — ``exp(x)`` (AST_FUNCTION_EXP) is not a cooperativity exponent and is ignored.
     """
     found: set[str] = set()
-
-    def walk(node):
-        if node is None:
-            return
+    for node in _math_nodes(sm):
         t = node.getType()
         if t in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER) and node.getNumChildren() == 2:
             found.update(_ast_names(node.getChild(1)))  # names in the exponent subtree
-        for i in range(node.getNumChildren()):
-            walk(node.getChild(i))
+    return found
 
-    for i in range(sm.getNumReactions()):
-        kl = sm.getReaction(i).getKineticLaw()
-        if kl is not None:
-            walk(kl.getMath())
-    for i in range(sm.getNumRules()):
-        walk(sm.getRule(i).getMath())
-    for i in range(sm.getNumInitialAssignments()):
-        walk(sm.getInitialAssignment(i).getMath())
+
+def _math_nodes(sm):
+    """Every AST node of the model's reaction rate laws, rules and initial assignments."""
+    roots = [
+        *(r.getKineticLaw() for r in sm.getListOfReactions()),
+        *sm.getListOfRules(),
+        *sm.getListOfInitialAssignments(),
+    ]
+    stack = [root.getMath() for root in roots if root is not None]
+    while stack:
+        if (node := stack.pop()) is not None:
+            yield node
+            stack.extend(node.getChild(i) for i in range(node.getNumChildren()))
+
+
+def _saturation_constants(sm) -> set[str]:
+    """Parameters that are, alone or raised to a power, a summand of a denominator another summand
+    of which reads a species or a rule: ``K`` in ``V*S/(K + S)`` and ``S^n/(K^n + S^n)``, in the
+    model's rate laws, rules and initial assignments. Toward 0 such a constant turns the rate into
+    a constant flux; toward infinity, into the linear form."""
+    if sm is None:
+        return set()
+    dynamic = species_ids(sm) | {r.getVariable() for r in sm.getListOfRules()}
+
+    def summands(node):
+        if node.getType() == libsbml.AST_PLUS:
+            for i in range(node.getNumChildren()):
+                yield from summands(node.getChild(i))
+        else:
+            yield node
+
+    def constant(node) -> str | None:
+        if node.getType() in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+            node = node.getChild(0)
+        if node.getType() == libsbml.AST_NAME and node.getName() not in dynamic:
+            return node.getName()
+        return None
+
+    found: set[str] = set()
+    for node in _math_nodes(sm):
+        if node.getType() != libsbml.AST_DIVIDE or node.getNumChildren() != 2:
+            continue
+        terms = list(summands(node.getChild(1)))
+        for term in terms:
+            if (name := constant(term)) and any(
+                _ast_names(other) & dynamic for other in terms if other is not term
+            ):
+                found.add(name)
     return found
 
 
@@ -281,7 +321,8 @@ def not_a_parameter(problem, pid: str, known=None) -> str | None:
     such names off the problem and asked for them as parameters (#86): an observable's placeholder
     (``noiseParameter1_<obs>``), which the measurement table fills, and an assignment rule's target
     (a statements binding's ``d16_kf_pinned`` / ``a_act_k_bound``), whose reads are followed
-    through other rules to the ids in ``known`` (default: the live parameter table)."""
+    through other rules to the ids in ``known`` (default: the live parameter table). A condition
+    table's target got guesses at unrelated ids (#337)."""
     odf = getattr(problem, "observable_df", None)
     for oid in [] if odf is None else odf.index:
         for kind, column in (("noise", NOISE_PARAMETERS), ("observable", OBSERVABLE_PARAMETERS)):
@@ -292,6 +333,11 @@ def not_a_parameter(problem, pid: str, known=None) -> str | None:
                     "of its own. Where that column names a parameter rather than a number, that "
                     "parameter is the row to edit."
                 )
+    if pid in condition_target_symbols(problem):
+        return (
+            f"{pid!r} is a target of the condition table: each condition sets its value, so it "
+            "has no row to bound or estimate."
+        )
     model = getattr(problem, "model", None)
     sm = model.sbml_model if model is not None else None
     rule = sm.getAssignmentRuleByVariable(pid) if sm is not None else None
@@ -350,9 +396,8 @@ def seed_model_antimony(problem) -> str | None:
     ``model_authored`` a meaningful flag.
 
     Species are seeded at :data:`SEED_INITIAL_VALUE`, and the seed is then RECONCILED like any
-    other model — same parametric ICs, same table sync (see
-    :meth:`session.PetabSession._seed_initial_model` for the one thing that pass does
-    differently).
+    other model except that its initial conditions are not parametrised (:func:`reconcile`'s
+    ``parametric_ics``): no ``<sid>_init`` parameter or row until a model is authored.
 
     Each id is declared with an explicit ``species`` statement. Antimony infers a bare
     ``B = 0.1;`` to be a PARAMETER — it only promotes a symbol to a species when a reaction uses
@@ -677,19 +722,21 @@ def _reaction_species(sm) -> set[str]:
     return used
 
 
-def _model_math_names(sm) -> set[str]:
-    """Names the model's math reads: rate laws, initial assignments, rules, and events (trigger,
-    priority, delay, and each assignment's math). What an event ASSIGNS is :func:`_event_targets`:
-    the prune keeps it, while a role or reuse check reads only what the math reads."""
+def _model_math_names(sm, initial: bool = True, assignments: bool = True) -> set[str]:
+    """Names the model's math reads: rate laws, initial assignments (unless ``initial`` is off),
+    rules (assignment rules unless ``assignments`` is off), and events (trigger, priority, delay,
+    and each assignment's math). What an event ASSIGNS is :func:`_event_targets`: the prune keeps
+    it, while a role or reuse check reads only what the math reads."""
     names: set[str] = set()
     for i in range(sm.getNumReactions()):
         kl = sm.getReaction(i).getKineticLaw()
         if kl is not None:
             names |= _ast_names(kl.getMath())
-    for i in range(sm.getNumInitialAssignments()):
+    for i in range(sm.getNumInitialAssignments() if initial else 0):
         names |= _ast_names(sm.getInitialAssignment(i).getMath())
     for i in range(sm.getNumRules()):
-        names |= _ast_names(sm.getRule(i).getMath())
+        if assignments or not sm.getRule(i).isAssignment():
+            names |= _ast_names(sm.getRule(i).getMath())
     for i in range(sm.getNumEvents()):
         event = sm.getEvent(i)
         for part in (event.getTrigger(), event.getPriority(), event.getDelay()):
@@ -1046,10 +1093,19 @@ def classify_inner_parameters(problem) -> dict[str, str]:
     OUT: it is not cleanly separable, so it stays an ordinary outer parameter. Only
     currently-ESTIMATED parameters are returned (a fixed sigma/scaling has nothing to solve).
 
+    A problem with any observable whose noise is not normal has none. pyPESTO refuses a
+    non-normal noise distribution only on an observable that HAS inner parameters, and scores
+    every other observable as normal on the linear scale whatever its distribution
+    (``calculate_quantitative_result``): a log-normal observable beside an inner-solved sigma comes
+    out with a wrong likelihood, silently (5.8 nll on a two-observable toy). Such a problem is
+    fitted jointly.
+
     Hierarchical optimization is best-effort — see ``fitting`` — so anything this misclassifies
     fails pyPESTO's own validation there and falls back to a joint fit rather than corrupting
     anything.
     """
+    if (problem.observable_df[NOISE_DISTRIBUTION] != NORMAL).any():
+        return {}
     sigmas = noise_sigma_ids(problem)
     scalings = observable_scaling_ids(problem)
     roles = observable_parameter_roles(problem)
@@ -1069,12 +1125,59 @@ def classify_inner_parameters(problem) -> dict[str, str]:
     return out
 
 
-def _measurement_rows_for_sigma(problem, pid: str):
+#: Key of :func:`fixed_table_parameters` for a row the model's math reads too.
+READ_BY_TABLES_TOO = "tables_read_it_too"
+
+#: How the fixed tables name a parameter (:func:`fixed_table_parameters`), by key. The merge
+#: pricer counts the pairs it skips under the key; a refused ``rename`` or ``set_assignment``
+#: (:mod:`model_edits`) gives the text after the parameter's id.
+FIXED_TABLE_REASONS = {
+    "solved_analytically": "is a noise sigma the fit solves analytically from the residuals it "
+    "covers; the model does not read it",
+    "measurement_tables_only": "is named only by the observable and measurement tables, which "
+    "are fixed; the model does not read it",
+    "condition_table_only": "is named only by the condition table, which is fixed; the model "
+    "does not read it",
+    READ_BY_TABLES_TOO: "is read by the fixed observable, measurement or condition tables as well "
+    "as the model, and they keep its name",
+}
+
+
+def fixed_table_parameters(problem) -> dict[str, str]:
+    """``{parameter_id: key of FIXED_TABLE_REASONS}`` for each parameter-table row the fixed tables
+    name: the ties no model edit can make (PEtab-MCP#283). A row the model's math does not read is
+    in no model text to rename, and a rule defining it takes the row the measurement table's
+    overrides need: ``solved_analytically`` for a noise sigma :func:`classify_inner_parameters`
+    solves (as the bound refusal on it says), else which table names it. A row the model reads
+    too (a total that also normalises an observable) is :data:`READ_BY_TABLES_TOO`: a tie keeps it
+    and renames the other onto it, since renamed away the tables would still read the old name."""
+    math = _model_math_names(problem.model.sbml_model)
+    observation = observation_model_symbols(problem)
+    tables = table_referenced_symbols(problem)
+    inner = classify_inner_parameters(problem)
+    out: dict[str, str] = {}
+    for raw in problem.parameter_df.index:
+        pid = str(raw)
+        if pid not in tables:
+            continue
+        if pid in math:
+            out[pid] = READ_BY_TABLES_TOO
+        elif inner.get(pid) == INNER_TYPE_SIGMA:
+            out[pid] = "solved_analytically"
+        elif pid in observation:
+            out[pid] = "measurement_tables_only"
+        else:
+            out[pid] = "condition_table_only"
+    return out
+
+
+def _measurement_rows_for_sigma(problem, pid: str, frame=None):
     """Measurement rows whose noise is modelled by sigma parameter ``pid`` — matched via a
     direct ``noiseParameters`` override, or (for a sigma named directly in the fixed
     ``noiseFormula`` rather than through a declared noise placeholder) via the observable(s)
-    whose formula names it. ``None`` if no match/no data."""
-    mdf = problem.measurement_df
+    whose formula names it. ``frame`` is any frame in the measurement table's column names (the
+    simulation records, say) to select from instead. ``None`` if no match/no data."""
+    mdf = problem.measurement_df if frame is None else frame
     if mdf is None or MEASUREMENT not in mdf.columns:
         return None
     if NOISE_PARAMETERS in mdf.columns:
@@ -1587,6 +1690,11 @@ def _noise_expr_and_observable(problem, pid: str, rows):
     this wrong is what made an earlier attempt evaluate the formula without reference to the sigma
     at all.) Requires the covered rows to share one observable and one override list, which is the
     normal case; ``None`` otherwise so callers fail open rather than average incomparable formulas.
+
+    The observable symbol is never a parameter-table id. A scale both formulas name (isensee's
+    ``s_Calpha_global`` in ``b + s_Calpha_global*x`` and in ``s_Calpha_global*rho``) taken for it
+    made the noise read as proportional, so ``rho`` alone was judged against ``std(ln y)`` and a
+    model at other internal units read ``collapsed`` at the same noise (#237).
     """
     odf = getattr(problem, "observable_df", None)
     if odf is None or NOISE_FORMULA not in odf.columns or OBSERVABLE_ID not in rows.columns:
@@ -1624,11 +1732,11 @@ def _noise_expr_and_observable(problem, pid: str, rows):
         # is taken with respect to the symbol actually present.
         candidates = [sp.Symbol(observable_id, real=True)]
         if OBSERVABLE_FORMULA in odf.columns:
+            pdf = getattr(problem, "parameter_df", None)
+            parameter_ids = set() if pdf is None else {str(i) for i in pdf.index}
             try:
-                candidates += [
-                    sp.Symbol(name, real=True)
-                    for name in sorted(formula_symbols(odf.loc[observable_id, OBSERVABLE_FORMULA]))
-                ]
+                names = formula_symbols(odf.loc[observable_id, OBSERVABLE_FORMULA])
+                candidates += [sp.Symbol(n, real=True) for n in sorted(names - parameter_ids)]
             except KeyError:
                 pass
         free = expr.free_symbols
@@ -1914,6 +2022,11 @@ def sigma_scale_coupled(problem, pid: str) -> bool:
     """True when ``pid`` shares its noiseFormula with an ESTIMATED co-parameter, so the sigma's own
     numeric value is not comparable ACROSS MODELS -- only the combination is.
 
+    A co-parameter counts wherever it enters: as a ``noiseParameters`` entry or named in the
+    noiseFormula itself. Reading only the column missed isensee, whose formulas name their scales
+    (``s_Calpha_global*rho_Calpha_Microscopy``), so a judge compared ``rho`` raw and rejected fits
+    that beat the reference (#237).
+
     Deliberately NOT restricted to a product, and does not inspect the formula's FORM: any estimated
     co-parameter (``gain * sigma``, ``sigma + offset``) leaves the raw sigma under-determined on its
     own, and every such case is one where a cross-model raw-sigma ratio is the wrong statistic. A
@@ -1938,18 +2051,20 @@ def sigma_scale_coupled(problem, pid: str) -> bool:
     called them 179x inflated. Of 21 problems measured, that one is the ONLY one with this shape.
     """
     rows = _measurement_rows_for_sigma(problem, pid)
-    if rows is None or rows.empty or NOISE_PARAMETERS not in rows.columns:
+    if rows is None or rows.empty:
         return False
-    for cell in rows[NOISE_PARAMETERS].dropna().astype(str).unique():
-        parts = [p.strip() for p in cell.split(";")]
-        if len(parts) < 2 or pid not in parts:
-            continue
-        for other in parts:
-            # A co-factor that is itself ESTIMATED is what breaks comparability. A FIXED co-factor
-            # is a declared constant of the problem: identical on both sides, so the ratio survives.
-            if other != pid and other and is_parameter_estimated(problem, other):
-                return True
-    return False
+    names: set[str] = set()
+    if NOISE_PARAMETERS in rows.columns:
+        for cell in rows[NOISE_PARAMETERS].dropna().astype(str).unique():
+            names |= {p.strip() for p in cell.split(";")}
+    odf = getattr(problem, "observable_df", None)
+    if odf is not None and NOISE_FORMULA in odf.columns and OBSERVABLE_ID in rows.columns:
+        for oid in rows[OBSERVABLE_ID].dropna().unique():
+            if oid in odf.index:
+                names |= formula_symbols(odf.loc[oid, NOISE_FORMULA])
+    names.discard(pid)
+    # ESTIMATED co-parameters only: a FIXED one is identical on both sides, so the ratio survives.
+    return any(is_parameter_estimated(problem, n) for n in names)
 
 
 def sigma_effective_value(
@@ -1972,7 +2087,8 @@ def sigma_effective_value(
     gate uses, so the ratio is unaffected, but two models that split the same fit differently
     between gain and sigma report different values here. For a per-gel scale times a shared sigma
     the amplitude is an exact divisor of the formula, so the normalised value coincides with the
-    raw sigma.
+    raw sigma. A scale behind an offset (isensee's ``b + s*x``) is no amplitude and stays in, so
+    there the value is the sd in measurement units.
     """
     rows = _measurement_rows_for_sigma(problem, pid)
     if rows is None or rows.empty:
@@ -2380,9 +2496,39 @@ def _ic_convention(v0: float) -> tuple[str, bool]:
     return (LOG10 if v0 > 0.0 else LIN), True  # a guess: estimated, on log10 when it can be
 
 
-def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
+def _row_defaults(pid: str, value, direct: set[str], ic_params: set[str], exp_params: set[str]):
+    """The ``(scale, lower bound, upper bound, estimate)`` a row for ``pid`` declared at ``value``
+    takes. A direct initial condition follows :func:`_ic_convention`; an exponent outside one gets
+    a tight linear bracket, so it cannot run off to a step function on the wide log10 box; anything
+    else is estimated, on log10 when ``value`` is positive (a non-positive bound fails the lint).
+
+    A participant of a COMPOUND initial condition (``CIS = CIS_tot*cis_oe``) is in that last group:
+    one declared at 1 is a fold the author means to fit. The add-loop used to fix it, with no
+    message, and bachmann 23 dropped a right hypothesis on that false negative (PEtab-MCP#325)."""
+    try:
+        v0 = float(value) if value is not None else 0.0
+    except (TypeError, ValueError):
+        v0 = 0.0
+    if pid in direct:
+        scale, estimate = _ic_convention(v0)
+        return (scale, *_default_bounds(value), estimate)
+    if pid in exp_params and pid not in ic_params:
+        return (LIN, *_exponent_bounds(value), True)
+    return ((LOG10 if v0 > 0.0 else LIN), *_default_bounds(value), True)
+
+
+def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
-    (keeping observable/noise parameters). Returns the add/remove diff.
+    (keeping observable/noise parameters). Returns the add/remove diff, and ``seeded``: the
+    parameters nothing gives a value (no assignment in the model, no row, no shipped row), each
+    started at the seed. :func:`operations._orphans` names those a version defined. And
+    ``fixed``: the rows this sync holds FIXED by the 0/1 convention below, minted so or moved there,
+    which :func:`operations._held_fixed_warnings` names.
+
+    ``carried`` maps a ``rename``'s new id to the row its old id had (:func:`operations.set_model`).
+    A new id the table may hold takes that row, fitted value, bounds and scale, unless the problem
+    shipped one of its own; it is reported as ``carried``, never ``added`` or ``seeded``. Minting
+    it at a default instead lost the fit the rename was meant to keep (PEtab-MCP#283).
 
     ``shipped`` is the parameter table the PROBLEM shipped with
     (:attr:`session.PetabSession.shipped_parameter_df`). A parameter being added that appears
@@ -2396,9 +2542,12 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     Initial conditions are ESTIMATED by default -- a declared t=0 is only a guess and must never
     be silently frozen (issue #90). Two leak-free VALUE conventions stay FIXED: an IC of exactly
     ``0`` (an empty pool -- nothing to estimate) and an IC of exactly ``1`` (a unit normalization,
-    e.g. a conserved-total set to 1). A row follows the value the model declares on every sync, so
-    re-declaring an IC moves it. A caller that needs some other IC fixed ships it as a fixed
-    parameter row, which reconcile never re-touches."""
+    e.g. a conserved-total set to 1). Fixing it BY VALUE names no species, so unlike a shipped fixed
+    row it leaks no hidden structure to the agent building the model. Only a DIRECT initial
+    condition (``<sid> = <param>``) is held so (:func:`_row_defaults`). A row follows the value the
+    model declares on every sync, so re-declaring an IC moves it, and a row the convention fixed
+    that is no longer a direct IC is estimated again. A caller that needs some other IC fixed ships
+    it as a fixed parameter row, which reconcile never re-touches."""
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     # A parameter that is a CONDITION TARGET is set per condition (a PEtab condition change),
@@ -2410,8 +2559,15 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     # A measurement mapping is not a parameter: no row, even while the seed holds it a constant.
     mappings = set(readouts(problem))
     valid -= mappings
+    shipped_ids = set(getattr(shipped, "index", []))
+    moved = []
+    for pid, row in sorted((carried or {}).items()):
+        if pid in valid and pid not in shipped_ids:
+            problem.parameter_df.loc[pid, list(row.index)] = list(row)
+            moved.append(pid)
     table_ids = set(problem.parameter_df.index)
     ic_params = _ic_parameter_ids(sm)
+    direct = _direct_ic_parameter_ids(sm)
     exp_params = _exponent_symbols(sm)  # cooperativity/Hill exponents -> lin scale, tight bounds
     keep_table = table_referenced_symbols(problem)  # observable/noise params etc.
     # ...but NOT a symbol PEtab forbids outright. An assignment-/rate-rule TARGET is computed by
@@ -2437,9 +2593,8 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
     keep_table -= species_ids(sm)
     keep_table -= mappings
 
-    added, removed = [], []
+    added, removed, seeded, fixed = [], [], [], []
 
-    shipped_ids = set(getattr(shipped, "index", []))
     # A parameter the model uses but never assigns (`deg: A -> ; k*A;` with no `k = …`) loads
     # with no SBML value: NaN to anything that reads the model without this table, and `k = ;`
     # in the Antimony the caller reads back (issue #38). It takes its row's nominal, else
@@ -2460,6 +2615,7 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
         if value is None:
             exponent = pid in exp_params and pid not in ic_params
             value = EXPONENT_LOWER_BOUND if exponent else SEED_INITIAL_VALUE
+            seeded.append(pid)
         parameter.setValue(value)
 
     for pid in sorted(valid - table_ids):
@@ -2472,92 +2628,72 @@ def sync_parameter_table(problem, shipped=None) -> dict[str, list[str]]:
             added.append(pid)
             continue
         value = problem.model.get_parameter_value(pid)
-        if pid in ic_params:
-            # Initial conditions are ESTIMATED by default (issue #90): a declared t=0 is only a
-            # guess, and freezing it hands the optimizer a value it can never correct (measured: a
-            # ~460 guess frozen where the truth is ~8090). A seeded/guessed IC is a
-            # strictly-positive concentration, so it is estimated on LOG10 with the usual wide
-            # bracketing bounds — exactly like a positive kinetic parameter — resolving seeds that
-            # span many orders (a receptor pool ~1e7 beside a kinase ~1e-2).
-            #   TWO leak-free VALUE conventions stay FIXED instead:
-            #     v0 == 0.0  -> an empty pool: nothing to estimate, and it cannot live on log10.
-            #     v0 == 1.0  -> a unit normalization: a conserved-total / normalization convention
-            #                   set to 1. Fixing it BY VALUE names no species, so — unlike shipping
-            #                   it as a fixed param — it leaks no hidden structure to the agent
-            #                   building the model.
-            # Any OTHER IC that must stay fixed is shipped as a fixed parameter row (which this sync
-            # never re-touches). A nonzero non-positive nominal can't live on log10 -> linear.
-            try:
-                v0 = float(value) if value is not None else 0.0
-            except (TypeError, ValueError):
-                v0 = 0.0
-            lb, ub = _default_bounds(value)
-            scale, estimate = _ic_convention(v0)
-        elif pid in exp_params:
-            # An exponent (Hill coefficient): estimate on a LINEAR scale with tight bounds so it
-            # cannot run off to a near-step-function on the wide default log10 range.
-            lb, ub = _exponent_bounds(value)
-            scale, estimate = LIN, True
-        else:
-            # A generic rate constant: estimate on log10 when the nominal is positive (the usual
-            # case for a kinetic parameter). A non-positive nominal cannot live on a log scale,
-            # so fall back to linear, avoiding an invalid log10 row (a non-positive bound) that
-            # the lint would then reject.
-            lb, ub = _default_bounds(value)
-            try:
-                positive = value is not None and float(value) > 0
-            except (TypeError, ValueError):
-                positive = False
-            scale, estimate = (LOG10 if positive else LIN), True
+        # Initial conditions are ESTIMATED by default (issue #90): a declared t=0 is only a guess,
+        # and freezing it hands the optimizer a value it can never correct (measured: a ~460 guess
+        # frozen where the truth is ~8090).
+        scale, lb, ub, estimate = _row_defaults(pid, value, direct, ic_params, exp_params)
         # One assignment, not one per column: a row added a column at a time is NaN in the rest,
         # which makes `estimate` float64, and pandas 3.1 refuses a bool there.
         problem.parameter_df.loc[
             pid, [PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]
         ] = [scale, lb, ub, value, estimate]
         added.append(pid)
+        if not estimate:
+            fixed.append(pid)
 
-    # Re-derive the convention on IC rows that ALREADY EXIST, from the value the model declares
-    # now — the add-loop above only reaches params in `valid - table_ids`. That covers a seed row
-    # re-authored under the same state name (e.g. states x_0..x_4, each at 1) and a start
-    # re-declared at another value, neither of which the agent could move: a parameters-arg edit
-    # sets bounds/scale only. A shipped row is left as the problem defined it, and an estimated
-    # row whose value is still neither 0 nor 1 keeps its fitted nominal and bounds. Restricted to
-    # DIRECT ICs (`<sid> = <param>`): a participant of a COMPOUND parametric IC (`Rec =
-    # ini_R1*ini_R2fold`) valued 1 is a fold / normalisation seed to estimate, not a
-    # unit-normalisation IC to fix.
+    # Re-derive the rows that ALREADY EXIST from the value the model declares now; the add-loop
+    # above only reaches params in `valid - table_ids`. A direct IC re-declared at another value
+    # (states x_0..x_4 re-authored at 1) moves, since a parameters-arg edit sets bounds/scale only.
+    # A row the convention fixed that is no longer a direct IC (a start folded into a compound one)
+    # is estimated again. A shipped row is left as the problem defined it, and an estimated row
+    # that stays estimated keeps its fitted nominal and bounds.
     df = problem.parameter_df
-    for pid in sorted((_direct_ic_parameter_ids(sm) & table_ids) - shipped_ids):
-        if pid not in df.index:
+    for pid in sorted((valid & table_ids) - shipped_ids):
+        estimated = is_parameter_estimated(problem, pid)
+        if estimated and pid not in direct:
             continue
         try:
             v0 = float(problem.model.get_parameter_value(pid))
         except (TypeError, ValueError):
             continue
-        scale, estimate = _ic_convention(v0)
-        estimated = is_parameter_estimated(problem, pid)
+        scale, lb, ub, estimate = _row_defaults(pid, v0, direct, ic_params, exp_params)
         if estimate and estimated:
             continue  # still a guess: its fitted nominal and bounds stand
         if not estimate and not estimated and df.get(NOMINAL_VALUE, {}).get(pid) == v0:
             continue
         # Bounds bracket the new nominal, as in the add-loop: stale positive-log10 seed bounds left
         # an empty-pool IC fixed at 0.0 with a lowerBound of 1e-4 ABOVE it.
-        lb, ub = _default_bounds(v0)
-        df.loc[pid, PARAMETER_SCALE] = scale
-        df.loc[pid, LOWER_BOUND] = lb
-        df.loc[pid, UPPER_BOUND] = ub
-        df.loc[pid, NOMINAL_VALUE] = v0
-        df.loc[pid, ESTIMATE] = estimate
+        df.loc[pid, [PARAMETER_SCALE, LOWER_BOUND, UPPER_BOUND, NOMINAL_VALUE, ESTIMATE]] = [
+            scale,
+            lb,
+            ub,
+            v0,
+            estimate,
+        ]
+        if not estimate:
+            fixed.append(pid)
 
     for pid in sorted(table_ids - valid - keep_table):
         problem.parameter_df = problem.parameter_df.drop(index=pid)
         removed.append(pid)
 
-    return {"added": added, "removed": removed}
+    return {
+        "added": added,
+        "removed": removed,
+        "seeded": seeded,
+        "carried": moved,
+        "fixed": fixed,
+    }
 
 
 #: The species minted when a model would otherwise have none. Named to be obviously not the
 #: caller's: it exists only to keep the "there is always at least one species" invariant true.
 PLACEHOLDER_SPECIES = "petab_mcp_placeholder"
+
+
+def authored_species(sm) -> list[str]:
+    """The model's species ids, in model order, without :data:`PLACEHOLDER_SPECIES`."""
+    return [s.getId() for s in sm.getListOfSpecies() if s.getId() != PLACEHOLDER_SPECIES]
 
 
 def ensure_one_species(sm) -> bool:
@@ -2596,16 +2732,40 @@ def ensure_one_species(sm) -> bool:
     return True
 
 
-def reconcile(problem, shipped=None) -> dict[str, Any]:
-    """Full reconciliation after a structural edit: promote local parameters, prune, parametric
-    ICs, table sync.
+def declare_inputs(problem) -> list[str]:
+    """Declare each condition target the model does not, as a constant parameter at 0, and return
+    their ids. Every target must be a model entity, and a target was declared only by a reader: on
+    froehlich each of about 145 had to be written by hand, most runs lost their first edit to
+    "invalid targets", and removing an input's last reader was refused with no op to re-declare it
+    (PEtab-MCP#332). A target the model declares, as a species or otherwise, is left as it is. It
+    has no row (:func:`sync_parameter_table`), so it costs nothing in k; one nothing reads is named
+    by the unread-input lint (:func:`validation._unread_input_issues`)."""
+    sm = problem.model.sbml_model
+    declared = []
+    for tid in sorted(condition_target_symbols(problem)):
+        if sm.getElementBySId(tid) is not None:
+            continue
+        parameter = sm.createParameter()
+        parameter.setId(tid)
+        parameter.setValue(0.0)
+        parameter.setConstant(True)
+        declared.append(tid)
+    return declared
+
+
+def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) -> dict[str, Any]:
+    """Full reconciliation after a structural edit: promote local parameters, prune, declare the
+    condition inputs the model leaves out (:func:`declare_inputs`, returned as ``inputs``),
+    parametric ICs, table sync.
 
     Initial conditions are estimated by default; an IC of exactly 1 is held FIXED and an IC of
     exactly 0 gets no parameter at all (see :func:`ensure_parametric_initial_conditions`). ``shipped`` is the problem's original parameter table, so a
     row the model reintroduces comes back as the problem defined it — see
-    :func:`sync_parameter_table`.
+    :func:`sync_parameter_table`, which also takes ``carried``, the rows a ``rename`` carries.
 
-    Runs unchanged on the content-free seed: it needs no special pass, because a shipped row it
+    The content-free seed passes ``parametric_ics=False``: its placeholder species get no
+    ``<sid>_init`` parameter or row, and keep the literal :data:`SEED_INITIAL_VALUE` they are
+    declared at, so the caller's first model gets the row minted from it. A shipped row the seed
     prunes is restored the moment the caller's model declares that parameter.
     """
     sm = problem.model.sbml_model
@@ -2614,16 +2774,18 @@ def reconcile(problem, shipped=None) -> dict[str, Any]:
     pruned = prune_orphans(problem)
     # AFTER the prune, or it would be pruned as the orphan it deliberately is.
     ensure_one_species(sm)
+    inputs = declare_inputs(problem)
     # Species whose IC is set per-condition (a condition target) are driven by the condition
     # table, not estimated — skip parametrising them (see ensure_parametric_initial_conditions).
     # `protect_ids` is the SHIPPED table's own ids: if the problem author shipped a `<sid>_init`
     # row, that row is part of the problem definition and the zero/unset skip must not delete it
     # out from under them (`session.protected_fixed_parameter_ids` deliberately excludes IC
     # parameters, so nothing else would catch it).
-    ensure_parametric_initial_conditions(
-        sm,
-        skip_species=condition_target_symbols(problem),
-        protect_ids=set(shipped.index) if shipped is not None else None,
-    )
-    synced = sync_parameter_table(problem, shipped=shipped)
-    return {"pruned": pruned, "parameters": synced}
+    if parametric_ics:
+        ensure_parametric_initial_conditions(
+            sm,
+            skip_species=condition_target_symbols(problem),
+            protect_ids=set(shipped.index) if shipped is not None else None,
+        )
+    synced = sync_parameter_table(problem, shipped=shipped, carried=carried)
+    return {"pruned": pruned, "parameters": synced, "inputs": inputs}

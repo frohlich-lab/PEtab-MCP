@@ -1,56 +1,96 @@
-"""Run a fit's multistart on the server's dask cluster, one worker pool for every session.
+"""Run a fit's multistart on a dask cluster: usually a fit pool every server of a sweep shares, which
+``petab-mcp-pool`` runs (:mod:`petab_mcp.pool`) and a server joins by its scheduler's address.
 
 Without a cluster, each fit starts up to ``FIT_N_WORKERS`` local processes, so sessions fitting at
 once oversubscribe the node, and Fides' per-start time cap then stops slowed starts early:
 contention changes results, not only speed. With one, :func:`petab_mcp.server.create_server` builds
 one :class:`DaskEngine`, and every fit and held-out refit of that server runs its starts there.
 
-* **Starts go in batches.** A task per start would flood the scheduler, which runs in the server's
-  process, with second-long tasks, so a fit sends ``k`` starts per task, run one after another on
-  one worker (:meth:`DaskEngine.batched`). Each is unpickled on its own there, so a start's result
-  does not depend on the batch it ran in.
+* **Starts go in batches.** A task per start would flood the scheduler, which every server's fits
+  share, with second-long tasks, so a fit sends ``k`` starts per task, run one after another on
+  one worker (:meth:`DaskEngine.batched`), fewer where the pool has idle workers to spread them over
+  (``fitting._starts_per_task``). Each is unpickled on its own there, its problem read anew, so a
+  start's result does not depend on the batch it ran in.
+* **A fit's problem leaves the server once, as a file.** A start carries only itself (start point,
+  id, optimizer, options); the problem every start of the fit shares is pickled once to
+  ``fit_problems/`` in the build root, which the workers read at the same absolute path. Each start
+  carried its problem in its task's argument before, and the scheduler keeps that until the fit
+  ends: a froehlich start was 0.45 GiB and took 60 s to pickle, so a sweep's 160 in flight needed
+  72 GiB of a pool job of 8 GB (NEMO, 2026-11-07). Deliberately not ``client.scatter``: scattered
+  data lives on one worker, so the nanny killing that worker over memory fails every start of the
+  fit still queued. The file goes when the fit returns, however it ends; a stopped batch that
+  reaches its next start after that fails there, and nothing waits on it.
 * **Fits take turns.** Batch ``j`` is submitted at ``priority=-j``; dask runs higher priorities
   first and equal ones in submission order, so concurrent fits interleave batch by batch.
 * **Logs follow the session.** A start's ``pypesto``/``fides`` records come back with its result
   and are re-emitted in the calling thread, so :mod:`petab_mcp.logging_setup` files them in that
   session's ``pypesto.log``.
 * **A cluster failure fails the fit** with :class:`~petab_mcp.errors.FitBackendError`, and the
-  starts never rerun on the server node (see ``fitting._run_fit``).
+  starts never rerun on the server node (see ``fitting._run_fit``). A worker killed under a batch
+  (``KilledWorker``, usually memory) is one, and its message says it is the pool's failure, not the
+  model's: an agent read one as its Hill form crashing (PEtab-MCP#341). A lost scheduler is the
+  pool's failure, not the run's:
+  it ends the call as the ``fit_pool`` :class:`~petab_mcp.errors.InfrastructureError`, and the
+  next fit runs on the pool once it is back at the same address (:class:`DaskEngine`).
 * **A batch has a deadline**: its starts' caps plus
   :data:`~petab_mcp.multistart.FIT_DEADLINE_MARGIN_S` from when it began running, as the scheduler
   hears from its worker's heartbeats. One past it is cancelled and its starts are scored as failed
   (:class:`petab_mcp.multistart.CappedEngine`); its worker runs on until it retires. Not from when
   it was submitted: it may wait behind other sessions' batches, or for the pool's jobs to start,
-  for any time.
-* **Workers never build.** Unpickling a start imports its compiled module from the server's build
-  root at the same absolute path. pyPESTO's creator and AMICI's importer would instead compile it
-  there, inside the build root every session shares, so :class:`_NoBuild` makes them raise.
+  for any time. A fit none of whose batches is running, as the scheduler hears it the same way, is
+  queued: those seconds are its ``queue_seconds``.
+* **Workers never build.** Unpickling a start's problem imports its compiled module from the
+  server's build root at the same absolute path. pyPESTO's creator and AMICI's importer would
+  instead compile it there, inside the build root every session shares, so :class:`_NoBuild` makes
+  them raise ``fit_pool``: the build root is not shared with the workers.
+* **A pool from another environment is refused** as the engine connects and at every fit, naming
+  both versions (:func:`versions`): a start is pickled, so it would fail every fit with errors that
+  are hard to read. This catches a pin bump made without restarting the pool, and a pool restarted
+  from another environment.
 
-The only module that imports ``distributed`` (the ``dask`` extra); a server without a cluster never
-imports it.
+With :mod:`petab_mcp.pool`, the only module that imports ``distributed`` (the ``dask`` extra); a
+server without a cluster never imports it.
 """
 
 from __future__ import annotations
 
 import contextlib
 import copy
+import importlib.metadata
 import itertools
+import json
 import logging
 import math
 import socket
 import threading
+import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import cloudpickle
-from distributed import Client, WorkerPlugin, wait
+from distributed import Client, KilledWorker, WorkerPlugin, wait
 from pypesto.engine import Task
 
-from .errors import FitBackendError, PetabMcpError
+from .errors import FIT_POOL, FitBackendError, InfrastructureError, PetabMcpError
 from .multistart import FIT_DEADLINE_MARGIN_S, CappedEngine, watch
 
 #: The loggers whose records a start carries back, the ones ``configure_pypesto`` routes.
 _LOGGERS = ("pypesto", "fides")
+
+#: The distributions a pickled start needs at the same version on the server and on its pool.
+_PINNED = ("amici", "pypesto", "petab", "petab-mcp")
+
+
+def versions() -> dict[str, str]:
+    """The version of each of :data:`_PINNED` in this process's environment, with the commit it was
+    installed from where the installer recorded one: a git pin's version does not move with it."""
+    found = {}
+    for name in _PINNED:
+        dist = importlib.metadata.distribution(name)
+        commit = json.loads(dist.read_text("direct_url.json") or "{}").get("vcs_info", {})
+        found[name] = "@".join(filter(None, (dist.version, commit.get("commit_id"))))
+    return found
 
 
 class _Records(logging.Handler):
@@ -72,15 +112,66 @@ class _Records(logging.Handler):
             self.handleError(record)
 
 
-def _work(payloads: list[bytes]) -> tuple[list[Any], list[tuple[str, int, str, float]]]:
-    """Run cloudpickled pyPESTO tasks one after another on a worker; returns their results and
-    their records."""
+def _shared_problem(tasks: list[Task]) -> Any:
+    """The problem all of ``tasks`` hold, as the starts pyPESTO's ``minimize`` makes of one problem
+    do, else ``None``."""
+    problem = getattr(tasks[0], "problem", None) if tasks else None
+    if all(getattr(task, "problem", None) is problem for task in tasks):
+        return problem
+    return None
+
+
+def _leave(problem: Any, folder: Path) -> Path:
+    """A new file in ``folder`` holding ``problem`` cloudpickled, whole or not there at all: a
+    worker may read it as soon as it exists."""
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{uuid.uuid4().hex}.pkl"
+    part = path.with_suffix(".part")
+    try:
+        with part.open("wb") as file:
+            cloudpickle.dump(problem, file)
+        part.replace(path)
+    finally:
+        part.unlink(missing_ok=True)
+    return path
+
+
+def _bare(task: Task) -> Task:
+    """A copy of ``task`` without its problem, which its fit left in a file (:func:`_leave`)."""
+    bare = copy.copy(task)
+    bare.problem = None
+    return bare
+
+
+def _start(payload: bytes, problem: Path | None) -> Task:
+    """The task cloudpickled in ``payload``, given the problem its fit left at ``problem`` (run on
+    a worker). The problem is read anew for each start, so the starts of a batch share nothing."""
+    task = cloudpickle.loads(payload)
+    if problem is None:
+        return task
+    try:
+        with open(problem, "rb") as file:
+            task.problem = cloudpickle.load(file)
+    except OSError as exc:
+        raise InfrastructureError(
+            FIT_POOL,
+            f"the fit's problem at {problem} is not readable on worker {socket.gethostname()} "
+            f"({exc.strerror}): the build root must be on a filesystem the workers share",
+        ) from exc
+    return task
+
+
+def _work(
+    payloads: list[bytes], problem: Path | None
+) -> tuple[list[Any], list[tuple[str, int, str, float]]]:
+    """Run cloudpickled pyPESTO tasks one after another on a worker, each given the problem at
+    ``problem`` where its fit left one (:func:`_start`); returns their results and their records."""
     capture = _Records()
     loggers = [logging.getLogger(name) for name in _LOGGERS]
     for logger in loggers:
         logger.addHandler(capture)
     try:
-        return [cloudpickle.loads(payload).execute() for payload in payloads], capture.records
+        return [_start(payload, problem).execute() for payload in payloads], capture.records
     finally:
         for logger in loggers:
             logger.removeHandler(capture)
@@ -96,19 +187,31 @@ def _executing(dask_scheduler) -> dict[str, float]:
     }
 
 
+def _free(dask_scheduler) -> int:
+    """The threads of the cluster's running workers that no task holds (run on the scheduler)."""
+    return sum(max(0, ws.nthreads - len(ws.processing)) for ws in dask_scheduler.running)
+
+
 def _refuse_build(builder, *args, **kwargs):
     """Stands in for a model build on a worker; ``builder`` is the pyPESTO creator or AMICI
     importer that was about to compile."""
     path = getattr(builder, "output_folder", None) or builder.output_dir
-    raise FitBackendError(
+    raise InfrastructureError(
+        FIT_POOL,
         f"the AMICI module at {path} is not importable on worker {socket.gethostname()}: the "
-        "build root must be on a filesystem the workers share, with an identical Python env"
+        "build root must be on a filesystem the workers share, with an identical Python env",
     )
 
 
 class _NoBuild(WorkerPlugin):
     """Replaces pyPESTO's and AMICI's model-build entry points with :func:`_refuse_build`, in each
-    worker process."""
+    worker process. The pool registers it before any server joins, so a server's registration is a
+    no-op (``idempotent``); on a bare cluster it is the first. One that replaced the last would be
+    broadcast to every worker: a sweep's 100 servers joining a pool of 1200 workers within seconds
+    stalled its scheduler past every connect's 30 s deadline (NEMO, 2026-11-04)."""
+
+    name = "petab-mcp-no-build"
+    idempotent = True
 
     def setup(self, worker) -> None:
         from amici.importers.petab import PetabImporter
@@ -122,28 +225,72 @@ class _NoBuild(WorkerPlugin):
         PetabImporter._do_import_sbml = _refuse_build
 
 
-class DaskEngine(CappedEngine):
-    """A pyPESTO engine that runs tasks on ``cluster``, ``starts_per_task`` to a dask task, through
-    a client of its own.
+def _check(client: Client) -> None:
+    """Refuse the pool ``client`` is on, as ``fit_pool``, unless its scheduler runs this
+    environment, naming both."""
+    here, there = versions(), client.run_on_scheduler(versions)
+    if here != there:
+        differ = [
+            f"{n} {there.get(n)} there, {v} here" for n, v in here.items() if there.get(n) != v
+        ]
+        raise InfrastructureError(
+            FIT_POOL,
+            f"the pool at {client.scheduler.address} runs another environment "
+            f"({'; '.join(differ)}): start a pool from this server's environment",
+        )
 
-    Refused before connecting when AMICI was built without HDF5: AMICI pickles a solver's settings
-    through HDF5, so no start could reach a worker and every fit on the cluster would fail.
+
+def _connect(cluster) -> Client:
+    """A new client of ``cluster``, its pool checked and :class:`_NoBuild` registered on it; closed
+    again if either fails."""
+    client = Client(cluster)
+    try:
+        _check(client)
+        client.register_plugin(_NoBuild())  # a no-op where the pool registered it first
+    except BaseException:
+        client.close()
+        raise
+    return client
+
+
+class _Connection:
+    """The client a :class:`DaskEngine` and its copies fit through, replaced under :attr:`lock`."""
+
+    def __init__(self, cluster) -> None:
+        self.cluster, self.lock, self.client = cluster, threading.Lock(), _connect(cluster)
+
+    def open(self) -> Client:
+        """The client, a new one where it has closed, its pool checked."""
+        with self.lock:
+            if self.client.status == "closed":
+                self.client = _connect(self.cluster)
+            client = self.client
+        _check(client)
+        return client
+
+
+class DaskEngine(CappedEngine):
+    """A pyPESTO engine that runs tasks on ``cluster``, a cluster or its scheduler's address,
+    ``starts_per_task`` to a dask task, through a client of its own; a fit leaves its problem for
+    its starts under ``build_root``, which the workers read at the same path.
+
+    A pool restarted at the same address serves the next fit without restarting the server. The
+    client reconnects by itself for ``distributed.comm.timeouts.connect`` (30 s), then closes for
+    good, and a pool resubmitted to SLURM took 4 min to come back (NEMO, 2026-11-04). So a fit that
+    finds the client closed opens a new one, which this engine and every copy :meth:`batched` made
+    then share; while the pool is still away, that fit fails as ``fit_pool`` and the next one tries
+    again. Every fit checks the pool's versions first, one call to the scheduler as each of its
+    polls is, since a client that reconnected by itself never checked the pool it is now on.
     """
 
     #: Starts per dask task; a fit sets its own, and their cap, through :meth:`batched`.
     starts_per_task = 1
 
-    def __init__(self, cluster) -> None:
-        from amici.sim.sundials import hdf5_enabled
-
-        if not hdf5_enabled:
-            raise FitBackendError(
-                "this AMICI was built without HDF5, which it needs to pickle a start for a "
-                "worker: rebuild AMICI with the HDF5 headers installed to fit on a cluster"
-            )
+    def __init__(self, cluster, build_root: str | Path) -> None:
         super().__init__()
-        self.client = Client(cluster)
-        self.client.register_plugin(_NoBuild(), name="petab-mcp-no-build")
+        self._connection = _Connection(cluster)
+        self.client = self._connection.client
+        self.problems = Path(build_root) / "fit_problems"
 
     def batched(
         self, k: int, start_seconds: float = math.inf, rerun: frozenset[str] = frozenset()
@@ -157,51 +304,96 @@ class DaskEngine(CappedEngine):
         engine.rerun = rerun
         return engine
 
+    def free_workers(self) -> int:
+        """The pool's idle worker threads (:func:`_free`), in one read of its scheduler; 0 while the
+        client is not connected or the read fails: the fit's :meth:`_run` then reconnects, or fails
+        as ``fit_pool``."""
+        client = self._connection.client
+        if client.status == "running":
+            with contextlib.suppress(Exception):
+                return client.run_on_scheduler(_free)
+        return 0
+
     def _wait(self, pending: list, timeout: float) -> None:
         """Block until one of ``pending`` finishes or ``timeout`` passes; raise a failed start's
         error at once, so the fit's other batches are cancelled instead of run."""
-        with contextlib.suppress(TimeoutError):
+        # `wait` runs on the current client, else on the process's latest, another server's in a
+        # process that hosts two.
+        with contextlib.suppress(TimeoutError), self.client.as_current():
             wait(pending, timeout=timeout, return_when="FIRST_COMPLETED")
         for future in pending:
             if future.status == "error":
                 future.result()
 
-    def _overrun(self, futures: list, sizes: list[int]) -> Callable[[list[int], float], set[int]]:
+    def _look(
+        self, futures: list, sizes: list[int]
+    ) -> Callable[[list[int], float], tuple[set[int], set[int]]]:
         """Names the batches of ``futures`` still pending that have run longer than their starts'
-        caps allow."""
+        caps allow, and those not yet running, in one read of the scheduler."""
 
-        def overrun(pending: list[int], _) -> set[int]:
-            if math.isinf(self.start_seconds):
-                return set()
+        def look(pending: list[int], _) -> tuple[set[int], set[int]]:
             ran = self.client.run_on_scheduler(_executing)
-            return {
-                i
-                for i in pending
-                if ran.get(futures[i].key, 0.0)
-                > sizes[i] * self.start_seconds + FIT_DEADLINE_MARGIN_S
-            }
+            cap = [size * self.start_seconds + FIT_DEADLINE_MARGIN_S for size in sizes]
+            return (
+                {i for i in pending if ran.get(futures[i].key, 0.0) > cap[i]},
+                {i for i in pending if futures[i].key not in ran},
+            )
 
-        return overrun
+        return look
 
     def _run(self, tasks: list[Task]) -> tuple[list[Any], set[int]]:
         """A failure cancels the starts still queued, so a failed fit leaves nothing queued on the
-        pool (a batch stopped past its caps keeps its worker until that worker retires)."""
+        pool (a batch stopped past its caps keeps its worker until that worker retires). The
+        problem the tasks share goes to a file of its own, removed however the fit ends."""
         futures, batches = [], list(itertools.batched(range(len(tasks)), self.starts_per_task))
         sizes = [len(batch) for batch in batches]
+        problem, path = _shared_problem(tasks), None
         try:
+            self.client = self._connection.open()  # this fit's, for _wait and _look too
+            if problem is not None:
+                path = _leave(problem, self.problems)
+            starts = tasks if path is None else [_bare(task) for task in tasks]
             for j, batch in enumerate(batches):
-                payloads = [cloudpickle.dumps(tasks[i]) for i in batch]
-                futures.append(self.client.submit(_work, payloads, priority=-j, pure=False))
-            stopped = watch(futures, sizes, self._wait, self._overrun(futures, sizes))
+                payloads = [cloudpickle.dumps(starts[i]) for i in batch]
+                futures.append(self.client.submit(_work, payloads, path, priority=-j, pure=False))
+            # Each batch's result is gathered once: by the progress reader as it finishes, and the
+            # rest after the wait.
+            gathered: dict[str, Any] = {}
+
+            def fvals(future) -> list[float]:
+                gathered[future.key] = future.result()
+                return [result.fval for result in gathered[future.key][0]]
+
+            stopped, waited = watch(
+                futures, sizes, self._wait, self._look(futures, sizes), fvals=fvals
+            )
+            self.queue_seconds += waited
             if stopped:
                 self.client.cancel([futures[j] for j in stopped])
-            done = self.client.gather([f for j, f in enumerate(futures) if j not in stopped])
+            kept = [f for j, f in enumerate(futures) if j not in stopped]
+            rest = [f for f in kept if f.key not in gathered]
+            if rest:
+                gathered.update(zip((f.key for f in rest), self.client.gather(rest)))
+            done = [gathered[f.key] for f in kept]
         except Exception as exc:  # noqa: BLE001 - every cluster failure fails the fit
             with contextlib.suppress(Exception):  # the client itself may be what failed
                 self.client.cancel(futures)
             if isinstance(exc, PetabMcpError):  # ours: a worker's refusal, a wedge, a cancel
                 raise
+            if self.client.status != "running":  # reconnecting, or closed after failing to
+                raise InfrastructureError(
+                    FIT_POOL, f"the fit's client lost the pool's scheduler: {exc!r}"
+                ) from exc
+            if isinstance(exc, KilledWorker):
+                raise FitBackendError(
+                    "a worker of the fit pool died while it ran this fit's starts (dask "
+                    "KilledWorker: out of memory, crashed, or its job ended). That is the pool's "
+                    "failure, not the model's: nothing was scored. Send the change again."
+                ) from exc
             raise FitBackendError(f"the fit's dask cluster failed it: {exc!r}") from exc
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
         for _, records in done:
             for name, levelno, message, created in records:
                 record = logging.makeLogRecord(

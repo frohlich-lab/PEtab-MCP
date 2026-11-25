@@ -50,7 +50,11 @@ dependencies = [
     # problem that does not lint (every benchmark problem is, until its agent writes the model),
     # petab1to2's own rescaling of log10 noise onto log-normal (#535), and the SciML extension
     # (`petab.v2.extensions.sciml`), which the harness's neural route stages its problems in.
-    "petab>=0.10.0",
+    # At PEtab-dev/libpetab-python#579, on top of 0.10.0, until a release has it: the PR keeps
+    # per-experiment constants in the condition table, where `ExperimentsToSbmlConverter` made
+    # each a piecewise initial assignment with a branch per experiment, which kept
+    # Froehlich_CellSystems2018 (9169 experiments) from importing. Back to a floor once released.
+    "petab @ git+https://github.com/PEtab-dev/libpetab-python.git@08a13908b060dd605df09f3a58c65ac01464520b",
     "python-libsbml>=5.19",
     # Floored at 3.2 because `validation.frozen_parametric_stoichiometry_issues` is now the ONLY
     # guard against a symbolic reaction stoichiometry (issue frohlich-lab/petab_mcp#89). Below
@@ -84,16 +88,14 @@ dependencies = [
     # stimulus applied that way never stayed on. PyPI has only an sdist, so AMICI is built from
     # source, which is why CI installs a toolchain before it.
     "amici>=1.2.0",
-    # pyPESTO main (98cf21e), not a release. It has #1782: the PEtab v2 importer takes the
-    # estimation scales (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format;
-    # without it every v2 problem is optimised linearly, with start points almost all in the top
-    # decade of a log-spanning box. It has #1740, before which the v2 importer raised
-    # NotImplementedError for `hierarchical=True`, so the fit inner-solves its noise sigmas and
-    # observable scalings whenever the problem allows. And it has #1786 (merged), which keeps a
-    # constant term out of a hierarchical scaling (`scale * h + c`, Alkan's readouts), which was
-    # scaled with it, silently. The importer reads AMICI through `amici.sim.sundials`, which AMICI
-    # 1.2.0 has. Move to a release once one contains #1786.
-    "pypesto[petab] @ git+https://github.com/ICB-DCM/pyPESTO.git@98cf21e101202b14dba5fc0b0adbdc05cd4f4871",
+    # 0.8.0 is the first release with #1782: the PEtab v2 importer takes the estimation scales
+    # (`PetabImporter(parameter_scales=...)`), which v2 dropped from the format; without it every
+    # v2 problem is optimised linearly, with start points almost all in the top decade of a
+    # log-spanning box. It has #1740, before which the v2 importer raised NotImplementedError for
+    # `hierarchical=True`, so the fit inner-solves its noise sigmas and observable scalings
+    # whenever the problem allows. And it has #1786, which keeps a constant term out of a
+    # hierarchical scaling (`scale * h + c`, Alkan's readouts), which was scaled with it, silently.
+    "pypesto[petab]>=0.8.0",
     "fides>=0.8.1",
     # INDRA supplies the Statement base class the mechanism vocabulary extends (`statements`),
     # Agent grounding, Preassembler deduplication, and the PySB assembler's monomer and site
@@ -120,17 +122,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Fits on a dask cluster: `create_server(cluster=...)` and petab_mcp.dask_engine, the only importer.
-# `distributed` below 2023.9.2 has no `Client.register_plugin`, which registers the engine's worker
-# plugin. dask-jobqueue builds cli.py's `--slurm-max-jobs` pool; below 0.8.5 every `sbatch`/
-# `scancel` it runs blocked the event loop of the scheduler the pool hosts in this process
-# (dask/dask-jobqueue#610).
-dask = ["distributed>=2023.9.2", "dask-jobqueue>=0.8.5"]
+# Fits on a dask cluster: `create_server(cluster=...)`, petab_mcp.dask_engine and petab_mcp.pool,
+# the only importers. `distributed` below 2023.12.0 ignores a plugin's `idempotent` attribute, so
+# every server's `register_plugin` re-sends the workers' plugin to each worker of the pool.
+# dask-jobqueue builds `petab-mcp-pool`'s SLURM cluster; below 0.8.5 every `sbatch`/`scancel` it
+# runs blocked the event loop of the scheduler the pool hosts in its process (dask/dask-jobqueue#610).
+dask = ["distributed>=2023.12.0", "dask-jobqueue>=0.8.5"]
 dev = [
-    # The dask extra, so CI runs tests/test_dask_engine.py and the SLURM-pool tests in
-    # tests/test_cli.py (which submit nothing) rather than skipping them.
+    # The dask extra, so CI runs tests/test_dask_engine.py and tests/test_pool.py (which submits
+    # nothing to SLURM) rather than skipping them.
     "petab-mcp[dask]",
     "pytest>=7", "pytest-asyncio>=0.23", "pytest-xdist>=3",
+    # The MCP Python client, whose 1 MiB SSE event limit tests/test_server.py holds `get_version`
+    # under (PEtab-MCP#231); only transitively present via fastmcp otherwise. 2.3 is fastmcp 4.1's
+    # floor; revisit the cap when mcp 3 ships.
+    "mcp>=2.3,<3",
     # The linter CI runs (`ruff check .`, config in [tool.ruff] below). Floored at 0.6 -- the
     # version the rule set was selected against. Left UNCAPPED deliberately: a new ruff CAN add
     # rules inside the E/F/W families we select, but the resulting failure is a handful of local
@@ -143,12 +149,13 @@ dev = [
 
 [project.scripts]
 petab-mcp = "petab_mcp.cli:main"
+petab-mcp-pool = "petab_mcp.pool:main"
 
 [project.urls]
 Homepage = "https://github.com/frohlich-lab/PEtab-MCP"
 Repository = "https://github.com/frohlich-lab/PEtab-MCP"
 
-# The pypesto and pysb pins above are git commits, which hatchling refuses without this.
+# The pysb pin above is a git commit, which hatchling refuses without this.
 [tool.hatch.metadata]
 allow-direct-references = true
 

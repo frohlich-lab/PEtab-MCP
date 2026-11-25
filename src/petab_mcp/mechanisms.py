@@ -395,6 +395,7 @@ def bind(
     binding: dict[str, str | float],
     merged: dict[str, object] | None = None,
     species=frozenset(),
+    inputs=frozenset(),
 ) -> Emission:
     """Replace parameters a row minted (``<prefix>_<kind>``) by a SHARED one or a NUMBER.
 
@@ -412,7 +413,8 @@ def bind(
     ``merged`` carries, across the rows of one model, each name an earlier binding renamed or
     replaced to what now stands for it, so a row that names another row's parameter shares what
     that row reads, whichever order they bind in. ``species`` are the ids the model names amounts
-    by, the entity map's and ``amounts``', so no binding reads one (:func:`_not_a_parameter`).
+    by, the entity map's and ``amounts``', so no binding reads one (:func:`_not_a_parameter`);
+    ``inputs`` the condition inputs no agent stands for, which a binding reads.
     """
     merged = {} if merged is None else merged
     minted = {name.removeprefix(f"{emission.prefix}_"): name for name in emission.parameters}
@@ -432,7 +434,7 @@ def bind(
             raise MechanismError(f"row {emission.prefix!r} binds {kind!r} to {target!r}")
         if isinstance(target, str) and not _IDENTIFIER.fullmatch(target):
             new, names = _bound_expression(
-                model, name, target, emission.prefix, merged, species
+                model, name, target, emission.prefix, merged, species, inputs
             )
             # A binding that scales the row's own constant (`kf="r1_kf*(1 + D)"`)
             # keeps that constant, and a row naming it shares the constant, not the scaling.
@@ -442,7 +444,7 @@ def bind(
             parameters += [n for n in names if n not in parameters]
             continue
         if isinstance(target, str):
-            _not_a_parameter(model, target, emission.prefix, name, species)
+            _not_a_parameter(model, target, emission.prefix, name, species, inputs)
             existing = _held(model, target, merged)
             if existing is None:
                 merged[name] = old
@@ -473,7 +475,7 @@ _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 
 
 def _not_a_parameter(
-    model: pysb.Model, ident: str, prefix: str, name: str, species=frozenset()
+    model: pysb.Model, ident: str, prefix: str, name: str, species=frozenset(), inputs=frozenset()
 ) -> None:
     """Refuse a binding that reads ``ident`` as a parameter when it names something else: a
     molecule or one of ``species``, the ids the model names amounts by (a parameter of its name
@@ -481,7 +483,8 @@ def _not_a_parameter(
     duplicate in PySB), a rate function, or ``time`` (which BioNetGen refused as a parameter
     name); an expression the model builds, a row's rate (whose regulators the reading row would
     read unstated) or a value a binding pinned; or a regulator's name, which only a mechanism's
-    rate reads. A row's own ``<prefix>_init`` constant is shared like any other."""
+    rate reads. A row's own ``<prefix>_init`` constant is shared like any other. A molecule that
+    is one of ``inputs`` is a condition input a row stated as an agent: its refusal says so."""
     held = model.components.get(ident)
     instead = ""
     if REGULATOR_NAME.fullmatch(ident):
@@ -501,11 +504,16 @@ def _not_a_parameter(
         )
     if isinstance(held, pysb.Monomer):
         what = "a molecule"
+        if ident in inputs:
+            instead = (
+                f" `{ident}` is a condition input: drop it from the statement and read it in the "
+                f'binding, `{name.removeprefix(f"{prefix}_")}="k*{ident}"`.'
+            )
     elif ident in species:
         what = "a species"
         instead = (
-            f" `{ident}` is the amount of the agent the entity map (or `amounts`) maps it to, "
-            "read by that agent's own name and sites, not by this id."
+            f" `{ident}` is the amount of the agent the entity map, `amounts` or a seed at its id "
+            "maps it to, read by that agent's own name and sites, not by this id."
         )
     elif isinstance(held, pysb.Parameter):
         return
@@ -558,6 +566,7 @@ def _bound_expression(
     prefix: str,
     merged: dict[str, object],
     species=frozenset(),
+    inputs=frozenset(),
 ):
     """``text`` as an Expression over shared ids, named after the parameter it replaces. Read
     over placeholder symbols first: sympy raised on `kcat Km` and `2kcat`, and PySB on `kcat,Km`
@@ -578,7 +587,7 @@ def _bound_expression(
             "exp/log/sqrt/piecewise (`KD*kf_on`)"
         )
     for n in names:
-        _not_a_parameter(model, n, prefix, name, species)
+        _not_a_parameter(model, n, prefix, name, species, inputs)
     value = over(trial, {n: _shared(model, n, merged) for n in names})
     expression = pysb.Expression(f"{name}_bound", value, _export=False)
     _add(model, expression)
@@ -669,6 +678,18 @@ def _how_ids_enter(names, problem_ids: dict[str, str], amounts: str) -> list[str
     ]
 
 
+#: What each of the two rate languages reads, said in every refusal of a rate's names
+#: (:func:`refuse_rate_names`), so a rule of one is not carried into the other.
+IN_RATE = (
+    "A `rate` re-rates an existing entry's reaction: it reads a role or regulator by its bare "
+    "name, already its amount, and takes no `amount()`."
+)
+IN_SCHEME = (
+    "A `scheme`'s rate reads an amount only as `amount(<pattern>)`, a role's or regulator's too, "
+    "and takes no `piecewise`."
+)
+
+
 def refuse_rate_names(
     rate: str,
     policy: str,
@@ -681,12 +702,16 @@ def refuse_rate_names(
 ) -> None:
     """Refuse a rate naming ``unknown``, names other than the ``allowed`` (``also`` says what else
     it may contain), with the closest allowed ones; and for a starting amount, an id of the problem
-    or one of the ``roles`` (a scheme reads them only as amounts), how ``amounts`` are read."""
+    or one of the ``roles`` (a scheme reads them only as amounts), how ``amounts`` are read.
+    ``roles`` given, the rate is a scheme's (:data:`IN_SCHEME`), else a written ``rate``'s
+    (:data:`IN_RATE`)."""
     from .model_edits import closest_symbols
 
     problem_ids = problem_ids or {}
     inits = [n for n in unknown if n.endswith("_init")]
-    new = [n for n in unknown if n not in (*inits, *roles, *problem_ids)]
+    bare = [n for n in unknown if n in roles or (roles and REGULATOR_NAME.fullmatch(n))]
+    wrapped = sorted(set(re.findall(r"\bamount\(\s*(\w+)\s*\)", rate))) if not roles else []
+    new = [n for n in unknown if n not in (*inits, *bare, *problem_ids) and n != "amount"]
     close = [
         f"{u} -> {' or '.join(map(repr, c))}"
         for u in new
@@ -694,11 +719,13 @@ def refuse_rate_names(
     ]
     sentences = [
         f"rate {rate!r} of {policy!r} may name only {allowed}{also}; it names {unknown}.",
+        *_how_ids_enter(unknown, problem_ids, amounts),
+        IN_SCHEME if roles else IN_RATE,
         f"Did you mean: {'; '.join(close)}?" if close else "",
         f"{inits}: `<name>_init` is the amount a species starts at, and a rate does not read it; "
         f"read the amount itself, {amounts}." if inits else "",
-        *(f"`{r}` is a role: read its amount, `amount({r})`." for r in unknown if r in roles),
-        *_how_ids_enter(unknown, problem_ids, amounts),
+        f"Write {', '.join(f'`amount({r})`' for r in bare)}." if bare else "",
+        f"Write {', '.join(f'`{r}`, not `amount({r})`' for r in wrapped)}." if wrapped else "",
         "Declare each new constant in the mechanism's `parameters`; it is minted per row as "
         "`<prefix>_<name>`." if new else "",
     ]
@@ -886,16 +913,15 @@ def written(
                 f"{base_key} builds {len(emitted.rules)} reaction(s) for this statement; a written "
                 "mechanism re-rates exactly one irreversible reaction"
             )
-        from .schemes import role_agents
+        from .schemes import empty_role, role_agents
 
         params = {n: pysb.Parameter(f"{prefix}_{n}", 1.0, _export=False) for n in sorted(names)}
         agents = role_agents(stmt) | (regulators or {})
         used = {t for t in tokens if t in agents}
         if missing := sorted({t for t in tokens if t in roles or positional.match(t)} - set(agents)):
             raise MechanismError(
-                f"row {prefix!r}: the rate of {policy!r} reads {missing}, which its statement "
-                "leaves empty; a role holding several agents is read by position (`obj_from_0`). "
-                "Give the statement that agent, or use a mechanism whose rate does not read it"
+                empty_role(prefix, f"the rate of {policy!r}", stmt, missing[0])
+                + "; a role holding several agents is read by position (`obj_from_0`)"
             )
         amounts = {
             name: pysb.Observable(
@@ -995,6 +1021,7 @@ def assemble(
     rows: list[tuple],
     entities: dict[str, Agent] | None = None,
     library: dict[tuple[str, str], Policy] = REGISTRY,
+    inputs=frozenset(),
 ) -> tuple[pysb.Model, list[Emission]]:
     """Build the whole model from ``(statement, policy, prefix)`` rows, each optionally with a
     fourth element, its parameter binding (:func:`bind`), and a fifth, the regulators its
@@ -1002,8 +1029,34 @@ def assemble(
 
     ``entities`` (species id to ``Agent``, from the problem's entity map) joins the monomer
     pass, so a species the problem observes has its monomer and sites even when no row names it.
+    ``inputs`` are the condition inputs no agent stands for (:func:`bind`).
     """
     rows = [(*row, *[None] * (5 - len(row))) for row in rows]
+    model, emissions, agents, added = _emit(rows, entities, library)
+    _refuse_ruleless(rows, emissions, library)
+    _refuse_unchanging(rows, emissions, model)
+    # Bound once every row has minted its own: bound as each row was built, a row sharing a LATER
+    # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
+    merged: dict[str, object] = {}
+    emissions = [
+        bind(model, emission, row[3], merged, set(entities or {}), inputs) if row[3] else emission
+        for emission, row in zip(emissions, rows)
+    ]
+    return model, [
+        replace(e, sites_added={
+            name: {site: list(agents.agents[name].site_states.get(site, [])) for site in sites}
+            for name, sites in names.items() if sites
+        })
+        for e, names in zip(emissions, added)
+    ]
+
+
+def _emit(
+    rows: list[tuple], entities, library
+) -> tuple[pysb.Model, list[Emission], BaseAgentSet, list[dict[str, list[str]]]]:
+    """:func:`assemble`'s ``rows``, each of five elements, built into one model before any is
+    refused or bound: the model, each row's emission, the monomer pass's agents and the sites each
+    row's scheme added."""
     stmts = [row[0] for row in rows]
     # INDRA's monomer pass collects every site its own statement types imply; it skips the
     # vocabulary in :mod:`statements`, whose agents carry only the sites their own conditions
@@ -1062,22 +1115,7 @@ def assemble(
         instantiate(stmt, model, policy, prefix, library, regulators)
         for stmt, policy, prefix, _, regulators in rows
     ]
-    _refuse_ruleless(rows, emissions)
-    _refuse_unchanging(rows, emissions, model)
-    # Bound once every row has minted its own: bound as each row was built, a row sharing a LATER
-    # row's `back_k` made it a new shared id, and that row's own `back_k` then clashed with it.
-    merged: dict[str, object] = {}
-    emissions = [
-        bind(model, emission, row[3], merged, set(entities or {})) if row[3] else emission
-        for emission, row in zip(emissions, rows)
-    ]
-    return model, [
-        replace(e, sites_added={
-            name: {site: list(agents.agents[name].site_states.get(site, [])) for site in sites}
-            for name, sites in names.items() if sites
-        })
-        for e, names in zip(emissions, added)
-    ]
+    return model, emissions, agents, added
 
 
 def _monomer_policy(policy: str, library: dict[tuple[str, str], Policy]) -> str:
@@ -1087,12 +1125,14 @@ def _monomer_policy(policy: str, library: dict[tuple[str, str], Policy]) -> str:
     return getattr(entries[0], "indra_policy", "default") if entries else "default"
 
 
-def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
+def _refuse_ruleless(rows: list[tuple], emissions: list[Emission], library) -> None:
     """Refuse a row whose entry built no rule: the model would not contain what it asserts, and a
     constant it minted would be fitted to nothing. INDRA builds a rule once, so the same statement
     in a second row built nothing beside an orphan ``kf``, and it builds none for an ActiveForm.
     The same statement is the same by name (:func:`statements.name_key`), as INDRA names its rules:
-    one agent grounded in one row and not in the other was told to take a policy that builds one."""
+    one agent grounded in one row and not in the other was told to take a policy that builds one.
+    Any other is told the rows that build its rules' names already, where alone it builds them,
+    and which other entries of ``library`` build a rule for its statement."""
     for i, (row, emission) in enumerate(zip(rows, emissions)):
         if emission.rules:
             continue
@@ -1105,11 +1145,35 @@ def _refuse_ruleless(rows: list[tuple], emissions: list[Emission]) -> None:
                 "rule once, so this row builds nothing: merge the two rows, or give one another "
                 "policy"
             )
-        raise MechanismError(
-            f"row {prefix!r}: {type(stmt).__name__} under {policy!r} builds no rule, so the "
-            "model would not contain it. Give it a policy that builds one, or write one with "
-            "`mechanisms`"
+        stmt_type = type(stmt).__name__
+        alone = {p: _rules_alone(stmt, p, library) for t, p in sorted(library) if t == stmt_type}
+        others = [f"`{p}`" for p, rules in alone.items() if rules and p != policy]
+        instead = (
+            f"{', '.join(others)} build one for it: bind one, or write a mechanism with "
+            "`mechanisms`" if others else "No other library entry builds one for it: write one "
+            "with `mechanisms`, a `scheme` of its own rules"
         )
+        if clash := sorted({e.prefix for e in emissions if set(e.rules) & set(alone[policy])}):
+            raise MechanismError(
+                f"row {prefix!r}: {stmt_type} under {policy!r} builds {list(alone[policy])}, "
+                f"which rows {clash} build already: INDRA builds a rule of one name once, and "
+                "names it by its agents' tags but not their `-` (`B{-pS10}` as `B{pS10}`). "
+                + instead
+            )
+        raise MechanismError(
+            f"row {prefix!r}: {stmt_type} under {policy!r} builds no rule, so the model would "
+            f"not contain it. {instead}"
+        )
+
+
+def _rules_alone(stmt: Statement, policy: str, library) -> tuple[str, ...]:
+    """The rules ``library``'s entry ``policy`` builds for ``stmt`` alone, none where it refuses
+    it."""
+    try:
+        _, (emission,), *_ = _emit([(stmt, policy, "r", None, None)], {}, library)
+    except MechanismError:
+        return ()
+    return emission.rules
 
 
 def _refuse_unchanging(rows: list[tuple], emissions: list[Emission], model: pysb.Model) -> None:
@@ -1706,7 +1770,10 @@ def _indra(name: str) -> Policy:
     """INDRA's own ``name`` policy for a statement; what it added is read off the model, before
     against after. Its parameters are renamed ``<prefix>_<kind>`` (``kf``, ``kr``, ``Km``...):
     INDRA's own names (``kf_ar_phosphorylation_1``) say neither which row minted them nor which
-    statement, and an agent widening a bound had to look each one up."""
+    statement, and an agent widening a bound had to look each one up. A Conversion with no product
+    builds nothing, as INDRA's own does with several reactants: INDRA names its constant after the
+    first product, and indexed past the end of none (:func:`_refuse_ruleless` names the entries
+    that build it)."""
     entry = INDRA_DEFAULT if name == "default" else f"indra_{name}"
 
     def apply(stmt: Statement, model: pysb.Model, prefix: str) -> Emission:
@@ -1714,7 +1781,8 @@ def _indra(name: str) -> Policy:
         indra = PysbAssembler()
         indra.processed_policies = {stmt.uuid: IndraPolicy(name)}
         try:
-            indra._dispatch(_state_unwritten(stmt), "assemble", model, BaseAgentSet(), {})
+            if not isinstance(stmt, Conversion) or stmt.obj_to:
+                indra._dispatch(_state_unwritten(stmt), "assemble", model, BaseAgentSet(), {})
         except UnknownPolicyError as exc:
             raise MechanismError(
                 f"INDRA has no {name} assembly for {type(stmt).__name__}", cause="library_gap"

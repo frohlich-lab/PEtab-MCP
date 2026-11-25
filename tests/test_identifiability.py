@@ -447,7 +447,7 @@ def test_merge_candidates_refuse_pairs_they_cannot_price_honestly():
     mixed = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "lin"], roles=roles)
     assert mixed["ties"] == [] and mixed["n_ties_skipped"] == {"scale_mismatch": 1}
     same = merge_candidates(np.eye(2), names, [1.0, 1.0], scales=["log10", "log10"], roles=roles)
-    assert same["n_ties_priced"] == 1 and same["filters_off"] == ["at_bound"]
+    assert same["n_ties_priced"] == 1 and same["filters_off"] == ["fixed_tables", "at_bound"]
 
     unusable = merge_candidates(
         np.eye(2), names, [1.0, 1.0], scales=[float("nan")] * 2, roles=roles
@@ -777,3 +777,131 @@ def test_a_hierarchical_fits_rank_is_read_against_its_own_dimension(session):
     assert [p["id"] for p in out["parameters"]] == ["k1", "k2"]
     # the omission is stated, so it does not read as a bug
     assert "inner-solved" in out["inner_parameters_omitted"]
+
+
+def test_merge_candidates_offer_only_ties_an_edit_can_make():
+    """PEtab-MCP#283: a sweep's hints offered `sd_Cer_obs = sd_Sphinga_obs` (a sigma the fit solves
+    analytically) and ties of shipped offsets the model never reads; agents spent calls on them and
+    argued about them at the finish. A pair with a member only the fixed tables name is skipped,
+    counted by why, and an absent table says the filter is off."""
+    from petab_mcp.identifiability import merge_candidates
+
+    names = ["k1", "k2", "sd_a", "sd_b", "off_a", "off_b"]
+    fixed = {
+        "sd_a": "solved_analytically",
+        "sd_b": "solved_analytically",
+        "off_a": "measurement_tables_only",
+        "off_b": "measurement_tables_only",
+    }
+    rep = merge_candidates(np.eye(6), names, [1.0] * 6, fixed_tables=fixed)
+    assert [t["parameters"] for t in rep["ties"]] == [["k1", "k2"]]
+    assert rep["n_ties_skipped"] == {"measurement_tables_only": 5, "solved_analytically": 9}
+    assert "fixed_tables" in merge_candidates(np.eye(2), ["k1", "k2"], [1.0, 1.0])["filters_off"]
+
+    # one the tables read as well as the model is listed first, the member a tie keeps; of two
+    # such, either renamed away leaves the tables reading its old name
+    both = {"k1": "tables_read_it_too", "k3": "tables_read_it_too"}
+    rep = merge_candidates(np.eye(3), ["k1", "k2", "k3"], [1.0] * 3, fixed_tables=both)
+    assert [t["parameters"] for t in rep["ties"]] == [["k1", "k2"], ["k3", "k2"]]
+    assert rep["n_ties_skipped"] == {"tables_read_it_too": 1}
+
+
+def _tied_diagnosis(a="a", b="b", gap=1e-4):
+    """Two parameters the FIM cannot tell apart, ``gap`` apart on the log10 scale: a free tie."""
+    meta = _meta(a, b, est_scaled=1.0)
+    meta[1]["estimate_scaled"] = 1.0 + gap
+    return _identifiability_stats(meta, np.full((2, 2), 1e4) + np.eye(2) * 1e-5, {}, n_data=252)
+
+
+#: A source whose `A` and `B` start at literals, and the model its reconcile mints `A_init` and
+#: `B_init` into (`B` in amounts over a volume): neither name is in the text a `model_edits` op
+#: applies to.
+_SOURCE = """model m
+  compartment c = 2;
+  species A in c, B in c, C in c;
+  A = 1; B = 3; C = X0; X0 = 0.3; k1 = 1; k2 = 1;
+  r1: A -> B; k1*A;
+  r2: B -> C; k2*B;
+end
+"""
+_MINTED = _SOURCE.replace("A = 1; B = 3;", "A = A_init; B = B_init / c; A_init = 1; B_init = 3;")
+
+
+def _sbml(antimony):
+    from petab.v2.models.sbml_model import SbmlModel
+
+    return SbmlModel.from_antimony(antimony).sbml_model
+
+
+def test_a_merge_hint_names_the_rename_that_takes_it():
+    """PEtab-MCP#283: nothing said `rename` merges two parameters in one op, so blasi agents retyped
+    rate laws and lost a constant doing so. On a server whose `make_changes` takes `model_edits`
+    each hint carries the ops; the statements route has none to name."""
+    from petab_mcp.identifiability import merge_hints
+
+    diag = _tied_diagnosis("k1", "k2")
+    (hint,) = merge_hints(diag, model=(_SOURCE, _sbml(_MINTED)))
+    assert hint["take"] == [{"op": "rename", "old": "k2", "new": "k1"}]
+    assert "take" not in merge_hints(diag)[0]
+
+
+@pytest.mark.parametrize(
+    "keep, drop, ops",
+    [
+        # a minted member is in no text to rename: its species starts at the other, through the
+        # minted assignment's own formula
+        ("X0", "B_init", [{"op": "set_initial", "id": "B", "antimony": "X0 / c"}]),
+        # ...and no text may take a minted name while its species starts at a literal: the
+        # written member keeps its value instead
+        ("A_init", "X0", [{"op": "set_initial", "id": "A", "antimony": "X0"}]),
+        # of two minted members, the kept one's species is written to start at it by name first
+        (
+            "A_init",
+            "B_init",
+            [
+                {"op": "set_initial", "id": "A", "antimony": "A_init"},
+                {"op": "set_initial", "id": "B", "antimony": "A_init / c"},
+            ],
+        ),
+        ("k1", "nowhere", None),
+    ],
+)
+def test_a_minted_initial_value_is_tied_by_set_initial(keep, drop, ops):
+    """PEtab-MCP#336: hints on reconcile-minted `<species>_init` rows offered a `rename` that
+    fails one way ("does not occur in the model") and is refused the other ("the name the
+    reconcile gives species ..."). Boehm agents spent four refused calls on each."""
+    from petab_mcp.identifiability import tie_ops
+
+    assert tie_ops(keep, drop, _SOURCE, _sbml(_MINTED)) == ops
+
+
+def test_a_merge_hint_says_which_fit_priced_it_and_when_its_move_is_too_far():
+    """PEtab-MCP#336: blasi ties that moved 2-3 decades realised +4 to +12 nll against prices of
+    0.05-2.5, and alkan applied v23's prices to v22. A hint carries the version that priced it and
+    marks a move of a decade or more."""
+    from petab_mcp.identifiability import merge_hints
+
+    (near,) = merge_hints(_tied_diagnosis(), version=7)
+    assert near["priced_at_version"] == 7 and "price_unreliable" not in near
+    diag = _tied_diagnosis()
+    diag["merge_candidates"]["ties"][0]["move_scaled"] = 2.5
+    (far,) = merge_hints(diag)
+    assert far["price_unreliable"] is True and "priced_at_version" not in far
+
+
+def test_a_tie_its_base_gives_no_merge_hint_is_warned(session, monkeypatch):
+    """PEtab-MCP#336: deepseek alkan applied the hints v23 priced to v22 and lost 30.7 bic. A
+    `model_edits` tie that the base version's own fit does not hint is warned, naming the base."""
+    import petab_mcp.identifiability as I
+
+    hinted: dict[int, list] = {}
+    monkeypatch.setattr(I, "version_merge_hints", lambda _prov, v: hinted.get(v, []))
+    monkeypatch.setattr(type(session.provenance), "current_version", property(lambda _s: 4))
+    tie = [{"op": "rename", "old": "k2", "new": "k1"}]
+    (warning,) = I.unhinted_ties(session, tie, 4)
+    assert warning.startswith(I.UNHINTED_TIE) and "v4," in warning and "`k1` and `k2`" in warning
+    hinted[4] = [{"parameters": ["k1", "k2"]}]
+    assert I.unhinted_ties(session, tie, 4) == []
+    # a rename onto a fresh name ties nothing, and no version yet has no hints to miss
+    assert I.unhinted_ties(session, [{"op": "rename", "old": "k2", "new": "k9"}], 4) == []
+    assert I.unhinted_ties(session, tie, -1) == []

@@ -13,6 +13,7 @@ from indra.statements import (
     Agent,
     Autophosphorylation,
     BoundCondition,
+    Conversion,
     Dephosphorylation,
     Gap,
     Gef,
@@ -358,6 +359,14 @@ def test_a_policy_indra_cannot_assemble_is_a_library_gap():
     assert exc.value.cause == "library_gap"
 
 
+def test_a_conversion_to_nothing_under_indra_default_is_refused_not_crashed():
+    """`A -> nothing` raised IndexError inside INDRA's conversion assembly, which names its
+    constant after the first product: `make_changes` crashed instead of refusing the row."""
+    with pytest.raises(MechanismError, match=r"row 'r1': Conversion under 'indra_default' builds "
+                       r"no rule"):
+        M.assemble([(Conversion(None, [Agent("A")], []), M.INDRA_DEFAULT, "r1")])
+
+
 def test_reregistering_an_entry_raises():
     """A silent override builds whichever policy imported last. A programming error, not a
     refusal: no agent call reaches it."""
@@ -440,6 +449,14 @@ def test_a_written_rate_names_only_what_the_mechanism_allows():
             _written(f', "rate": "{rate}"')  # a repeated JSON key: the later one wins
 
 
+def test_a_written_rate_refuses_amount_and_says_it_reads_the_name_bare():
+    """`kf*amount(activated_by)` in a `rate` was refused as naming ['amount'] and nothing more, and
+    agents carried the scheme's `amount()` rule into it (6 of 7 problems, gemot round 3, #193)."""
+    with pytest.raises(MechanismError, match=r"`enz`, not `amount\(enz\)`") as exc:
+        _written(', "rate": "kcat*amount(enz) / Km"')
+    assert "takes no `amount()`" in str(exc.value)
+
+
 def test_a_refused_rate_name_comes_with_the_names_it_could_have_meant():
     with pytest.raises(MechanismError, match=r"Did you mean: kcatt -> 'kcat'"):
         _written(', "rate": "kcatt / (Km + enz)"')
@@ -507,7 +524,7 @@ def test_a_rate_reading_a_role_the_row_leaves_empty_is_refused():
         )
     for stmt, role in ((Phosphorylation(None, Agent("ERK"), "T", "185"), "enz"),
                        (Complex([Agent("A"), Agent("B")]), "members")):
-        with pytest.raises(MechanismError, match=rf"row 'r1': .* reads \['{role}'\], which its "):
+        with pytest.raises(MechanismError, match=rf"row 'r1': the rate of 'w' reads `{role}`, which `"):
             M.assemble([(stmt, "w", "r1")], library=library)
 
 
@@ -722,3 +739,20 @@ def test_a_row_binds_a_rate_to_an_expression_over_shared_ids():
     )
     assert {"KD", "kf_on"} <= params and "r1_k" not in params
     assert set(emissions[0].parameters) == {"KD", "kf_on"}
+
+
+def test_a_row_that_builds_no_rule_is_told_the_entries_that_build_one():
+    """A policy that builds nothing for the row was refused with only "give it a policy that
+    builds one", the largest group not in the skill: 14 refusals in 8 runs of gemot round 5
+    (#251)."""
+    stmt = Dephosphorylation(None, Agent("AKT1"), "S", "473")
+    with pytest.raises(MechanismError, match=r"under 'indra_michaelis_menten' builds no rule.*"
+                       r"`basal`.* build one for it"):
+        M.assemble([(stmt, "indra_michaelis_menten", "r1")])
+    # INDRA names `B{-pS10}`'s rule as `B{pS10}`'s and builds it once.
+    produced = [IncreaseAmount(None, Agent("B", mods=[ModCondition("phosphorylation", "S", "10",
+                                                                   is_modified)]))
+                for is_modified in (True, False)]
+    with pytest.raises(MechanismError, match=r"row 'r2': .* builds \['B_phosphoS10_synthesized'\], "
+                       r"which rows \['r1'\] build already.*`mass_action`"):
+        M.assemble([(produced[0], M.INDRA_DEFAULT, "r1"), (produced[1], M.INDRA_DEFAULT, "r2")])

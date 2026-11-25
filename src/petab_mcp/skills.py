@@ -50,6 +50,7 @@ class Skill:
     description: str  # frontmatter `description`
     text: str  # full SKILL.md, as authored
     files: dict[str, str] = field(default_factory=dict)  # relative path -> content
+    route: str | None = None  # frontmatter `route` (`statements` or `text`): only where offered
 
     def summary(self) -> dict[str, object]:
         # The resource URI uses the directory `slug` (a safe path segment), not the
@@ -147,6 +148,7 @@ def load_skills(skills_dir: str | Path | None) -> list[Skill]:
                 description=meta.get("description", ""),
                 text=text,
                 files=files,
+                route=meta.get("route"),
             )
         )
     return skills

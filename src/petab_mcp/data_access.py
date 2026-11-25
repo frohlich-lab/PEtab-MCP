@@ -6,17 +6,22 @@ loop produces is queryable in one place:
 
 * the fixed experimental design — ``measurements``, ``conditions``, ``experiments``,
   ``observables``;
-* the ``parameters`` table (bounds, scale, fitted ``nominalValue``, ``estimate``, plus each
+* the ``parameters`` table (bounds, scale, fitted ``nominal_value``, ``estimate``, plus each
   parameter's ``role`` and ``status``);
 * the ``simulations`` dataframe from the last commit — one row per measurement point,
   carrying the ``simulation`` value and the **residuals** (``residual``,
-  ``residual_weighted`` — the chi2 term — and the evaluated ``noise``) next to the
-  ``measurement``;
+  ``residual_weighted``, the signed (m − s)/σ whose square is the point's chi2 term, and the
+  evaluated ``noise``) next to the ``measurement``;
 * ``simulations_history`` — those same per-point rows for EVERY stored version, with a
   ``version`` column, so model versions can be compared point-by-point in one query
   (assembled lazily from the version store; see :func:`_simulation_history_frame`);
+* ``state_trajectories`` — the last commit's species and assignment rules at the measurement
+  times (see :meth:`engine.AmiciEngine._state_trajectories`), one row per value;
 * the last fit's pyPESTO multistart — ``optimization_starts`` (one row per start) and
   ``optimization_trace`` (one row per start/iteration, the objective over the run).
+
+Every table names its columns in snake_case: the PEtab tables' camelCase columns are renamed on
+the way in (``experimentId`` is ``experiment_id``, as in ``simulations``), see :func:`_snake`.
 
 Residual statistics, worst-fit points, per-observable / per-experiment / per-timepoint
 breakdowns, and bias or time-trend diagnostics are all just SQL over these tables now: the
@@ -34,6 +39,7 @@ itself prevent. Results come back as plain JSON records.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections import Counter
 from typing import Any
@@ -45,9 +51,11 @@ from petab.v2.C import (
     LOWER_BOUND,
     MEASUREMENT,
     NOISE_FORMULA,
+    NOISE_PARAMETERS,
     NOMINAL_VALUE,
     OBSERVABLE_FORMULA,
     OBSERVABLE_ID,
+    OBSERVABLE_PARAMETERS,
     PARAMETER_ID,
     TARGET_ID,
     TARGET_VALUE,
@@ -58,6 +66,7 @@ from petab.v2.C import (
 from .errors import MissingDependencyError, ValidationError
 from .formatting import _clean
 from .problem import PARAMETER_SCALE
+from .progress_signals import signal
 
 # Canonical (minimal) column schema for each FIXED PEtab table. Used only as a FALLBACK when
 # the live table is absent (an optional table petab loaded as ``None``) or empty with no
@@ -92,11 +101,15 @@ SIMULATION_COLUMNS = [
     "residual",
     "residual_weighted",
     "noise",
+    "noise_parameters",
 ]
 
 # The cross-version copy of the simulation dataframe: SIMULATION_COLUMNS plus which stored
 # version each row belongs to. Same stable-schema rationale as SIMULATION_COLUMNS.
 SIMULATION_HISTORY_COLUMNS = ["version", *SIMULATION_COLUMNS]
+
+#: The ``state_trajectories`` table: long, so its schema does not depend on the model's ids.
+STATE_TRAJECTORY_COLUMNS = ["experiment_id", "time", "entity_id", "value"]
 
 #: Rows discarded per fetch when skipping to a page ``offset``. Bounds the peak allocation of
 #: the skip itself, which would otherwise be O(offset) in one go.
@@ -126,11 +139,11 @@ OPTIMIZATION_TRACE_COLUMNS = ["start", "iteration", "fval", "time"]
 TABLE_DESCRIPTIONS: dict[str, str] = {
     "measurements": (
         "Fixed measurement data — one row per measured point, keyed by the experiment it was "
-        "measured in (experimentId '' = the model simulated as is)."
+        "measured in (experiment_id '' = the model simulated as is)."
     ),
     "conditions": (
-        "Fixed experimental conditions — one row per change a condition makes: conditionId, "
-        "targetId, targetValue."
+        "Fixed experimental conditions — one row per change a condition makes: condition_id, "
+        "target_id, target_value."
     ),
     "experiments": (
         "Fixed experiments — one row per (experiment, period start time, condition applied "
@@ -138,13 +151,14 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
     ),
     "observables": "Fixed observable definitions (formula, noise formula, noise distribution).",
     "parameters": (
-        "Parameter table: bounds, scale, nominalValue (fit-only), estimate, plus "
+        "Parameter table: bounds, scale, nominal_value (fit-only), estimate, plus "
         "role (kinetic/noise_sigma/observable_scaling/initial_condition/exponent/constant) "
         "and status (estimated/fixed)."
     ),
     "simulations": (
         "Per-point simulation dataframe from the last commit: measurement vs simulation "
-        "with residual, residual_weighted (the chi2 term), and noise (sigma). Empty until "
+        "with residual, residual_weighted (signed (measurement - simulation)/noise on the noise "
+        "model's scale; its square is the point's chi2 term), and noise (sigma). Empty until "
         "the first commit/fit."
     ),
     "simulations_history": (
@@ -152,6 +166,11 @@ TABLE_DESCRIPTIONS: dict[str, str] = {
         "residuals across model versions in one query (e.g. pivot residual_weighted on "
         "version to see per-point where v4 got worse than v3). A version whose fit failed "
         "stores no simulation and contributes no rows."
+    ),
+    "state_trajectories": (
+        "Every species and assignment rule of the last commit's model (entity_id) at each time its "
+        "experiment was measured, in model units: one row per value. AMICI simulates no other "
+        "times. Empty until the first fit."
     ),
     "optimization_starts": (
         "pyPESTO multistart results from the last fit: one row per start (start=0 is best) "
@@ -189,6 +208,13 @@ def _promote_index(df):
     return df.reset_index() if named else df.copy()
 
 
+def _snake(name: Any) -> str:
+    """``observableId`` -> ``observable_id``: the PEtab tables' columns as ``query_data`` names
+    them. Mixed conventions cost binder errors in 49 of 310 transcripts, ``experimentId`` sent to
+    ``simulations`` and ``experiment_id`` to ``measurements`` (#337)."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name)).lower()
+
+
 def _with_schema(df, columns):
     """Guarantee a queryable schema so the frame can be registered into DuckDB.
 
@@ -207,26 +233,28 @@ def _with_schema(df, columns):
     return df
 
 
-def _frames(session) -> dict[str, Any]:
+def _frames(session, problem: Any = None) -> dict[str, Any]:
     """Build the ``{table_name: DataFrame}`` mapping registered for a query.
 
-    Reads the *current* problem tables and the stored simulation dataframe
-    (``session.simulation``); the ``simulations`` frame is empty (but well-typed) when no
-    commit has produced records yet. Every frame is guaranteed at least one column (see
-    :func:`_with_schema`) so registering it into DuckDB cannot fail on an empty table.
+    Reads ``problem``'s tables (the session's, when not given), their columns renamed to
+    snake_case (:func:`_snake`), and the stored simulation dataframe (``session.simulation``); the
+    ``simulations`` frame is empty (but well-typed) when no commit has produced records yet. Every
+    frame is guaranteed at least one column (see :func:`_with_schema`) so registering it into
+    DuckDB cannot fail on an empty table.
     """
     import pandas as pd
 
     from .parameters import parameters_to_records
 
-    problem = session.problem
-    frames: dict[str, Any] = {
+    problem = session.problem if problem is None else problem
+    petab = {
         "measurements": _with_schema(_promote_index(problem.measurement_df), MEASUREMENT_COLUMNS),
         "conditions": _with_schema(_promote_index(problem.condition_df), CONDITION_COLUMNS),
         "experiments": _with_schema(_promote_index(problem.experiment_df), EXPERIMENT_COLUMNS),
         "observables": _with_schema(_promote_index(problem.observable_df), OBSERVABLE_COLUMNS),
         "parameters": _with_schema(pd.DataFrame(parameters_to_records(problem)), PARAMETER_COLUMNS),
     }
+    frames: dict[str, Any] = {name: df.rename(columns=_snake) for name, df in petab.items()}
 
     sim = session.simulation or {}
     records = sim.get("records") or []
@@ -240,6 +268,25 @@ def _frames(session) -> dict[str, Any]:
         opt.get("trace") or [], columns=OPTIMIZATION_TRACE_COLUMNS
     )
     return frames
+
+
+def _state_trajectories(session) -> dict[str, Any]:
+    """The stored ``{"ids", "points", "values"}`` of the last commit, ``{}`` where it has none."""
+    return (session.simulation or {}).get("state_trajectories") or {}
+
+
+def _state_trajectory_frame(session):
+    """The ``state_trajectories`` table: one row per (point, id) of :func:`_state_trajectories`.
+    Built only for a query that names it, like ``simulations_history``: it is ids × points rows."""
+    import pandas as pd
+
+    traj = _state_trajectories(session)
+    rows = [
+        (eid, t, entity, value)
+        for (eid, t), values in zip(traj.get("points") or [], traj.get("values") or [])
+        for entity, value in zip(traj.get("ids") or [], values)
+    ]
+    return pd.DataFrame(rows, columns=STATE_TRAJECTORY_COLUMNS)
 
 
 def _simulation_history_frame(session):
@@ -325,10 +372,11 @@ def query_references(sql: Any, table: str) -> bool:
     """Does ``sql`` name ``table``? A word-boundary scan of the raw query text.
 
     Two callers gate expensive work on this: the server skips generating the HEAD simulation
-    dataframe (an AMICI build+simulate — minutes on a cold session) when a query does not read
-    ``simulations``, and :func:`run_query` skips assembling ``simulations_history`` when a
-    query does not read it. ``\\b`` does not match between ``simulations`` and ``_`` (both word
-    characters), so the two names do not alias each other.
+    dataframe (an AMICI build+simulate — minutes on a cold session) when a query reads neither
+    ``simulations`` nor ``state_trajectories``, and :func:`run_query` skips assembling
+    ``simulations_history`` or ``state_trajectories`` when a query does not read it. ``\\b`` does
+    not match between ``simulations`` and ``_`` (both word characters), so the two names do not
+    alias each other.
 
     Deliberately a text scan, with the failure modes stated: a false positive (the bare name
     inside a comment or a string literal) costs one unnecessary build, and a name reached only
@@ -342,9 +390,10 @@ def query_references(sql: Any, table: str) -> bool:
     return bool(re.search(rf"\b{re.escape(table)}\b", sql, re.IGNORECASE))
 
 
-def query_references_head_simulations(sql: Any) -> bool:
-    """Does ``sql`` read the HEAD ``simulations`` table (as opposed to only the history)?"""
-    return query_references(sql, "simulations")
+def query_reads_head_simulation(sql: Any) -> bool:
+    """Does ``sql`` read a table of the HEAD simulation, ``simulations`` or
+    ``state_trajectories`` (as opposed to only the history)?"""
+    return query_references(sql, "simulations") or query_references(sql, "state_trajectories")
 
 
 def validate_page_args(max_rows: Any, offset: Any = 0) -> "tuple[int, int]":
@@ -428,6 +477,15 @@ def table_schema(session) -> dict[str, Any]:
             "n_rows": n_history,
         }
     )
+    traj = _state_trajectories(session)
+    tables.append(
+        {
+            "table": "state_trajectories",
+            "description": TABLE_DESCRIPTIONS["state_trajectories"],
+            "columns": list(STATE_TRAJECTORY_COLUMNS),
+            "n_rows": len(traj.get("ids") or []) * len(traj.get("points") or []),
+        }
+    )
     return {"tables": tables}
 
 
@@ -436,8 +494,8 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
 
     Copies the queryable tables (``measurements``, ``conditions``, ``experiments``, ``observables``,
     ``parameters``, ``simulations``, ``optimization_starts``, ``optimization_trace`` — plus
-    ``simulations_history``, materialized only when the query names it) into a
-    fresh in-memory DuckDB database, executes ``sql``, and returns
+    ``simulations_history`` and ``state_trajectories``, each materialized only when the query
+    names it) into a fresh in-memory DuckDB database, executes ``sql``, and returns
     ``{columns, rows, row_count, truncated}`` with at most ``max_rows`` records (one extra
     row is fetched to set ``truncated``). Because the tables are a disposable copy, the query
     may use any SQL it likes without affecting the session; a SQL error is surfaced as a
@@ -445,7 +503,9 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
     """
     max_rows, offset = validate_query_args(sql, max_rows, offset)
     duckdb = _duckdb()
-    frames = _frames(session)
+    # The tables the fit was made on: while a change is being fitted, `parameters` would
+    # otherwise be that change's beside the last fit's records (#330).
+    frames = _frames(session, session.fit_problem())
     # Materialized ONLY when the query names it (see query_references for the trade-off):
     # assembling it parses every stored version's simulations.json on a cold cache, and the
     # overwhelmingly common HEAD-only queries must not pay that.
@@ -462,6 +522,8 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
                 f"Could not read the version store for `simulations_history` ({exc}). The other "
                 "tables are unaffected — query `simulations` for the current model's residuals."
             ) from exc
+    if query_references(sql, "state_trajectories"):
+        frames["state_trajectories"] = _state_trajectory_frame(session)
 
     con = duckdb.connect()
     try:
@@ -470,7 +532,7 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
         # to the session, and the whole database is discarded when the connection closes.
         # Table names are fixed internal constants, so the CREATE is not an injection point.
         # A failure HERE (e.g. an un-registerable frame) happens before the user's SQL runs, so
-        # surface it as a clean, actionable client error — pointing at the working alternatives —
+        # surface it as a clean, actionable client error — pointing at `list_data_tables` —
         # rather than letting a raw exception crash the tool and get blindly re-proposed.
         try:
             for name, df in frames.items():
@@ -481,9 +543,8 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
                     con.unregister("_src")  # always drop the alias, even if the CREATE raised
         except duckdb.Error as exc:
             raise ValidationError(
-                f"Could not prepare the data tables for the query ({exc}). Use "
-                "`get_measurements` for the raw measurement data, or `list_data_tables` for "
-                "the available tables and their columns."
+                f"Could not prepare the data tables for the query ({exc}). Call "
+                "`list_data_tables` for the exact table/column names."
             ) from exc
         # Copying isolates the *data*, but not the host: a query could still read/write local
         # files or reach the network (read_csv/parquet, ATTACH, COPY, INSTALL/LOAD, httpfs).
@@ -510,10 +571,11 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
                 remaining -= len(skipped)
             rows = rel.fetchmany(max_rows + 1)
         except duckdb.Error as exc:
-            raise ValidationError(
-                f"SQL error: {exc}. Call `list_data_tables` for the exact table/column names, "
-                "or use `get_measurements` for the raw measurement data."
-            ) from exc
+            # Only a name the catalog or binder could not resolve is answered by the table list;
+            # a cast, a regex or a syntax error is not (#337).
+            names = isinstance(exc, (duckdb.BinderException, duckdb.CatalogException))
+            hint = " Call `list_data_tables` for the exact table/column names." if names else ""
+            raise ValidationError(f"SQL error: {exc}.{hint}") from exc
     finally:
         con.close()
 
@@ -534,17 +596,64 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
     return out
 
 
+def version_part_summary(part: str, blob: dict[str, Any], version: int) -> dict[str, Any]:
+    """Version ``version``'s stored ``part`` (:data:`provenance.VERSION_PARTS`) without its rows,
+    for a ``get_version`` reply the rows would make too large to send.
+
+    ``simulation`` keeps everything but ``records`` (the scores, ``k_eff``, the noise report and the
+    parameter diagnosis a client's judge reads) and adds ``chi2_by_observable``; ``optimization``
+    keeps everything but ``starts`` and ``trace`` and adds ``fvals``, each start's objective, best
+    first. ``omitted`` says what was dropped and where its rows are.
+    """
+    if part == "simulation":
+        records = blob.get("records") or []
+        by_observable: dict[str, dict[str, Any]] = {}
+        for r in records:
+            rw = r.get("residual_weighted")
+            if rw is not None:
+                entry = by_observable.setdefault(r["observable_id"], {"n": 0, "chi2": 0.0})
+                entry["n"] += 1
+                entry["chi2"] += rw * rw
+        for entry in by_observable.values():
+            entry["chi2"] = round(entry["chi2"], 3)
+        return {k: v for k, v in blob.items() if k != "records"} | {
+            "chi2_by_observable": by_observable,
+            "omitted": f"its {len(records)} records, more than one reply carries: "
+            f"simulations_history WHERE version = {version} holds them",
+        }
+    starts = blob.get("starts") or []
+    return {k: v for k, v in blob.items() if k not in ("starts", "trace")} | {
+        "fvals": [s.get("fval") for s in starts],
+        "omitted": f"its {len(starts)} starts and {len(blob.get('trace') or [])} trace rows, more "
+        "than one reply carries: optimization_starts and optimization_trace hold the "
+        "head version's",
+    }
+
+
 #: Why the residual section is empty: there are no per-point records for this model and a READ does
-#: not compile one to make them (see :func:`fitting.ensure_simulation`). Says what to do instead.
+#: not compile one to make them (see :func:`fitting.ensure_simulation`).
 _NO_SIMULATION_STATUS = (
     "no simulation to diagnose — no fit of this model has produced one, and a read does not compile "
-    "a model to make one. Commit the model with make_changes (which fits it), then read this again."
+    "a model to make one."
+)
+
+#: Why ``get_fit_diagnosis(version=N)`` has no residual section for that version.
+NO_STORED_RECORDS_STATUS = (
+    "version {version} stored no per-point records (its fit produced none), so it has no "
+    "residuals to diagnose. A read never refits to make them."
 )
 
 
-def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -> dict[str, Any]:
+def fit_diagnosis(
+    session,
+    worst_n: int = 8,
+    max_observables: int | None = 12,
+    *,
+    no_records: str = _NO_SIMULATION_STATUS,
+) -> dict[str, Any]:
     """A COMPACT, size-bounded residual diagnosis of the current fit — the ``residuals`` section of
-    ``get_fit_diagnosis``.
+    ``get_fit_diagnosis``. ``session`` may be a stored version's fit (:meth:`PetabSession.stored_fit`)
+    instead, and ``no_records`` is the ``status`` said where there are no per-point records.
 
     Unlike :func:`run_query` (arbitrary SQL, can return the whole dataset), this returns fixed
     aggregations with capped output — one row per observable (weighted χ², mean weighted
@@ -565,7 +674,7 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
     """
     df = _frames(session)["simulations"]
     if df is None or df.empty:
-        return {"status": _NO_SIMULATION_STATUS, "per_observable": [], "worst_points": []}
+        return {"status": no_records, "per_observable": [], "worst_points": []}
     d = df[df["residual_weighted"].notna()].copy()
     if d.empty:
         return {
@@ -575,6 +684,7 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
         }
     d["_rw"] = d["residual_weighted"].astype(float)
 
+    centred = _offset_centred_observables(session.problem)
     per_observable = []
     for obs, g in d.groupby("observable_id"):
         rw = g["_rw"]
@@ -587,11 +697,12 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
                     float(rw.mean()), 3
                 ),  # far from 0 => systematic bias
                 "max_abs_weighted_residual": round(float(rw.abs().max()), 3),
-                # Sign-based structure tests (see _residual_structure): these survive estimated
-                # noise sigmas, which flatten the magnitude scores above. Isolated so a failure in
+                # Sign-based structure tests (see _residual_structure): no sigma rescales these,
+                # unlike the magnitude scores above. Isolated so a failure in
                 # the added stats degrades to "tests unavailable" rather than taking down the whole
                 # (pre-existing, robust) magnitude diagnosis for this observable.
-                **_safe_residual_structure(g),
+                **_safe_residual_structure(g, centred=_clean(obs) in centred),
+                **({"by_construction": _offset_note(g)} if _clean(obs) in centred else {}),
             }
         )
     per_observable.sort(key=lambda r: r["chi2"], reverse=True)
@@ -694,29 +805,45 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
     # scorer outside the session calls this too). Empty {} when the problem has no estimated sigma
     # or no fit yet.
     noise_sigma: dict[str, Any] = {}
+    _rep = None
     try:
         from . import fitting
 
         _fit = (session.simulation or {}).get("fitted_parameters")
         _rep = fitting.noise_sigma_report(session.problem, _fit)
         if _rep:
-            noise_sigma = {"report": _rep, "advice": fitting.noise_sigma_advice(_rep)}
+            residual = {"flagged_observables": sorted(flagged)}
+            advice = fitting.noise_sigma_advice(_rep, session.problem, residual)
+            noise_sigma = {"report": _rep, "advice": advice}
     except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
         noise_sigma = {}
+    signals = sigma_misfit_signals(session, report=_rep, sims=df)
+    if signals["fitted_over_data_noise"]:
+        noise_sigma["fitted_over_data_noise"] = signals["fitted_over_data_noise"][:_SIGNALS_KEEP]
+    caveat = structure_tests_caveat(session.problem)
+    total_chi2 = float((d["_rw"] * d["_rw"]).sum())
+    chi2_note = _chi2_pinned(session.problem, d)
 
     return {
         "n_points": int(len(d)),
-        "total_chi2": round(float((d["_rw"] * d["_rw"]).sum()), 3),
+        "total_chi2": round(total_chi2, 3),
+        **({"total_chi2_note": _CHI2_BY_CONSTRUCTION} if chi2_note else {}),
         "per_observable": per_observable,  # bounded: worst-12 by chi2 + all flagged rows
         **({"omitted": omitted_note} if omitted_note else {}),
         "worst_points": worst_points,  # bounded: <= worst_n rows
-        "noise_sigma": noise_sigma,  # {} if no estimated sigma/fit; else {report, advice} (advice None when plausible)
+        # {} if no estimated sigma/fit, else {report, advice (None when plausible),
+        # fitted_over_data_noise}
+        "noise_sigma": noise_sigma,
+        "sigma_heterogeneity": [
+            {**h, "worst": h["worst"][:3]} for h in signals["heterogeneity"][:_SIGNALS_KEEP]
+        ],
+        **({"structure_tests_caveat": caveat} if caveat else {}),
         "hint": (
             "mean_weighted_residual far from 0 = a systematic over/under-shoot for that "
             "observable; worst_points show the largest model-vs-data deviations. "
-            "sign_test / runs_test detect bias and time trend from residual SIGNS, so they "
-            "still work when estimated noise sigmas flatten chi2/reduced_chi2 — but are "
-            "underpowered on few points (low_power), so read a non-significant result as "
+            "sign_test / runs_test detect bias and time trend from residual SIGNS, which no "
+            "sigma rescales — but are underpowered on few points (low_power), so read a "
+            "non-significant result as "
             "weak, not as a pass. The rolled-up verdict over these tests — including the "
             "replicate_lack_of_fit arm, whose PASS is worth only its lof_df (replicated points "
             "MINUS your estimated structural parameters): weak: true, or no lof_df, certifies "
@@ -726,20 +853,252 @@ def fit_diagnosis(session, worst_n: int = 8, max_observables: int | None = 12) -
     }
 
 
+#: How many sigmas each ranked list in :func:`fit_diagnosis` keeps, worst first.
+_SIGNALS_KEEP = 5
+
+#: :func:`fit_diagnosis`'s ``total_chi2_note`` and a fit result's ``chi2_note``, where
+#: :func:`_chi2_pinned` holds.
+_CHI2_BY_CONSTRUCTION = (
+    "chi2 equals the number of points by construction: the fit estimates every noise sigma, and at "
+    "its optimum an estimated sigma sets the chi2 of the points it covers to their count, so chi2 "
+    "says nothing about the model" + signal(", and neither does its goodness-of-fit p") + "."
+)
+
+#: A ``per_observable`` row's ``by_construction``, on an observable of
+#: :func:`_offset_centred_observables` whose points share one noise sd.
+_OFFSET_CENTRED = (
+    "an estimated offset centres these residuals: mean_weighted_residual is ~0 and sign_test "
+    "cannot see a bias, whatever the model."
+)
+
+#: ...and on one whose noise sd varies by point (SEMs per point, say).
+_OFFSET_CENTRED_PRECISION_WEIGHTED = (
+    "an estimated offset zeroes the precision-weighted mean of these residuals (weights "
+    "1/sigma^2), not mean_weighted_residual: sigma varies by point here, so mean_weighted_residual "
+    "and sign_test can still show a bias, unless sigma is one value across the points each offset "
+    "covers."
+)
+
+
+def _offset_note(group) -> str:
+    """The ``by_construction`` note of an offset-centred observable's rows ``group``. The offset
+    solves ``sum(residual / sigma^2) = 0`` over the points it covers, which zeroes the mean of
+    their weighted residuals only where they share one sigma (PEtab-MCP#285)."""
+    noise = group["noise"].dropna().astype(float)
+    varies = len(noise) > 1 and not math.isclose(noise.min(), noise.max(), rel_tol=1e-6)
+    return _OFFSET_CENTRED_PRECISION_WEIGHTED if varies else _OFFSET_CENTRED
+
+
+def chi2_by_construction_note(problem, records) -> str | None:
+    """:data:`_CHI2_BY_CONSTRUCTION` where a fit's per-point ``records`` hold :func:`_chi2_pinned`,
+    else ``None``, also on any failure. Read by every fit result and ``get_fit_summary``."""
+    import pandas as pd
+
+    try:
+        df = pd.DataFrame(records or [], columns=SIMULATION_COLUMNS)
+        d = df[df["residual_weighted"].notna()]
+        return _CHI2_BY_CONSTRUCTION if len(d) and _chi2_pinned(problem, d) else None
+    except Exception:  # noqa: BLE001 - advisory; never break a fit result
+        return None
+
+
+def _chi2_pinned(problem, d) -> bool:
+    """Whether the chi2 of ``d`` (weighted records) equals its row count because
+    :func:`_sigma_estimated_everywhere` holds."""
+    rw = d["residual_weighted"].astype(float)
+    return math.isclose(float((rw * rw).sum()), len(d), rel_tol=1e-3) and (
+        _sigma_estimated_everywhere(problem, d)
+    )
+
+
+def _sigma_estimated_everywhere(problem, d) -> bool:
+    """Whether every row of ``d`` (:func:`fit_diagnosis`'s weighted records) has an estimated noise
+    sigma, solved analytically (:func:`reconcile.classify_inner_parameters`) or optimized with the
+    rest. Where the noise sd scales with its sigmas, the likelihood is stationary in them only where
+    the weighted chi2 of their points is their count, so an outer sigma pins it as an inner one does
+    (PEtab-MCP#285). ``False`` on any failure."""
+    from . import reconcile as R
+
+    try:
+        estimated = {s for s in R.noise_sigma_ids(problem) if R.is_parameter_estimated(problem, s)}
+        frame = d.rename(
+            columns={
+                "observable_id": OBSERVABLE_ID,
+                "experiment_id": EXPERIMENT_ID,
+                "noise_parameters": NOISE_PARAMETERS,
+            }
+        )
+        covered: set = set()
+        for pid in estimated:
+            rows = R._measurement_rows_for_sigma(problem, pid, frame)
+            if rows is not None:
+                covered |= set(rows.index)
+        return bool(covered) and covered >= set(d.index)
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        return False
+
+
+def _offset_centred_observables(problem) -> set[str]:
+    """Observables every measurement of which reads an offset the fit solves analytically
+    (:func:`reconcile.classify_inner_parameters`), in its formula or through its
+    ``observableParameters``. That offset is the mean of its points' residuals, so it puts their
+    mean at 0 and takes the sign test's power on bias. Empty on any failure."""
+    from . import reconcile as R
+    from .problem import split_overrides
+
+    try:
+        inner = R.classify_inner_parameters(problem)
+        offsets = {pid for pid, kind in inner.items() if kind == R.INNER_TYPE_OFFSET}
+        if not offsets:
+            return set()
+        odf, mdf = problem.observable_df, problem.measurement_df
+        out = set()
+        for obs_id, formula in odf[OBSERVABLE_FORMULA].items():
+            if R.formula_symbols(formula) & offsets:
+                out.add(str(obs_id))
+                continue
+            if OBSERVABLE_PARAMETERS not in mdf.columns:
+                continue
+            cells = mdf.loc[mdf[OBSERVABLE_ID] == obs_id, OBSERVABLE_PARAMETERS]
+            if len(cells) and all(
+                isinstance(c, str) and set(map(str, split_overrides(c))) & offsets for c in cells
+            ):
+                out.add(str(obs_id))
+        return out
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        return set()
+
+
+#: :func:`structure_tests_caveat`'s line; ``{}`` is what is estimated.
+_ABSORBED_MISFIT_CAVEAT = (
+    "Estimated {} absorb misfit, so the sign/runs tests have little power here and no structure "
+    "flag is NOT adequacy. sigma_heterogeneity and fitted_over_data_noise rank where to look."
+)
+
+
+def sigma_misfit_signals(session, report=None, sims=None) -> dict[str, list[dict[str, Any]]]:
+    """Where an estimated noise sigma absorbed a misfit: two ranked lists, uncapped, worst first.
+
+    * ``heterogeneity``: per estimated noise sigma, :func:`residual_tests.sigma_heterogeneity`
+      across the (observable, experiment) series it covers, as ``{parameter_id, p, n_series,
+      worst}``, smallest ``p`` first. A series is labelled by its experiment, or as
+      ``observable[experiment]`` where the sigma covers several observables.
+    * ``fitted_over_data_noise``: ``{parameter_id, fitted_over_data_noise, n_points, low_power}``
+      off ``report`` (:func:`fitting.noise_sigma_report`, computed when ``None``), largest first;
+      ``low_power`` below ``NOISE_SIGMA_MIN_POINTS`` measurements, where the report's ``status`` is
+      ``unknown``.
+
+    ``sims`` is the simulations frame when the caller has one. Both lists are empty on any failure.
+    """
+    from . import fitting
+
+    try:
+        if report is None:
+            report = fitting.noise_sigma_report(
+                session.problem, (session.simulation or {}).get("fitted_parameters")
+            )
+        ratios = _ranked_noise_ratios(report)
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        ratios = []
+    try:
+        if sims is None:
+            sims = _frames(session)["simulations"]
+        heterogeneity = _sigma_heterogeneity(session.problem, sims)
+    except Exception:  # noqa: BLE001 - advisory; never break the diagnosis
+        heterogeneity = []
+    return {"heterogeneity": heterogeneity, "fitted_over_data_noise": ratios}
+
+
+def _ranked_noise_ratios(report) -> list[dict[str, Any]]:
+    from .constants import NOISE_SIGMA_MIN_POINTS
+
+    out = []
+    for pid, entry in (report or {}).items():
+        ratio = entry.get("fitted_over_data_noise")
+        if ratio is None or not math.isfinite(ratio):
+            continue
+        n = entry.get("n_points")
+        out.append(
+            {
+                "parameter_id": pid,
+                "fitted_over_data_noise": round(float(ratio), 3),
+                "n_points": n,
+                "low_power": n is None or n < NOISE_SIGMA_MIN_POINTS,
+            }
+        )
+    return sorted(out, key=lambda r: r["fitted_over_data_noise"], reverse=True)
+
+
+def _sigma_heterogeneity(problem, sims) -> list[dict[str, Any]]:
+    from . import reconcile as R
+    from . import residual_tests as rt
+
+    if sims is None or sims.empty:
+        return []
+    # A sigma's own records, picked as its measurement rows are: renamed to PEtab's columns.
+    frame = sims[sims["residual_weighted"].notna()].rename(
+        columns={
+            "observable_id": OBSERVABLE_ID,
+            "experiment_id": EXPERIMENT_ID,
+            "noise_parameters": NOISE_PARAMETERS,
+        }
+    )
+    out = []
+    for pid in _noise_parameter_ids(problem):
+        if not R.is_parameter_estimated(problem, pid):
+            continue
+        sub = R._measurement_rows_for_sigma(problem, pid, frame)
+        if sub is None:
+            continue
+        single = sub[OBSERVABLE_ID].nunique() == 1
+        series = {}
+        for (obs, exp), g in sub.groupby([OBSERVABLE_ID, EXPERIMENT_ID], sort=False, dropna=False):
+            label = (str(exp) if single else f"{obs}[{exp}]") if exp else str(obs)
+            series[label] = g["residual_weighted"].tolist()
+        verdict = rt.sigma_heterogeneity(series)
+        if verdict:
+            out.append({"parameter_id": pid, **verdict})
+    return sorted(out, key=lambda v: (v["p"] is None, v["p"] or 0.0))
+
+
+def structure_tests_caveat(problem) -> str | None:
+    """The line :func:`fit_diagnosis` carries while noise sigmas or observable scales/offsets are
+    estimated, and :func:`residual_structure_rollup` while it also flags no observable, or
+    ``None``."""
+    from . import reconcile as R
+
+    df = getattr(problem, "parameter_df", None)
+    table = set() if df is None else {str(pid) for pid in df.index}
+
+    def estimated(ids) -> bool:
+        return any(R.is_parameter_estimated(problem, pid) for pid in ids & table)
+
+    what = [
+        name
+        for name, ids in (
+            ("noise sigmas", R.plausibility_sigma_ids(problem)),
+            ("observable scales/offsets", R.observable_scaling_ids(problem)),
+        )
+        if estimated(ids)
+    ]
+    return _ABSORBED_MISFIT_CAVEAT.format(" and ".join(what)) if what else None
+
+
 _STRUCTURE_UNAVAILABLE = "residual-structure tests unavailable (no weighted residuals yet)."
 
 
 def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     """The current fit's residual-structure verdict, rolled up:
-    ``{flagged_observables, low_power, summary, replicate_lack_of_fit}``. THE authority on where
+    ``{flagged_observables, low_power, summary, replicate_lack_of_fit}``, plus the pointers
+    :func:`_absorbed_misfit` adds, which flag nothing. THE authority on where
     this verdict is reported: on every fit result and on ``get_fit_summary`` (both score payloads
     for one fit, assembled by :func:`fitting.fit_result_block`/:func:`fitting.fit_summary`) —
     and NOT by ``get_fit_diagnosis``, which returns the per-observable detail behind it.
 
-    Which observables show significant residual STRUCTURE — a form-incompleteness signal that
-    SURVIVES estimated noise sigmas (unlike chi2 GoF, which a free sigma rescales to look adequate).
-    THREE tests, all feeding the one ``flagged_observables`` list the session's plateau-adequacy gate
-    already consumes:
+    Which observables show significant residual STRUCTURE — a signal no sigma rescales (unlike chi2
+    GoF), though estimated scales and offsets take most of its power
+    (:func:`structure_tests_caveat`). THREE tests, all feeding the one ``flagged_observables`` list,
+    which no stop condition reads:
 
     * the sign test and the runs test, per observable, over the points WITHIN a residual series;
     * the replicate lack-of-fit test, per replicated design point, ACROSS that point's own
@@ -750,14 +1109,14 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
     without spending a ``get_fit_diagnosis`` call at all (see issue #113). Computes ONLY the
     verdict — it skips fit_diagnosis's magnitude aggregations and worst-points sort. ``sims`` is the
     simulations frame when the caller already built one. Best-effort: no simulation, or any
-    diagnostic failure, degrades to a well-formed "tests unavailable" dict, so the gate is never
+    diagnostic failure, degrades to a well-formed "tests unavailable" dict, so a fit is never
     blocked and the agent never hits a missing key.
     """
     try:
         df = _frames(session)["simulations"] if sims is None else sims
         if df is None or df.empty:
             return _unavailable_structure()
-    except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit/gate
+    except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit
         return _unavailable_structure()
     # The replicate arm runs FIRST and OUTSIDE the residual_weighted gate below. z_i is built from
     # the pooled replicate scatter and the raw prediction, so it needs no fitted sigma at all —
@@ -769,18 +1128,66 @@ def residual_structure_rollup(session, sims=None) -> dict[str, Any]:
         d = df[df["residual_weighted"].notna()]
         # The sign/runs arm keeps taking its rows from the SAME filter fit_diagnosis's magnitude
         # table uses, so the two builders cannot roll up different inputs.
+        centred = _offset_centred_observables(session.problem)
         verdicts = (
             []
             if d.empty
             else [
-                (_clean(obs), _safe_residual_structure(g)) for obs, g in d.groupby("observable_id")
+                (_clean(obs), _safe_residual_structure(g, centred=_clean(obs) in centred))
+                for obs, g in d.groupby("observable_id")
             ]
         )
     except Exception:  # noqa: BLE001 - advisory; never fail the fit on a diagnostic
         verdicts = []
     if not verdicts and not lof.get("available"):
         return _unavailable_structure()  # nothing was tested at all — NOT a clean bill
-    return _rollup_structure(verdicts, replicate_lof=lof)
+    out = _rollup_structure(verdicts, replicate_lof=lof)
+    return {**out, **_absorbed_misfit(session, df, flagged=bool(out["flagged_observables"]))}
+
+
+def _absorbed_misfit(session, sims, flagged: bool) -> dict[str, Any]:
+    """The rollup's pointers to where an estimated sigma absorbed a misfit (#195), each key absent
+    when empty, ``{}`` on any failure.
+
+    ``sigma_heterogeneity``: the sigmas whose :func:`residual_tests.sigma_heterogeneity` ``p`` stays
+    below ``_STRUCTURE_ALPHA`` after Holm across the sigmas tested, smallest first, each with that
+    ``p``, its ``worst_series`` and its ``fitted_over_data_noise``. Holm, where :func:`fit_diagnosis`
+    ranks raw ``p``, because these ride on every fit: across bachmann's ~20 sigmas the passing fit's
+    pEpoR (p = 0.006) would be named on every fit, the failing fit's (9e-5) is named either way. The
+    ratio rides only on a named sigma, as it has no threshold of its own (``fitting._entry_inflated``).
+
+    ``structure_tests_caveat`` while no observable is ``flagged``: where one is, the caveat does
+    not change how the verdict reads.
+    """
+    from . import fitting
+    from . import residual_tests as rt
+
+    out: dict[str, Any] = {}
+    try:
+        tested = [h for h in _sigma_heterogeneity(session.problem, sims) if h["p"] is not None]
+        adjusted = rt.holm_adjusted([h["p"] for h in tested])
+        named = [h for h, p in zip(tested, adjusted) if p < _STRUCTURE_ALPHA]
+        if named:
+            fitted = (session.simulation or {}).get("fitted_parameters")
+            ratios = {
+                r["parameter_id"]: r["fitted_over_data_noise"]
+                for r in _ranked_noise_ratios(fitting.noise_sigma_report(session.problem, fitted))
+            }
+            out["sigma_heterogeneity"] = [
+                {
+                    "parameter_id": h["parameter_id"],
+                    "p": h["p"],
+                    "worst_series": h["worst"][0]["series"],
+                    "fitted_over_data_noise": ratios.get(h["parameter_id"]),
+                }
+                for h in named
+            ]
+        caveat = None if flagged else structure_tests_caveat(session.problem)
+        if caveat:
+            out["structure_tests_caveat"] = caveat
+    except Exception:  # noqa: BLE001 - advisory; never fail the fit on a diagnostic
+        return {}
+    return out
 
 
 def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -798,8 +1205,7 @@ def _rollup_structure(verdicts, replicate_lof: dict[str, Any] | None = None) -> 
     # two must agree exactly (both the list and the summary string built from it) whenever more
     # than one observable is flagged. The chi2 RANKING lives in per_observable, not here.
     # UNION over the three tests: the replicate test names the design points it condemns, mapped back to
-    # their observables, so a lack-of-fit finding lands in the SAME list the plateau-adequacy gate
-    # already reads (PR #111) — no new gate, no new wiring.
+    # their observables, so a lack-of-fit finding lands in the SAME list as a sign/runs one.
     flagged = sorted(
         {obs for obs, v in pairs if v.get("structure_flag")}
         | set(lof.get("flagged_observables") or ())
@@ -954,8 +1360,8 @@ def _replicate_lof(session, sims=None) -> dict[str, Any]:
     verdict. The arms are then merged into one.
 
     Best-effort throughout, in this module's style: anything unresolvable fails OPEN to a
-    NO-EVIDENCE verdict (never a pass, and never an exception) — this feeds the plateau-adequacy
-    gate, and a diagnostic must not be able to block a fit.
+    NO-EVIDENCE verdict (never a pass, and never an exception): a diagnostic must not be able to
+    block a fit.
 
     ``sims`` is the ``simulations`` frame when the caller already built one (both callers have), so
     this does not rebuild every PEtab frame a second time on a path that runs on every commit.
@@ -996,7 +1402,7 @@ def _replicate_lof(session, sims=None) -> dict[str, Any]:
         # 40.8 -> 11.2 ms). What is left to duplicate is single-digit ms per sigma against a
         # multistart fit's seconds, so the remaining redundancy is not worth a (problem, pid,
         # fitted) cache: the measurement table is rewritten between the two calls whenever the agent
-        # re-authors, and a stale row set feeding a stop gate is a worse failure than the cost.
+        # re-authors, and a stale row set in a fit's verdict is a worse failure than the cost.
         resolved = [
             (pid, R.replicate_pure_error_points(problem, pid, fitted, simulations=frame))
             for pid in _noise_parameter_ids(problem)
@@ -1015,7 +1421,7 @@ def _replicate_lof(session, sims=None) -> dict[str, Any]:
         # n_structural goes to the MERGE, not to each arm: it is one whole-model count against the
         # POOLED points of every family (rt.lof_power).
         return _merge_lof_verdicts(verdicts, label_observable, n_structural=n_structural)
-    except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit/gate
+    except Exception:  # noqa: BLE001 - advisory; a diagnostic failure must not affect the fit
         return _lof_payload(rt.replicate_lof_unavailable())
 
 
@@ -1090,7 +1496,7 @@ def _merge_lof_verdicts(
     min_lof_df: int | None = None,
 ) -> dict[str, Any]:
     """Merge the per-noise-parameter arms into one verdict. Flagged points union (each mapped back
-    to its observable, so the existing gate picks them up), and the reported worst points are the
+    to its observable, so they join ``flagged_observables``), and the reported worst points are the
     worst ACROSS arms — still capped.
 
     THIS is where the lack-of-fit degrees of freedom are decided, because this is the only place that
@@ -1140,7 +1546,7 @@ def _merge_lof_verdicts(
     lof_df, power = rt.lof_power(n_points, n_structural, min_lof_df)
     if power == "vacuous":
         # Saturation, on the POOLED count: no direction left to disagree in, so nothing was tested —
-        # including the flags, which a fit that flexible could have placed anywhere. NO EVIDENCE is
+        # including the flags, which a fit that flexible could have placed anywhere. NOT TESTED is
         # the fail-open reading, and the one the arm gave before the df moved here.
         return _lof_payload(
             rt.replicate_lof_unavailable("vacuous", available[0]["alpha"], n_points=n_points)
@@ -1165,17 +1571,15 @@ def _merge_lof_verdicts(
         #
         # WHERE THE df BAND GOES, so nobody has to guess: the summary prose (_replicate_lof_line),
         # the coverage credit just below (which keys on the BAND, not on `weak` — see there), and
-        # whatever a caller records off the fit payload. NO stop condition reads either —
-        # `residual_flag` keys on `flagged_observables`, `petab_mcp.session`'s plateau stop on
-        # `best_residual_flagged`, and a client's finish gate on `available` + `n_flagged` — so a
-        # weak pass still clears every gate a powered one does, deliberately: the arm is advisory
-        # here, and the agent is an LLM that reads the prose, so the wording IS the mechanism.
+        # whatever a caller records off the fit payload. NO stop condition reads either, nor the
+        # flag itself: the arm is advisory, and the agent is an LLM that reads the prose, so the
+        # wording IS the mechanism.
         "lof_df": lof_df,
         # A pass carried by too few lack-of-fit directions to mean much; never set on a FLAG, which is
         # conclusive however few directions remain. Absent (not False) when the df is UNKNOWN — see
         # _replicate_lof_line, which claims no power there either.
         "weak": bool(not flagged and power == "weak"),
-        # The most informative reason among the arms that produced NO EVIDENCE, so a partial pass
+        # The most informative reason among the arms that were NOT TESTED, so a partial pass
         # cannot read as a whole one. None when every arm ran — and also when the only arms that did
         # not run are the silent ones, which have no untested points to hedge about.
         "untested_status": _untested_status(untested, _worst_status),
@@ -1215,19 +1619,18 @@ def _untested_status(untested: list[dict[str, Any]], worst_status) -> str | None
 
 def _replicate_lof_advice(verdict: dict[str, Any]) -> str:
     """The agent-facing line. Names the worst points and their deviation in standard errors of the
-    replicate scatter pooled over their noise sigma, and says what to do about it. Deliberately says
-    nothing about the reference model — no delta_bic, no parameter-count target — since the agent
-    must not be able to read the answer off a diagnostic."""
+    replicate scatter pooled over their noise sigma, and what that does and does not show.
+    Deliberately says nothing about the reference model — no delta_bic, no parameter-count target —
+    since the agent must not be able to read the answer off a diagnostic."""
     named = "; ".join(f"{p['label']} {p['z']:+.1f}" for p in verdict["points"][:3])
     return (
         f"Replicate lack-of-fit: {len(verdict['flagged'])} of {verdict['n_points']} replicated "
         f"design points sit further from the model than replicate scatter allows, in standard "
         f"errors of the scatter pooled over each point's noise sigma ({named}; Holm p "
         f"{verdict['min_p_holm']:.3g} at alpha {verdict['alpha']}). "
-        "That is missing STRUCTURE at those specific points, not noise: no parameter value within "
-        "this model's form can reach them, and a larger sigma cannot help because the yardstick is "
-        "the replicates themselves. "
-        "Add the mechanism those points need — they are where the form is wrong — and re-fit."
+        "A larger sigma cannot close that gap, since the yardstick is the replicates themselves. "
+        "A mechanism those points need might, but replicates tighter than the spread between "
+        "experiments flag the same way, so it is not proof that one exists."
     )
 
 
@@ -1265,10 +1668,9 @@ def residual_flag(structure: dict[str, Any]) -> bool | None:
     """The bare structure flag of a rollup, or ``None`` when NEITHER arm could run — not merely the
     sign/runs tests, which a collapsed sigma silences on its own while the replicate arm still runs.
 
-    The distinction matters wherever the flag is RECORDED (the version meta, the fit event): an
-    unavailable verdict flags nothing, but recording that as ``False`` would turn "untested" into a
-    clean bill of health. Consumers that only gate on it (the plateau-adequacy check) coerce the
-    ``None`` to falsy anyway, so they are unaffected."""
+    The distinction matters where the flag is RECORDED (the version meta, so ``list_versions``):
+    an unavailable verdict flags nothing, but recording that as ``False`` would turn "untested"
+    into a clean bill of health."""
     if structure.get("summary") == _STRUCTURE_UNAVAILABLE:
         return None
     return bool(structure.get("flagged_observables"))
@@ -1278,19 +1680,43 @@ def residual_flag(structure: dict[str, Any]) -> bool | None:
 # verdict (the per-test p-values are always reported raw, so a caller can judge for itself).
 _STRUCTURE_ALPHA = 0.05
 
-# At most this many underpowered observables are NAMED in the summary (the rest as a count): the
-# summary rides on every fit, and the names are there to separate a low-power claim from the
-# replicate arm's pass — three is enough to tell the two apart.
-_MAX_NAMED_LOW_POWER = 3
+# At most this many flagged or underpowered observables are NAMED in the summary, and flagged
+# observables or sigmas in a fit result's ``flagged_observables`` / ``sigma_heterogeneity`` (the
+# rest as a count): they ride on every fit, and get_fit_summary lists every one.
+_MAX_NAMED = 3
 
 
-def _safe_residual_structure(group) -> dict[str, Any]:
+def _named(ids: list[str]) -> str:
+    """The first ``_MAX_NAMED`` of ``ids``, comma-joined, with a count of the rest."""
+    rest = len(ids) - _MAX_NAMED
+    return ", ".join(ids[:_MAX_NAMED]) + (f" (+{rest} more)" if rest > 0 else "")
+
+
+def residual_structure_on_fit(rollup: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The rollup as a fit result carries it: ``flagged_observables`` and ``sigma_heterogeneity``
+    cut to the first ``_MAX_NAMED``, with ``n_flagged_observables`` / ``n_sigma_heterogeneity``
+    counting all of them when any is cut, and no ``replicate_lack_of_fit`` where the design leaves
+    that arm nothing to test (``_LOF_SILENT_STATUSES``, 13 of 16 problems measured)."""
+    if not isinstance(rollup, dict):
+        return rollup
+    out = dict(rollup)
+    for key in ("flagged_observables", "sigma_heterogeneity"):
+        named = out.get(key) or []
+        if len(named) > _MAX_NAMED:
+            out[key] = named[:_MAX_NAMED]
+            out[f"n_{key}"] = len(named)
+    if (out.get("replicate_lack_of_fit") or {}).get("status") in _LOF_SILENT_STATUSES:
+        del out["replicate_lack_of_fit"]
+    return out
+
+
+def _safe_residual_structure(group, centred: bool = False) -> dict[str, Any]:
     """:func:`_residual_structure`, but any failure in the added stats degrades to a
     tests-unavailable stub instead of taking down the whole diagnosis (which the magnitude
     aggregations above compute robustly). fit_diagnosis is called by the agent's
     get_fit_diagnosis AND by offline scorers, so a raise here must not break either."""
     try:
-        return _residual_structure(group)
+        return _residual_structure(group, centred=centred)
     except Exception:  # noqa: BLE001 - advisory stats; never fail the diagnosis on them
         return {
             "sign_test": None,
@@ -1300,52 +1726,64 @@ def _safe_residual_structure(group) -> dict[str, Any]:
         }
 
 
-def _residual_structure(group) -> dict[str, Any]:
+def _residual_structure(group, centred: bool = False) -> dict[str, Any]:
     """Sign-test + runs-test summary for one observable's residuals (see
     :mod:`petab_mcp.residual_tests`).
 
-    BOTH tests are per (experiment) SERIES, then Fisher-combined across experiments into one
-    p-value each. The runs test must be per-series (a runs test across experiments would invent
-    spurious runs at the boundaries); the SIGN test is per-series too, so that opposite biases
-    in different experiments — an over-shoot in one, an under-shoot in another — do not cancel
-    into a spuriously balanced pooled count and hide a real systematic bias. Replicate points
-    sharing an (experiment, time) are AVERAGED to one residual first: replicates are not an
-    independent draw of the residual's sign, and leaving them in would let a high-replicate
-    timepoint dominate.
+    Each test is per (experiment) SERIES, Fisher-combined across the series that can reach
+    ``_STRUCTURE_ALPHA`` on their own (``min_p``): a series that cannot always gives p near 1 and
+    only dilutes the combination (a one-point series gives exactly 1). The runs test must be
+    per-series, since runs across experiments would invent spurious runs at the boundaries. The
+    SIGN test is stratified: a series long enough is its own stratum, so that opposite biases in
+    different experiments do not cancel, and the shorter series are pooled into one stratum,
+    where a common bias shows (one-point series on steady-state data, PEtab-MCP#329). Replicate
+    points sharing an (experiment, time) are AVERAGED to one residual first: replicates are not an
+    independent draw of the residual's sign.
 
     ``group`` is the observable's rows from :func:`fit_diagnosis`, already restricted to points
     with a weighted residual; the raw ``residual`` (same sign, sigma being positive) is the sign
-    source. Experiments are iterated once, collecting both per-series p-values and the usable
-    (non-zero) point count that gauges power.
+    source. ``n_series`` counts the series a test's ``p`` rests on, and ``low_power`` is set below
+    ``residual_tests.MIN_POWER_N`` usable points among them. ``centred`` (an observable of
+    :func:`_offset_centred_observables`) marks the sign test low-power whatever its count.
     """
     from . import residual_tests as rt
+
+    def reaches(res: dict[str, Any]) -> bool:
+        return res["p"] is not None and res["min_p"] < _STRUCTURE_ALPHA
 
     g = group.copy()
     g["_r"] = g["residual"].astype(float)
     # Average replicates to one residual per (experiment, time), then order by time per series.
     collapsed = g.groupby(["experiment_id", "time"], dropna=False)["_r"].mean().reset_index()
 
-    sign_ps: list[float] = []
-    runs_ps: list[float] = []
+    sign: dict[str, Any] = {"ps": [], "n": 0, "series": 0}
+    runs: dict[str, Any] = {"ps": [], "n": 0, "series": 0}
+    short: list[float] = []
+    short_series = 0
     n_pos = n_neg = 0
-    usable = 0  # total non-zero, finite points across series — the real power denominator
     for _exp, s in collapsed.groupby("experiment_id", dropna=False):
         vals = s.sort_values("time")["_r"].tolist()
         st = rt.sign_test(vals)
         n_pos += st["n_pos"]
         n_neg += st["n_neg"]
-        usable += st["n"]
-        if st["p"] is not None:
-            sign_ps.append(st["p"])
-        rres = rt.runs_test(vals)
-        if rres["p"] is not None:
-            runs_ps.append(rres["p"])
+        for res, acc in ((st, sign), (rt.runs_test(vals), runs)):
+            if reaches(res):
+                acc["ps"].append(res["p"])
+                acc["n"] += res["n"]
+                acc["series"] += 1
+        if st["n"] and not reaches(st):
+            short.extend(vals)
+            short_series += 1
+    pooled = rt.sign_test(short)
+    if reaches(pooled):
+        sign["ps"].append(pooled["p"])
+        sign["n"] += pooled["n"]
+        sign["series"] += short_series
 
-    sign_p = rt.fisher_combine(sign_ps)
-    runs_p = rt.fisher_combine(runs_ps)
-    # Power is the usable-point count, not raw len (which counts exact-zero timepoints the tests
-    # drop). A runs test additionally needs a computable series (both signs present somewhere).
-    low_power = usable < rt.MIN_POWER_N
+    sign_p = rt.fisher_combine(sign["ps"])
+    runs_p = rt.fisher_combine(runs["ps"])
+    sign_low = sign["n"] < rt.MIN_POWER_N or centred
+    runs_low = runs["n"] < rt.MIN_POWER_N
     sig_bias = sign_p is not None and sign_p < _STRUCTURE_ALPHA
     sig_trend = runs_p is not None and runs_p < _STRUCTURE_ALPHA
     return {
@@ -1353,16 +1791,16 @@ def _residual_structure(group) -> dict[str, Any]:
             "n_pos": n_pos,
             "n_neg": n_neg,
             "p": _round_p(sign_p),
-            "n_series": len(sign_ps),
-            "low_power": low_power,
+            "n_series": sign["series"],
+            "low_power": sign_low,
         },
         "runs_test": {
             "p": _round_p(runs_p),
-            "n_series": len(runs_ps),
-            "low_power": low_power or not runs_ps,
+            "n_series": runs["series"],
+            "low_power": runs_low,
         },
         "structure_flag": bool(sig_bias or sig_trend),
-        "structure_low_power": bool(low_power or not runs_ps),
+        "structure_low_power": bool(sign_low or runs_low),
     }
 
 
@@ -1389,8 +1827,9 @@ def _structure_summary(
             "lack-of-fit"
         )
         head = (
-            f"systematic residual structure in {', '.join(flagged)} ({how}) — the model's FORM "
-            "is missing something for those observables."
+            f"residual structure in {_named(flagged)} ({how}): where the fit is off, not proof "
+            "that a better form exists. A flag may be chance or a misfit no model clears, and "
+            "the score already charges it."
         )
     elif not sign_runs_tested:
         # Reached when the residuals carry no weighted value at all (an unevaluable or collapsed
@@ -1407,9 +1846,7 @@ def _structure_summary(
         # freedom remain), so that is a pass" is a flat contradiction the agent cannot resolve
         # (seen on every fit of one problem: three observables covered, a fourth's family too small
         # to test).
-        named = (low_power_observables or [])[:_MAX_NAMED_LOW_POWER]
-        rest = len(low_power_observables or []) - len(named)
-        where = f" for {', '.join(named)}{f' (+{rest} more)' if rest else ''}" if named else ""
+        where = f" for {_named(low_power_observables)}" if low_power_observables else ""
         head = (
             f"no significant residual structure, but the sign/runs tests are UNDERPOWERED{where} "
             f"at this sample size — that is weak evidence of adequacy{' there' if where else ''}"
@@ -1455,8 +1892,8 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
             or (
                 f"replicate lack-of-fit: {lof.get('n_flagged', 0)} of {lof['n_points']} replicated "
                 f"design points sit further from the model than replicate scatter allows "
-                f"(worst {lof['max_abs_z']} SE, Holm p {lof['min_p_holm']}) — missing STRUCTURE at "
-                "those points, which no sigma can absorb."
+                f"(worst {lof['max_abs_z']} SE, Holm p {lof['min_p_holm']}), which no sigma can "
+                "absorb."
             )
         ) + partial
     if lof.get("available"):
@@ -1493,31 +1930,32 @@ def _replicate_lof_line(lof: dict[str, Any]) -> str:
             + partial
         )
     if status == "replicates_too_thin":
-        return (
-            "replicate lack-of-fit: NO EVIDENCE — the repeated design points have only one "
-            "degree of freedom each, too thin to be a yardstick."
+        why = (
+            "the repeated design points have only one degree of freedom each, too thin to be a "
+            "yardstick."
         )
-    if status == "too_few_usable_points":
-        return (
-            "replicate lack-of-fit: NO EVIDENCE — too few usable replicated design points to test."
-        )
-    if status == "vacuous":
+    elif status == "too_few_usable_points":
+        why = "too few usable replicated design points to test."
+    elif status == "vacuous":
         # "at least as many", and counted over ALL the replicated design points this problem has:
         # said of one noise family at a time this sentence was simply false for a problem whose
         # families add up (e.g. 12 points against 10 parameters).
-        return (
-            "replicate lack-of-fit: NO EVIDENCE — this model has at least as many estimated "
-            f"structural parameters as it has replicated design points ({lof.get('n_points')}), "
-            "so the test would measure its flexibility, not its form."
+        why = (
+            "this model has at least as many estimated structural parameters as it has replicated "
+            f"design points ({lof.get('n_points')}), so the test would measure its flexibility, "
+            "not its form."
         )
-    # The catch-all, and it no longer covers "there is no noise parameter at all" — that has its own
-    # SILENT status. What is left is a sigma that exists and still would not resolve: its observables
-    # mix lin and log so there is no single coordinate, a gain will not reduce to a number, no
-    # prediction was constant across a point's replicates, or the diagnostic itself raised. Every one
-    # of those is a real, fixable failure on a problem that may well HAVE replicates, so it speaks:
-    # an untested arm read as a pass is the more expensive mistake.
-    return (
-        "replicate lack-of-fit: NO EVIDENCE — the arm could not be run for this problem's noise "
-        "parameter (no single noise coordinate for its observables, an unresolvable amplitude, "
-        "or no constant prediction across a design point's replicates)."
-    )
+    else:
+        # The catch-all, and it no longer covers "there is no noise parameter at all" — that has
+        # its own SILENT status. What is left is a sigma that exists and still would not resolve:
+        # its observables mix lin and log so there is no single coordinate, a gain will not reduce
+        # to a number, no prediction was constant across a point's replicates, or the diagnostic
+        # itself raised. Every one of those is a real, fixable failure on a problem that may well
+        # HAVE replicates, so it speaks: an untested arm read as a pass is the more expensive
+        # mistake.
+        why = (
+            "the arm could not be run for this problem's noise parameter (no single noise "
+            "coordinate for its observables, an unresolvable amplitude, or no constant prediction "
+            "across a design point's replicates)."
+        )
+    return f"replicate lack-of-fit: NOT TESTED ({status or 'unavailable'}) — {why}"

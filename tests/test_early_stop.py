@@ -1,6 +1,6 @@
 """Unit tests for the early-stop chain (issue #58):
 
-* the effect-size gate on ``is_new_best`` (:func:`fitting.compute_improvement`), and
+* ``is_new_best``, the strict minimum of the score (:func:`fitting.compute_improvement`), and
 * the non-improving-streak cap + plateau + best-BIC checkpoint tracked on the session
   (:meth:`PetabSession.record_fit_progress` / :meth:`PetabSession.progress_report`).
 
@@ -14,10 +14,12 @@ import pytest
 
 from petab_mcp import fitting
 from petab_mcp.constants import (
-    NEW_BEST_MIN_DELTA_SCORE,
+    ADEQUATE_GOF_PVALUE,
     NOISE_SIGMA_COLLAPSE_FRACTION,
     NON_IMPROVING_STREAK_CAP,
+    OVERFIT_GOF_PVALUE,
     PLATEAU_WINDOW,
+    STREAK_RESET_MIN_SCORE_GAIN,
 )
 
 
@@ -33,8 +35,6 @@ def _checkpoint(*, score, version, nll, **over):
         sigma_estimated=False,
         sigma_inflated=False,
         sigma_collapsed=False,
-        sigma_assessable=False,
-        residual_flagged=False,
     )
     fields.update(over)
     return Checkpoint(**fields)
@@ -51,9 +51,17 @@ def _fitsim(nll: float, chi2: float, *, n: int = 20, k: int = 2) -> dict:
     }
 
 
-# --- (a) effect-size gate on is_new_best (tracks BIC) -------------------------------------
-def test_is_new_best_tracks_bic_effect_size(session):
-    # No checkpoint yet -> the first fit is always a new best; it reports its own BIC.
+def _op(session, version: int, fs: dict) -> dict:
+    """Score ``fs`` against the checkpoint and record it as an op, as ``PetabSession.fit`` does."""
+    imp = fitting.compute_improvement(session, fs["neg_log_likelihood"], fitsim=fs)
+    session.record_fit_progress(version, fs, imp)
+    return imp
+
+
+# --- (a) is_new_best is the strict minimum of the score (tracks BIC) ---------------------------
+def test_the_best_is_the_strict_minimum(session):
+    """PEtab-MCP#271: the best is the lowest score, as a client's judge takes it. A 2-unit bar on
+    it left `best_version` on v1 while the judge scored v3 (perelson 0, rahman 10/12/14)."""
     fs0 = _fitsim(-50.0, 18.0)
     first = fitting.compute_improvement(
         session, nllh=fs0["neg_log_likelihood"], objective_before=-40.0, fitsim=fs0
@@ -61,38 +69,17 @@ def test_is_new_best_tracks_bic_effect_size(session):
     assert first["is_new_best"] is True
     assert first["best_prior_criterion_value"] is None
     assert first["bic"] is not None
-
-    # Seed the best-BIC checkpoint at that fit's BIC (as record_fit_progress would).
     session.best = _checkpoint(score=first["criterion_value"], version=1, nll=-50.0)
 
-    # BIC = k·ln(n) + 2·nll, so at fixed k,n a ΔBIC of X needs a ΔNLL of X/2. A sub-threshold BIC
-    # improvement (< NEW_BEST_MIN_DELTA_SCORE) is NOT a new best, even though nll strictly dropped.
-    d_small = NEW_BEST_MIN_DELTA_SCORE / 2
-    fs_small = _fitsim(-50.0 - d_small / 2, 18.0)
-    small = fitting.compute_improvement(
-        session, nllh=fs_small["neg_log_likelihood"], objective_before=-50.0, fitsim=fs_small
-    )
-    assert small["improvement_vs_best_prior"] == pytest.approx(d_small)
-    assert small["is_new_best"] is False
-
-    # An improvement EXACTLY at the threshold counts (the gate is ">=", not ">").
-    fs_edge = _fitsim(
-        -50.0 - NEW_BEST_MIN_DELTA_SCORE / 2, 18.0
-    )  # ΔBIC == NEW_BEST_MIN_DELTA_SCORE
-    edge = fitting.compute_improvement(
-        session, nllh=fs_edge["neg_log_likelihood"], objective_before=-50.0, fitsim=fs_edge
-    )
-    assert edge["improvement_vs_best_prior"] == pytest.approx(NEW_BEST_MIN_DELTA_SCORE)
-    assert edge["is_new_best"] is True
-
-    # A BIC improvement comfortably past the threshold does count.
-    d_big = NEW_BEST_MIN_DELTA_SCORE + 2
-    fs_big = _fitsim(-50.0 - d_big / 2, 18.0)
-    big = fitting.compute_improvement(
-        session, nllh=fs_big["neg_log_likelihood"], objective_before=-50.0, fitsim=fs_big
-    )
-    assert big["improvement_vs_best_prior"] == pytest.approx(d_big)
-    assert big["is_new_best"] is True
+    # BIC = k·ln(n) + 2·nll: at fixed k and n any nll drop is a new best, however small...
+    fs = _fitsim(-50.05, 18.0)
+    small = fitting.compute_improvement(session, nllh=-50.05, fitsim=fs)
+    assert small["improvement_vs_best_prior"] == pytest.approx(0.1)
+    assert small["is_new_best"] is True
+    shown = fitting.fit_result_block(fs, small)["improvement"]
+    assert set(shown) == {"self_improvement", "improvement_vs_best_prior", "is_new_best"}
+    # ...and a tie is not: the earlier version stays the best.
+    assert fitting.compute_improvement(session, nllh=-50.0, fitsim=fs0)["is_new_best"] is False
 
 
 def test_is_new_best_rejects_nll_gain_that_worsens_bic(session):
@@ -108,19 +95,90 @@ def test_is_new_best_rejects_nll_gain_that_worsens_bic(session):
     assert imp["is_new_best"] is False
 
 
-def test_a_fit_short_of_a_new_best_says_what_it_needed(session):
-    """`is_new_best: false` named no threshold, so a real but sub-threshold gain read as a flag
-    that never fires. The fit result the agent reads names the gate beside the score it had to
-    beat and the gain it made."""
-    best = fitting.goodness_of_fit(-50.0, 18.0, 2, 20)["criterion_value"]
-    session.best = _checkpoint(score=best, version=1, nll=-50.0)
-    fs = _fitsim(-50.0 - NEW_BEST_MIN_DELTA_SCORE / 4, 18.0)  # ΔBIC = half the gate
-    imp = fitting.compute_improvement(session, nllh=fs["neg_log_likelihood"], fitsim=fs)
-    shown = fitting.fit_result_block(fs, imp)["improvement"]
-    assert shown["is_new_best"] is False
-    assert shown["new_best_min_improvement"] == NEW_BEST_MIN_DELTA_SCORE
-    assert shown["best_prior_criterion_value"] == pytest.approx(best)
-    assert shown["improvement_vs_best_prior"] == pytest.approx(NEW_BEST_MIN_DELTA_SCORE / 2)
+def test_a_small_new_best_moves_the_best_not_the_streak(session):
+    """The 2-unit bar decides only what resets the streak (PEtab-MCP#271): a new best short of it
+    becomes `best_version` and advances the streak, a creep resets it once it totals the bar, and
+    the cap counts the new bests that did not. The `make_changes` description states the bar."""
+    from petab_mcp.server import _MAKE_CHANGES_DOC
+
+    half = STREAK_RESET_MIN_SCORE_GAIN / 4  # an nll drop worth half the bar in BIC
+    _op(session, 1, _fitsim(-50.0, 500.0))
+    _op(session, 2, _fitsim(-50.0 - half, 500.0))
+    p = session.progress_report()
+    assert (p["best_version"], p["non_improving_streak"]) == (2, 1)
+    _op(session, 3, _fitsim(-50.0 - 2 * half, 500.0))  # the bar, in total since v1
+    p = session.progress_report()
+    assert (p["best_version"], p["non_improving_streak"]) == (3, 0)
+
+    _op(session, 4, _fitsim(-50.0 - 3 * half, 500.0))
+    for v in range(5, 4 + NON_IMPROVING_STREAK_CAP):
+        _op(session, v, _fitsim(-50.0, 500.0))
+    p = session.progress_report()
+    assert p["best_version"] == 4 and p["should_stop"] is True
+    assert (
+        "no new best that counts as progress" in p["stop_reason"]
+        and f"1 of them were new bests with a bic gain under {STREAK_RESET_MIN_SCORE_GAIN:g}"
+        in p["stop_reason"]
+    )
+    assert f"has gained {STREAK_RESET_MIN_SCORE_GAIN:g} since the last reset" in " ".join(
+        _MAKE_CHANGES_DOC.split()
+    )
+
+
+def test_a_refit_tie_is_the_best_and_says_it_is_not_progress(session):
+    """PEtab-MCP#340, fujita 64076246_0: a refit of an identical structure gained 7.2e-07. It is
+    the strict minimum, so the best, as the judge takes it; the fit's progress says why the streak
+    did not reset, and the next fit's does not repeat it."""
+    _op(session, 1, _fitsim(-50.0, 500.0))
+    imp = _op(session, 2, _fitsim(-50.0 - 3.6e-7, 500.0))
+    assert imp["is_new_best"] is True
+    p = session.progress_report()
+    assert (p["best_version"], p["non_improving_streak"]) == (2, 1)
+    assert p["streak_not_reset"] == (
+        "v2 is the best by a bic gain of 7.2e-07 since the streak last reset, under the 2 that "
+        "counts as progress"
+    )
+    _op(session, 3, _fitsim(-49.0, 500.0))
+    assert session.progress_report()["streak_not_reset"] is None
+
+
+def test_an_unscored_fit_leaves_the_streak_once_a_fit_has_scored(session):
+    """PEtab-MCP#335: a fit left unscored (the optimizer and the re-simulation disagree) says
+    nothing about the model's score, so it neither advances the streak nor counts as an op.
+    Before anything has scored it does (see the unscored-stall tests below)."""
+    _op(session, 1, _fitsim(-50.0, 500.0))
+    for v in (2, 3):
+        session.record_fit_progress(v, _fitsim(None, None), {"is_new_best": False})
+    p = session.progress_report()
+    assert (p["n_fitted_ops"], p["non_improving_streak"], p["best_version"]) == (1, 0, 1)
+
+
+def test_a_gain_too_small_to_reset_the_streak_holds_off_the_plateau(session):
+    """PEtab-MCP#271, dessauges 1: the plateau window measured gains from the 2-unit checkpoint, so
+    a 1.6 BIC gain read as 0 and an adequate session plateau-stopped while still improving. It is
+    measured on the running best now."""
+    _op(session, 1, _fitsim(-50.0, 18.0))
+    for v in range(2, 1 + PLATEAU_WINDOW):
+        _op(session, v, _fitsim(-50.0, 18.0))
+    _op(session, 1 + PLATEAU_WINDOW, _fitsim(-50.8, 18.0))  # 1.6 BIC lower
+    p = session.progress_report()
+    assert p["best_version"] == 1 + PLATEAU_WINDOW
+    assert p["score_improvement_over_last_n"] == pytest.approx(1.6)
+    assert p["should_stop"] is False
+
+
+def test_the_plateau_stop_names_the_version_it_quotes(session):
+    """PEtab-MCP#271, bruno 53: the stop quoted v1's p = 0.471 while the judge scored v2. The best
+    is v2 now, and the reason names it beside its p-value."""
+    _op(session, 1, _fitsim(-50.0, 24.0))
+    _op(session, 2, _fitsim(-50.5, 18.0))  # 1 BIC lower: the best
+    for v in range(3, 3 + PLATEAU_WINDOW):
+        _op(session, v, _fitsim(-50.0, 18.0))
+    p = session.progress_report()
+    assert p["best_version"] == 2 and p["should_stop"] is True
+    assert p["stop_reason"].startswith(
+        f"plateau: best model v2 is adequate (chi2 GoF p={p['best_gof_pvalue']:.3g} "
+    )
 
 
 # --- (b) streak cap + plateau + (c) best-BIC checkpoint ------------------------------------
@@ -143,7 +201,9 @@ def test_streak_cap_stops_a_never_adequate_session(session):
         session.record_fit_progress(v, _fitsim(-50.0, 500.0), {"is_new_best": False})
 
     p = session.progress_report()
-    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] < 0.05  # never adequate
+    assert (
+        p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] < ADEQUATE_GOF_PVALUE
+    )  # never adequate
     assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP
     assert p["best_version"] == 1  # the checkpoint stayed on the best model
     assert p["should_stop"] is True
@@ -161,7 +221,7 @@ def test_plateau_stops_an_adequate_flat_session(session):
     p = session.progress_report()
     assert p["n_fitted_ops"] == PLATEAU_WINDOW + 1
     assert p["non_improving_streak"] == PLATEAU_WINDOW < NON_IMPROVING_STREAK_CAP  # cap not hit
-    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= 0.05
+    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= ADEQUATE_GOF_PVALUE
     assert p["score_improvement_over_last_n"] == pytest.approx(0.0)
     assert p["should_stop"] is True
     assert "plateau" in p["stop_reason"].lower()
@@ -190,36 +250,56 @@ def test_inflated_sigma_blocks_the_adequate_plateau_stop(session):
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": False})
     p = session.progress_report()
-    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= 0.05  # GoF LOOKS adequate
+    assert (
+        p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] >= ADEQUATE_GOF_PVALUE
+    )  # GoF LOOKS adequate
     assert session.best.sigma_inflated is True  # but sigma inflated
     assert p["score_improvement_over_last_n"] == pytest.approx(0.0)  # and BIC is flat
     assert p["should_stop"] is False  # -> no plateau stop
 
 
-def test_estimated_sigma_not_inflated_is_adequate_without_gof(session):
-    """With an ESTIMATED, non-inflated sigma the adequacy gate OMITS the (uninformative) chi2 GoF:
-    a flat session is adequate and plateau-stops even when its chi2 would FAIL a GoF test."""
-
-    def _fs():
-        f = _fitsim(-50.0, 500.0)  # chi2 >> dof -> GoF would reject, if it were consulted
-        f["noise_sigma_report"] = {
-            "sigma": {
-                "fitted": 0.05,
-                "upper_bound_cap": 0.1,
-                "data_std": 0.2,
-                "fraction_of_data_std": 0.25,
-            }
+def _fitsim_absorbed_misfit(nll: float, ratio: float) -> dict:
+    """Three ESTIMATED sigmas inside the data-std band, one of them `ratio` times its data-driven
+    noise floor: a misfit absorbed into that sigma at ratio > 1."""
+    fs = _fitsim(nll, 20.0)
+    fs["noise_sigma_report"] = {
+        f"sigma_{obs}": {
+            "fitted": 0.2 * r,
+            "effective_sigma": 0.2 * r,
+            "upper_bound_cap": 0.75,
+            "data_std": 1.0,
+            "fraction_of_data_std": 0.2 * r,
+            "data_noise_estimate": 0.2,
+            "fitted_over_data_noise": r,
+            "status": "ok",
         }
-        return f
+        for obs, r in (("pSTAT5", ratio), ("tSTAT5", 1.0), ("pEpoR", 1.0))
+    }
+    return fs
 
-    session.record_fit_progress(1, _fs(), {"is_new_best": True})
-    for v in range(2, 2 + PLATEAU_WINDOW):
-        session.record_fit_progress(v, _fs(), {"is_new_best": False})
+
+@pytest.mark.parametrize("ratio", [1.6, 1.0])
+def test_an_estimated_sigma_model_runs_to_the_streak_cap(session, ratio):
+    """#196: bachmann's round-3 run plateau-stopped "adequate" at fit 9, ΔBIC +62, after five
+    cleanup ops, its sigmas 1.4-1.8x the published fit's. Neither the absorbed misfit (1.6) nor a
+    sigma at its floor (1.0) plateau-stops; both stop at the cap, with no claim either way."""
+    session.record_fit_progress(1, _fitsim_absorbed_misfit(-50.0, ratio), {"is_new_best": True})
+    for v, nll in zip(range(2, 2 + PLATEAU_WINDOW), (-49.9, -50.0, -49.8, -50.0, -49.9)):
+        session.record_fit_progress(v, _fitsim_absorbed_misfit(nll, ratio), {"is_new_best": False})
     p = session.progress_report()
-    assert p["best_gof_pvalue"] is not None and p["best_gof_pvalue"] < 0.05  # GoF WOULD reject
-    assert session.best.sigma_estimated is True and session.best.sigma_inflated is False
-    assert p["should_stop"] is True  # adequate anyway
-    assert "plateau" in p["stop_reason"].lower() and "chi2 gof" not in p["stop_reason"].lower()
+    assert session.best.sigma_estimated is True and session.best.sigma_plausible is True
+    assert p["score_improvement_over_last_n"] == pytest.approx(0.0)
+    assert p["should_stop"] is False
+
+    for v in range(2 + PLATEAU_WINDOW, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(
+            v, _fitsim_absorbed_misfit(-50.0, ratio), {"is_new_best": False}
+        )
+    p = session.progress_report()
+    assert p["should_stop"] is True
+    reason = p["stop_reason"]
+    assert reason.startswith("non-improving-streak cap reached")
+    assert "adequate" not in reason and "STRUCTURAL" not in reason
 
 
 def test_inflated_sigma_streak_cap_reason_carries_sigma_advice(session):
@@ -233,6 +313,9 @@ def test_inflated_sigma_streak_cap_reason_carries_sigma_advice(session):
     assert p["should_stop"] is True
     reason = p["stop_reason"].lower()
     assert "structural" in reason and "sigma" in reason and "inflated" in reason
+    # #333: not "only looks statistically adequate" beside a GoF p of 3e-102, nor a residual verdict
+    # the checkpoint never read
+    assert "statistically adequate" not in reason and "residual_structure" not in reason
 
 
 def _fitsim_collapsed_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2) -> dict:
@@ -267,26 +350,24 @@ def _fitsim_plausible_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2)
     return fs
 
 
-def test_a_gamed_improvement_advances_the_streak_once_plausible_was_seen(session):
-    """A sigma-GAMED new best does NOT reset the streak once the session has shown the band is
-    reachable — only then does "implausible" describe the FIT rather than the problem.
+@pytest.mark.parametrize(
+    ("gamed", "streak_after"),
+    [(_fitsim_inflated_sigma, 0), (_fitsim_collapsed_sigma, 3)],
+    ids=["inflated", "collapsed"],
+)
+def test_a_gamed_new_best_after_a_plausible_version(session, gamed, streak_after):
+    """#238: once one version had a plausible sigma, an inflated new best stopped resetting the
+    streak, and lucarelli's run hit the cap 475 BIC into its descent, beside six versions saying
+    `is_new_best: true`. An inflated new best resets it whatever came before; a collapsed one
+    does not.
 
-    The plausible fit must NOT be the best, or the checkpoint-protection branch takes over and
-    the gated line is never reached: a plausible best BLOCKS adoption of every later gamed fit
-    (`not (sigma_implausible and best_is_plausible)`), so the streak advances through the generic
-    else-branch and the test would pass with the gate deleted. Ordering here — gamed best first,
-    then a plausible NON-best to arm the latch — is what makes this exercise the gate itself."""
-    session.record_fit_progress(1, _fitsim_inflated_sigma(-60.0, 18.0), {"is_new_best": True})
-    assert session.ever_sigma_plausible is False
-    # A plausible fit that is NOT a new best: arms the latch, leaves the gamed best in place.
+    The plausible fit is NOT the best: a plausible best declines every later gamed fit, so the
+    streak would advance through the not-adopted branch and the test would pass either way."""
+    session.record_fit_progress(1, gamed(-60.0, 18.0), {"is_new_best": True})
     session.record_fit_progress(2, _fitsim_plausible_sigma(-40.0, 18.0), {"is_new_best": False})
-    assert session.ever_sigma_plausible is True
-    assert session.best is not None and session.best.sigma_inflated is True  # gamed best kept
-
-    before = session.non_improving_streak
-    session.record_fit_progress(3, _fitsim_inflated_sigma(-70.0, 18.0), {"is_new_best": True})
-    # Full weight, not the discounted uninformative weight: the latch is armed.
-    assert session.non_improving_streak == before + 1
+    session.record_fit_progress(3, gamed(-70.0, 18.0), {"is_new_best": True})
+    assert session.best.version == 3
+    assert session.non_improving_streak == streak_after
 
 
 def test_an_unsatisfiable_inflation_band_does_not_convert_the_cap_into_a_fixed_budget(session):
@@ -303,35 +384,39 @@ def test_an_unsatisfiable_inflation_band_does_not_convert_the_cap_into_a_fixed_b
             v, _fitsim_inflated_sigma(-50.0 - i, 18.0), {"is_new_best": True}
         )
     p = session.progress_report()
-    assert session.ever_sigma_plausible is False
     assert p["non_improving_streak"] == 0
     assert p["should_stop"] is False  # not cut off mid-descent
 
 
-def test_a_collapsing_sigma_still_advances_the_streak_when_uninformative(session):
+def test_a_collapsed_new_best_advances_the_streak_and_the_cap_says_so(session):
     """The other tail is NOT safe to reset on, which is why the two are split. nll is unbounded
     BELOW as sigma_hat -> 0 (checked only by k*ln n), so a model fitting a small observable group
-    nearly exactly gains without limit — a real exploit with no floor. With the band unsatisfiable
-    the plateau stop cannot fire either (best_adequate is False), so the cap must keep bounding
-    it even while the inflation half is uninformative."""
-    for i, v in enumerate(range(1, 1 + NON_IMPROVING_STREAK_CAP)):
+    nearly exactly gains without limit — a real exploit with no floor. The plateau stop never fires
+    on an estimated sigma, so the cap must keep bounding it.
+
+    #238: the cap said "no new best" beside versions saying `is_new_best: true`; it now counts the
+    new bests that did not reset the streak, and says why."""
+    for i, v in enumerate(range(1, 4)):
         session.record_fit_progress(
             v, _fitsim_collapsed_sigma(-50.0 - i, 18.0), {"is_new_best": True}
         )
+    for v in range(4, 1 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim_collapsed_sigma(-50.0, 18.0), {"is_new_best": False})
     p = session.progress_report()
-    assert session.ever_sigma_plausible is False
     assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP
     assert p["should_stop"] is True
+    assert "3 of them were new bests with a collapsed estimated noise sigma" in p["stop_reason"]
 
 
-def test_a_non_improving_fit_still_advances_the_streak_when_uninformative(session):
-    """The discount applies to IMPROVEMENTS only. A genuine plateau must still trip the cap in
-    exactly cap fits, or the weight would slow down the stop it exists to preserve."""
+def test_a_non_improving_inflated_fit_still_advances_the_streak(session):
+    """The inflated reset applies to new bests only. A genuine plateau must still trip the cap in
+    exactly cap fits, and with nothing to explain, the reason says only that."""
     for v in range(1, 1 + NON_IMPROVING_STREAK_CAP):
         session.record_fit_progress(v, _fitsim_inflated_sigma(-50.0, 18.0), {"is_new_best": False})
     p = session.progress_report()
     assert p["non_improving_streak"] == NON_IMPROVING_STREAK_CAP
     assert p["should_stop"] is True
+    assert "of them" not in p["stop_reason"]
 
 
 def test_gamed_fit_does_not_overwrite_a_plausible_best_checkpoint(session):
@@ -378,7 +463,7 @@ def test_a_declined_new_best_is_not_stamped_as_one(session, monkeypatch):
     res = session.fit(n_starts=2)  # more starts, so the de-dup lets the same structure refit
 
     imp = res["improvement"]
-    assert imp["improvement_vs_best_prior"] >= NEW_BEST_MIN_DELTA_SCORE  # the score cleared it...
+    assert imp["improvement_vs_best_prior"] > 0  # the score was lower...
     assert imp["is_new_best"] is False  # ...but the checkpoint kept the first, and the flag says so
     assert "inflated" in imp["new_best_declined"]
     assert f"v{first['version']}" in imp["new_best_declined"]
@@ -389,11 +474,30 @@ def test_a_declined_new_best_is_not_stamped_as_one(session, monkeypatch):
     assert session.op_history[-1]["is_new_best"] is False
 
 
+def test_a_fit_result_carries_only_the_progress_counters_that_move(session, monkeypatch):
+    """PEtab-MCP#208: the constants are in the `make_changes` description, `criterion` is on the fit
+    block, and the best's score and p-value are on the best's own result. `get_progress` is whole."""
+    fits = iter([_fitsim(-50.0, 18.0), _fitsim(-50.0, 18.0)])
+
+    def fit_numbers(n_starts=None):
+        fs = {**next(fits), "n_starts": n_starts, "fitted_parameters": {}}
+        return fs, fitting.compute_improvement(session, fs["neg_log_likelihood"], fitsim=fs)
+
+    monkeypatch.setattr(session, "_auto_fit_and_improvement", fit_numbers)
+    first = session.fit(n_starts=1)
+    res = session.fit(n_starts=2)
+    assert res["progress"] == {
+        "n_fitted_ops": 2,
+        "non_improving_streak": 1,
+        "best_version": first["version"],
+        "should_stop": False,
+    }
+    assert {"streak_cap", "plateau_window", "best_score"} <= set(session.progress_report())
+
+
 def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
-    """The gate is specific to gamed improvements: a genuine (plausible-sigma) new best still resets
-    the streak, so fixing the noise model immediately clears the accumulated penalty. Seeded with a
-    plausible first fit so the gamed-improvement penalty is ARMED (see ever_sigma_plausible: before
-    any plausible sigma is seen the term is uninformative and gamed improvements reset on BIC)."""
+    """Gamed fits a plausible best declines advance the streak; a genuine (plausible-sigma) new best
+    still resets it, so fixing the noise model immediately clears the accumulated penalty."""
     session.record_fit_progress(1, _fitsim_plausible_sigma(-45.0, 18.0), {"is_new_best": True})
     for i, v in enumerate(range(2, 5)):
         session.record_fit_progress(
@@ -404,57 +508,36 @@ def test_a_plausible_new_best_after_gaming_resets_the_streak(session):
     assert session.progress_report()["non_improving_streak"] == 0  # a real fix clears it
 
 
-def _fs_plausible_sigma_flagged(flagged: bool):
-    """A fit with a PLAUSIBLE estimated sigma (neither inflated nor collapsed) whose residuals are
-    structurally flagged iff `flagged` — the underfit case the sigma gate can't catch."""
-    f = _fitsim(-50.0, 18.0)
-    f["noise_sigma_report"] = {
-        "sigma": {
-            "fitted": 0.05,
-            "upper_bound_cap": 0.1,
-            "data_std": 0.2,
-            "fraction_of_data_std": 0.25,
-        }
-    }
-    f["residual_flagged"] = flagged
-    return f
+def _flagged(fs: dict) -> dict:
+    """``fs`` with a residual flag on one observable, as ``PetabSession.fit`` stashes it."""
+    fs["residual_structure"] = {"flagged_observables": ["obs_a"], "summary": "flagged"}
+    fs["residual_flagged"] = True
+    return fs
 
 
-def test_flagged_residual_structure_blocks_the_adequate_plateau_stop(session):
-    """A best model with a PLAUSIBLE estimated sigma but structurally-flagged residuals (sign/runs)
-    is NOT adequate — its form is incomplete — so a flat-BIC session does NOT plateau-stop; it
-    keeps searching (underfits used to stop 'adequate' while flagging residuals)."""
-    session.record_fit_progress(1, _fs_plausible_sigma_flagged(True), {"is_new_best": True})
+def test_a_flagged_best_still_plateau_stops(session):
+    """PEtab-MCP#247: a residual flag decides nothing. gemot#97 found flags no model clears on true
+    models at their published optimum (sneyd's sign test p = 6.6e-7), so a fixed-sigma best whose
+    GoF passes plateau-stops on a flat score, flag or not."""
+    fs = _flagged(_fitsim(-50.0, 18.0))
+    session.record_fit_progress(1, fs, {"is_new_best": True})
     for v in range(2, 2 + PLATEAU_WINDOW):
-        session.record_fit_progress(v, _fs_plausible_sigma_flagged(True), {"is_new_best": False})
-    p = session.progress_report()
-    assert session.best.sigma_estimated is True and session.best.sigma_inflated is False
-    assert session.best.residual_flagged is True
-    assert p["score_improvement_over_last_n"] == pytest.approx(0.0)  # BIC is flat...
-    assert p["should_stop"] is False  # ...but residual structure blocks it
-
-
-def test_unflagged_residual_still_plateau_stops(session):
-    """Contrast: the SAME plausible-sigma flat session WITHOUT flagged residuals still
-    plateau-stops — the residual gate only bites when the sign/runs tests actually flag structure
-    (no regression)."""
-    session.record_fit_progress(1, _fs_plausible_sigma_flagged(False), {"is_new_best": True})
-    for v in range(2, 2 + PLATEAU_WINDOW):
-        session.record_fit_progress(v, _fs_plausible_sigma_flagged(False), {"is_new_best": False})
-    p = session.progress_report()
-    assert session.best.residual_flagged is False
-    assert p["should_stop"] is True and "plateau" in p["stop_reason"].lower()
-
-
-def test_flagged_residual_streak_cap_carries_structural_nudge(session):
-    """When a residual-flagged session finally trips the streak cap, its stop_reason carries the
-    structural nudge (change the FORM) — the session never counted as adequate."""
-    session.record_fit_progress(1, _fs_plausible_sigma_flagged(True), {"is_new_best": True})
-    for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
-        session.record_fit_progress(v, _fs_plausible_sigma_flagged(True), {"is_new_best": False})
+        session.record_fit_progress(v, fs, {"is_new_best": False})
     p = session.progress_report()
     assert p["should_stop"] is True
-    assert "structural" in p["stop_reason"].lower()
+    assert p["stop_reason"].startswith("plateau: best model v1 is adequate (chi2 GoF")
+
+
+def test_a_flagged_best_at_the_streak_cap_gets_no_structural_nudge(session):
+    """PEtab-MCP#247: a flag alone does not make the cap's stop_reason say the model's FORM
+    cannot fit the data; a plausible estimated sigma is no evidence either way."""
+    fs = _flagged(_fitsim_plausible_sigma(-50.0, 18.0))
+    session.record_fit_progress(1, fs, {"is_new_best": True})
+    for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, fs, {"is_new_best": False})
+    p = session.progress_report()
+    assert p["stop_reason"].startswith("non-improving-streak cap reached")
+    assert "STRUCTURAL" not in p["stop_reason"]
 
 
 def test_collapsed_sigma_blocks_the_adequate_plateau_stop(session):
@@ -514,7 +597,19 @@ def test_streak_cap_stop_reason_carries_structural_nudge_when_inadequate(session
     reason = session.progress_report()["stop_reason"].lower()
     assert "streak" in reason
     assert "structural" in reason and "form" in reason
-    assert "make_changes" in reason
+    assert "make_changes" not in reason
+
+
+def test_a_missing_fixed_sigma_gof_adds_no_structural_nudge(session):
+    """A fixed-sigma best whose GoF could not be computed (no chi2) has a finite score but no test
+    that failed, so its streak-cap stop claims neither adequacy nor structural inadequacy."""
+    session.record_fit_progress(1, _fitsim(-50.0, None), {"is_new_best": True})
+    for v in range(2, 2 + NON_IMPROVING_STREAK_CAP):
+        session.record_fit_progress(v, _fitsim(-50.0, None), {"is_new_best": False})
+    p = session.progress_report()
+    assert p["best_version"] == 1 and p["best_gof_pvalue"] is None
+    assert p["stop_reason"].startswith("non-improving-streak cap reached")
+    assert "STRUCTURAL" not in p["stop_reason"] and "adequate" not in p["stop_reason"]
 
 
 def test_adequate_plateau_stop_reason_omits_structural_nudge(session):
@@ -527,6 +622,8 @@ def test_adequate_plateau_stop_reason_omits_structural_nudge(session):
 
     reason = session.progress_report()["stop_reason"].lower()
     assert "plateau" in reason and "adequate" in reason
+    # #196: the reason names the check that made the model adequate
+    assert "chi2 gof p=" in reason and "fixed noise sigmas" in reason
     assert "structural" not in reason  # no nudge on a success stop
     assert "cannot fit" not in reason
 
@@ -626,7 +723,7 @@ def _fitsim_fixed_sigma(chi2: float, *, n: int = 20, k: int = 2) -> dict:
 
 def test_fixed_sigma_overfit_is_not_adequate(session):
     """chi2 FAR BELOW its dof means the residuals are much smaller than the KNOWN noise — the model
-    is fitting the noise, which is not adequacy. A one-sided `p >= 0.05` test scored exactly this as
+    is fitting the noise, which is not adequacy. A one-sided `p >= ADEQUATE_GOF_PVALUE` test scored exactly this as
     adequate (chi2/n = 0.016, p = 0.9999999), letting an overfit session plateau-stop."""
     # chi2 << dof -> p -> 1
     fs = _fitsim_fixed_sigma(0.3)
@@ -635,7 +732,7 @@ def test_fixed_sigma_overfit_is_not_adequate(session):
         session.record_fit_progress(v, fs, {"is_new_best": False})
     p = session.progress_report()
     assert session.best.sigma_estimated is False
-    assert p["best_gof_pvalue"] > 0.99  # would pass a one-sided `>= 0.05` test
+    assert p["best_gof_pvalue"] > 0.99  # would pass a one-sided `>= ADEQUATE_GOF_PVALUE` test
     assert p["should_stop"] is False  # ...but the two-sided gate blocks the stop
 
 
@@ -646,7 +743,7 @@ def test_fixed_sigma_well_calibrated_fit_is_still_adequate(session):
     for v in range(2, 2 + PLATEAU_WINDOW):
         session.record_fit_progress(v, fs, {"is_new_best": False})
     p = session.progress_report()
-    assert 0.05 <= p["best_gof_pvalue"] <= 0.995
+    assert ADEQUATE_GOF_PVALUE <= p["best_gof_pvalue"] <= OVERFIT_GOF_PVALUE
     assert p["should_stop"] is True and "plateau" in p["stop_reason"].lower()
 
 
@@ -659,7 +756,7 @@ def test_a_session_that_keeps_finding_new_bests_is_not_cut_off_by_an_op_budget(s
     """
     nll = -50.0
     for v in range(1, 31):  # well past the old cap of 20
-        nll -= NEW_BEST_MIN_DELTA_SCORE
+        nll -= STREAK_RESET_MIN_SCORE_GAIN
         session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": True})
     p = session.progress_report()
     assert p["n_fitted_ops"] == 30
@@ -674,7 +771,7 @@ def test_a_stalled_long_session_is_still_stopped_by_the_streak_cap(session):
     still caught, and still gets the structural diagnosis rather than a budget notice."""
     nll = -50.0
     for v in range(1, 11):
-        nll -= NEW_BEST_MIN_DELTA_SCORE
+        nll -= STREAK_RESET_MIN_SCORE_GAIN
         session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": True})
     for v in range(11, 11 + NON_IMPROVING_STREAK_CAP):
         session.record_fit_progress(v, _fitsim(nll, 500.0), {"is_new_best": False})
@@ -693,8 +790,8 @@ def test_only_an_estimated_co_factor_breaks_comparability(gain_estimated, expect
 
     Built as a real problem whose noise formula multiplies a per-gel scale by a shared sigma,
     rather than probed on the toy session: the toy sigma has no composite noiseFormula at all, so
-    `sigma_scale_coupled` returned False at the `len(parts) < 2` guard and never reached the
-    `is_parameter_estimated` branch. Inverting that check would have left such a test passing
+    `sigma_scale_coupled` found no co-parameter for the `is_parameter_estimated` test to judge.
+    Inverting that check would have left such a test passing
     while silently re-flagging every problem of that shape.
     """
     import pandas as pd
@@ -798,21 +895,22 @@ def test_an_unscorable_session_is_diagnosed_by_the_streak_cap_not_the_budget(ses
 @pytest.mark.parametrize(
     "fits, best",
     [
-        # A lower-scoring fit with an inflated sigma is refused over a plausible best.
+        # A lower-scoring fit with an inflated sigma is refused over a plausible best, and a
+        # plausible one between the two is the best, not the lowest score in the log.
         (
             [
                 _fitsim_plausible_sigma(-50.0, 18.0),
                 _fitsim_inflated_sigma(-80.0, 18.0),
-                _fitsim_plausible_sigma(-50.0 - NEW_BEST_MIN_DELTA_SCORE / 4, 18.0),
+                _fitsim_plausible_sigma(-60.0, 18.0),
             ],
-            0,
+            2,
         ),
         # With no plausible best to protect, a gamed new best is adopted, collapsed or inflated.
         (
             [
                 _fitsim_collapsed_sigma(-50.0, 18.0),
                 _fitsim_inflated_sigma(-80.0, 18.0),
-                _fitsim_plausible_sigma(-80.0 - NEW_BEST_MIN_DELTA_SCORE / 4, 18.0),
+                _fitsim_plausible_sigma(-79.75, 18.0),
             ],
             1,
         ),
@@ -824,7 +922,7 @@ def test_a_resume_seeds_the_checkpoint_the_live_run_kept(
 ):
     """A restart on the same store rebuilds the best-score checkpoint the live run kept, not the
     lowest score in the log (#9). Driven through `fit` (the optimizer stubbed) so the events are
-    the ones `fit` writes; the last fit of each script is plausible but short of the new-best bar.
+    the ones `fit` writes; the last fit of each script is plausible.
     Each fit prices a hardcoded constant, so the persisted gof p-value must use the same k as the
     live checkpoint's."""
     from petab_mcp.references import StubReferenceResolver
@@ -849,3 +947,4 @@ def test_a_resume_seeds_the_checkpoint_the_live_run_kept(
         yaml_path, provenance_dir=str(session.provenance.root), resolver=StubReferenceResolver()
     )
     assert resumed.best == session.best
+    assert resumed.streak_mark == resumed.best.score  # the streak restarts from the best

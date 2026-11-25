@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 from fastmcp import FastMCP
 
+from petab_mcp import data_access
 from petab_mcp import identifiability as I
 from petab_mcp import operations as O
 from petab_mcp import server as S
@@ -243,3 +244,47 @@ def test_a_resumed_process_still_reports_the_fits_parameter_geometry(tmp_path):
     assert resumed.call("get_fit_summary").get("merge_hints") == fx.call("get_fit_summary").get(
         "merge_hints"
     )
+
+
+def test_a_stored_version_is_diagnosed_from_what_its_fit_stored(tmp_path):
+    """REGRESSION (#268): the diagnosis described HEAD only, so a run asking about its best version
+    got HEAD's FIM and refit the old version just to read its own (dessauges, sweep 63372750).
+    `version=N` reads N's stored records and stored verdict: what restoring N would report, naming the
+    version it describes, and building nothing."""
+    fx = _Fixture(tmp_path)
+    O.set_model(fx.session, _TOY.format(k1=0.5), justification="build the toy")
+    fx.session.fit()
+    irreversible = _TOY.format(k1=0.5).replace("  r2: B => A; k2 * B;\n", "")
+    O.set_model(fx.session, irreversible, justification="drop the back reaction")
+    fx.session.fit()
+    assert fx.session.provenance.current_version == 1
+
+    before = fx.state()
+    old = fx.call("get_fit_diagnosis", sections="all", version=0)
+    assert fx.state() == before, "a stored version's diagnosis built or refit something"
+    head = fx.call("get_fit_diagnosis", sections="all")
+    assert (old["version"], head["version"]) == (0, 1)
+    # v0 estimates k2 and HEAD does not, so each FIM is its own version's
+    assert {p["id"] for p in old["identifiability"]["parameters"]} == {"k1", "k2"}
+    assert {p["id"] for p in head["identifiability"]["parameters"]} == {"k1"}
+
+    fx.session.restore_version(0)
+    assert fx.call("get_fit_diagnosis", sections="all") == old
+    assert fx.call("get_fit_diagnosis", version=7)["ok"] is False
+
+
+def test_a_stored_version_without_a_fit_refuses_each_section(tmp_path):
+    """A version whose fit stored no records and no verdict says so per section, rather than
+    describing HEAD in its place."""
+    fx = _Fixture(tmp_path, auto_fit=False)
+    O.set_model(fx.session, _TOY.format(k1=0.5), justification="build the toy")
+    fx.session.fit()
+    irreversible = _TOY.format(k1=0.5).replace("  r2: B => A; k2 * B;\n", "")
+    O.set_model(fx.session, irreversible, justification="a second version")
+    fx.session.fit()
+    assert fx.session.provenance.current_version == 1
+
+    out = fx.call("get_fit_diagnosis", sections="all", version=0)
+    assert out["version"] == 0 and out["per_observable"] == []
+    assert out["status"] == data_access.NO_STORED_RECORDS_STATUS.format(version=0)
+    assert out["identifiability"] == I.unavailable(I.NO_STORED_DIAGNOSIS_NOTE.format(version=0))

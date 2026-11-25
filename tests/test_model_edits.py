@@ -89,8 +89,49 @@ def test_set_initial_finds_a_symbol_sharing_a_line():
 
 
 def test_adding_a_duplicate_reaction_id_is_refused():
-    with pytest.raises(OperationError, match="already exists"):
-        me.apply_model_edits(SRC, [{"op": "add_reaction", "antimony": "fwd: A => B; k1*A;"}])
+    with pytest.raises(OperationError, match="already exists — use set_rate_law"):
+        me.apply_model_edits(SRC, [{"op": "add_reaction", "antimony": "fwd: A => B; k2*A;"}])
+
+
+def test_a_duplicate_reaction_id_changing_the_stoichiometry_says_to_remove_it_first():
+    """set_rate_law cannot change reactants or products, so it was the wrong advice for a
+    statement that does (16x in 15 runs, #284)."""
+    with pytest.raises(OperationError, match="put remove_reaction 'fwd' before this add_reaction"):
+        me.apply_model_edits(SRC, [{"op": "add_reaction", "antimony": "fwd: A => 2 B; k1*A;"}])
+    out, _ = me.apply_model_edits(
+        SRC,
+        [
+            {"op": "remove_reaction", "id": "fwd"},
+            {"op": "add_reaction", "antimony": "fwd: A => 2 B; k1*A;"},
+        ],
+    )
+    assert "fwd: A => 2 B; k1*A;" in out
+
+
+def test_remove_reaction_without_an_id_says_it_needs_one():
+    """It answered "no reaction ''" (5 runs, #284)."""
+    with pytest.raises(OperationError, match="remove_reaction needs `id`"):
+        me.apply_model_edits(SRC, [{"op": "remove_reaction", "antimony": "fwd"}])
+
+
+def test_set_initial_writes_the_initial_value_of_a_reaction_species():
+    """A species with no `X = v` line has an initial value all the same; refusing it (25x in 17
+    runs, #284) drove agents to renames and clock forcings. A species an earlier op of the batch
+    added counts too, and a name in no reaction is still refused."""
+    src = "model m\n  r1: A => B; k1*A;\n  A = 1;\nend\n"
+    out, summary = me.apply_model_edits(
+        src,
+        [
+            {"op": "set_initial", "id": "B", "antimony": "2"},
+            {"op": "add_reaction", "antimony": "r2: B => C; k2*B;"},
+            {"op": "set_initial", "id": "C", "antimony": "C_init"},
+        ],
+    )
+    assert summary[0] == "set B = 2 (a new line: the model gave B no initial value)"
+    assert summary[2].startswith("set C = C_init (a new line")
+    assert "  B = 2;\n" in out and "  C = C_init;\n" in out and out.endswith("end\n")
+    with pytest.raises(OperationError, match="nothing named 'D'"):
+        me.apply_model_edits(src, [{"op": "set_initial", "id": "D", "antimony": "1"}])
 
 
 def test_an_unknown_op_lists_the_real_ones():
@@ -401,8 +442,15 @@ def test_several_statements_on_one_line_stay_addressable():
 def test_a_comment_describing_a_reaction_is_not_a_reaction():
     """`// A -> B; k*A;` is a remark. Matching statement syntax inside comments made prose about
     the model read as model structure — for the unnamed-reaction refusal, that means refusing to
-    author a model whose only offence is a comment."""
+    author a model whose only offence is a comment. Antimony's `#` comment too: dessauges 94 was
+    refused for "no id ('# ERK->SOS negative feedback: …')" (#284)."""
     assert me.unnamed_reactions("model m\n  // A -> B; k*A;\nend") == []
+    assert me.unnamed_reactions("model m\n  # ERK->SOS negative feedback\nend") == []
+    out, _ = me.apply_model_edits(
+        "model m\n  # A = 1; the literature value\n  A = 3;\nend\n",
+        [{"op": "set_initial", "id": "A", "antimony": "9"}],
+    )
+    assert "# A = 1; the literature value" in out and "A = 9;" in out
     assert me.unnamed_reactions("model m\n  A -> B; k*A;\nend") == ["A -> B"]
     assert me.unnamed_reactions("model m\n  r1: A -> B; k*A;\nend") == []
 
@@ -707,12 +755,83 @@ def test_set_assignment_replaces_an_existing_rule_in_place():
     assert twice.count(":=") == 1 and "readout_total := 2*B;" in twice
 
 
+@pytest.mark.parametrize("payload", ["readout_total := A + B;", "readout_total = A + B"])
+def test_set_assignment_keeps_the_right_hand_side_of_its_own_statement(payload):
+    out, summary = me.apply_model_edits(
+        SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": payload}]
+    )
+    assert summary == ["set assignment readout_total := A + B"]
+    assert out.count(":=") == 1 and "readout_total := A + B;" in out
+
+
+@pytest.mark.parametrize(
+    ("payload", "named"),
+    [("readout_other := A + B", "'readout_other'"), ("fwd: A => B", "right-hand side only")],
+)
+def test_set_assignment_refuses_a_statement_that_is_not_its_own(payload, named):
+    with pytest.raises(OperationError, match=named) as ei:
+        me.apply_model_edits(
+            SRC, [{"op": "set_assignment", "id": "readout_total", "antimony": payload}]
+        )
+    assert "the symbol goes in `id`" in str(ei.value)
+
+
+@pytest.mark.parametrize("payload", ["fwd: A => 2 B; k1*A;", "A -> C; k1*A", "fwd: k1*A*A"])
+def test_set_rate_law_refuses_a_whole_reaction_naming_the_ops_that_change_one(payload):
+    with pytest.raises(OperationError, match="rate expression only") as ei:
+        me.apply_model_edits(SRC, [{"op": "set_rate_law", "id": "fwd", "antimony": payload}])
+    assert "remove_reaction" in str(ei.value) and "';'" not in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    ("payload", "read"),
+    [
+        ("fwd: A => B; k1*A*A;", ", the statement's law (fwd stays A => B)"),
+        ("A -> B; k1*A*A", ", the statement's law (fwd stays A => B)"),
+        ("v_fwd = k1*A*A", " ('v_fwd =' dropped)"),
+        ("fwd := k1*A*A;", " ('fwd :=' dropped)"),
+    ],
+)
+def test_set_rate_law_takes_the_law_out_of_a_prefix_or_its_own_reaction(payload, read):
+    """30 refusals in 24 runs of one sweep (#284) sent a law whose meaning is plain: behind an
+    `X =`, or in the reaction's own statement with its reactants and products unchanged. The
+    summary says what was read, so an arrow the statement changed is not taken as applied."""
+    out, summary = me.apply_model_edits(
+        SRC, [{"op": "set_rate_law", "id": "fwd", "antimony": payload}]
+    )
+    assert summary == [f"set rate law of fwd to k1*A*A{read}"]
+    assert "fwd: A => B; k1*A*A;" in out
+
+
+def test_set_rate_law_refuses_another_reactions_statement():
+    with pytest.raises(OperationError, match="statement of reaction 'rev'") as ei:
+        me.apply_model_edits(
+            SRC, [{"op": "set_rate_law", "id": "fwd", "antimony": "rev: B => A; k2*B*B"}]
+        )
+    assert ei.value.cause == "id_mismatch"
+
+
 def test_set_assignment_refuses_a_species():
     """A state integrated by the ODEs cannot also carry an assignment rule — the model would be
     over-determined, and libantimony's rejection would not name the cause."""
     with pytest.raises(OperationError) as ei:
         me.apply_model_edits(SRC, [{"op": "set_assignment", "id": "A", "antimony": "2*B"}])
     assert ei.value.cause == "assign_to_species_refused"
+    assert "remove_reaction each one it is in, in this same batch" in str(ei.value)
+
+
+def test_set_assignment_on_a_species_the_batch_then_takes_out_of_its_reactions():
+    """alkan 71 assigned `Wip1prot` at op [1] and removed its reactions at ops [3-4]; refused at op
+    [1], it re-authored the whole model twice (#284). Only the batch's end state is checked."""
+    out, _ = me.apply_model_edits(
+        SRC,
+        [
+            {"op": "set_assignment", "id": "B", "antimony": "2*A"},
+            {"op": "remove_reaction", "id": "fwd"},
+            {"op": "remove_reaction", "id": "rev"},
+        ],
+    )
+    assert "B := 2*A;" in out and "fwd:" not in out and "rev:" not in out
 
 
 def test_set_assignment_refuses_a_reserved_name():
@@ -736,3 +855,64 @@ def test_a_boundary_species_declared_out_of_line_is_not_a_dynamic_state():
     assert "EGF" not in out_of_line and {"B", "C"} <= out_of_line
     # the inline form keeps working
     assert "EGF" not in _stoichiometry_symbols("R1: $EGF -> B; k\n")
+
+
+# ------------------------------------------------------------------ ties no edit can make (#283)
+def test_a_rename_or_rule_on_a_parameter_only_the_tables_name_says_why(tool_env):
+    """PEtab-MCP#283: merge hints offered ties of offsets and noise sigmas, and agents trying one
+    got "symbol 'offset_SOCS3_long' does not occur in the model" (a rename) or "Missing
+    parameter(s)" (a rule took the row the measurement table's overrides need). Both are refused
+    before anything applies, naming what the parameter is."""
+    mcp, _ = tool_env
+    for op in (
+        {"op": "rename", "old": "sigma_B", "new": "k1"},
+        {"op": "set_assignment", "id": "sigma_B", "antimony": "k1"},
+    ):
+        res = _call(mcp, "make_changes", {"model_edits": [op], "justification": "tie"})
+        assert res["applied"] is False and res["error_cause"] == "untieable_parameter", op
+        assert "'sigma_B' is named only by the observable and measurement tables" in res["error"]
+    # a rename of a parameter the model does read is not refused for it
+    out, _ = me.apply_model_edits(
+        SRC, [{"op": "rename", "old": "k2", "new": "k1"}], fixed={"sigma_B": "x"}
+    )
+    assert "k2" not in out
+
+
+def test_a_noise_sigma_the_fit_solves_is_refused_as_that():
+    """The bound refusal on such a sigma says the fit solves it analytically (#274); a tie on it
+    says the same, not that it is missing (armistead's `sd_Cer_obs := sd_Sphinga_obs`)."""
+    with pytest.raises(OperationError, match="noise sigma the fit solves analytically") as exc:
+        me.apply_model_edits(
+            SRC,
+            [{"op": "set_assignment", "id": "sd_a", "antimony": "sd_b"}],
+            fixed={"sd_a": "solved_analytically"},
+        )
+    assert exc.value.cause == "untieable_parameter"
+
+
+def test_a_parameter_the_tables_read_too_is_kept_by_a_tie_not_renamed_away():
+    """A total that also normalises an observable is read by the model AND the fixed tables: renamed
+    away, the model stops reading what the tables read, so the tie renames the other onto it."""
+    fixed = {"k1": "tables_read_it_too"}
+    with pytest.raises(OperationError, match="rename the other parameter onto it"):
+        me.apply_model_edits(SRC, [{"op": "rename", "old": "k1", "new": "k2"}], fixed=fixed)
+    out, _ = me.apply_model_edits(SRC, [{"op": "rename", "old": "k2", "new": "k1"}], fixed=fixed)
+    assert "k2" not in out
+    me.apply_model_edits(SRC, [{"op": "set_assignment", "id": "k1", "antimony": "A"}], fixed=fixed)
+
+
+def test_renames_follow_a_batch_to_the_names_it_ends_with():
+    """What a batch's renames do to a table's ids, as the reconcile and the warm starts read it: a
+    rename to a fresh name carries the row, through a chain; onto a name the table has it merges,
+    and the target keeps its own, under whatever the batch renames the target to later."""
+    names = ["k1", "k2", "k3"]
+    assert me.carried_renames(names, [("k2", "kb"), ("kb", "kc")]) == ({"kc": "k2"}, {})
+    assert me.carried_renames(names, [("k2", "k1")]) == ({}, {"k2": "k1"})
+    assert me.carried_renames(names, [("k2", "k1"), ("k1", "kf")]) == ({"kf": "k1"}, {"k2": "kf"})
+    assert me.carried_renames(names, [("k3", "k2"), ("k2", "k1")]) == ({}, {"k3": "k1", "k2": "k1"})
+    assert me.carried_renames(names, [("A", "B")]) == ({}, {})  # not a row: nothing to carry
+    ops = [
+        {"op": "set_rate_law", "id": "fwd", "antimony": "x"},
+        {"op": "rename", "old": " k2 ", "new": "k1"},
+    ]
+    assert me.renames(ops) == [("k2", "k1")]

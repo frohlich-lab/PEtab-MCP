@@ -20,6 +20,14 @@ def pytest_configure(config):  # noqa: D401 - pytest hook
     _ensure_swig_on_path()
 
 
+def confirmed(call):
+    """``call()``, a ``make_changes``, sent again where it was refused as an implicit base off the
+    best (PEtab-MCP#330), as an agent that means HEAD does. Whether a fit leaves HEAD the best
+    depends on its random starts, so a test that commits in sequence cannot know."""
+    out = call()
+    return call() if out.get("error_cause") == "implicit_base" else out
+
+
 @pytest.fixture
 def yaml_path() -> str:
     return str(YAML_PATH)
@@ -239,4 +247,31 @@ def empty_session(empty_yaml, tmp_path):
         empty_yaml,
         provenance_dir=str(tmp_path / "prov"),
         resolver=StubReferenceResolver(),
+    )
+
+
+@pytest.fixture
+def dosed_session(empty_yaml, tmp_path):
+    """A model-less session whose one experiment pre-equilibrates with the condition target
+    ``dose`` at 0 and sets it to 1 at t = 0, ``obs_B`` (``B``) measured after."""
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+
+    work = Path(empty_yaml).parent
+    (work / "conditions.tsv").write_text(
+        "conditionId\ttargetId\ttargetValue\npre\tdose\t0\ntreat\tdose\t1\n", encoding="utf-8"
+    )
+    (work / "experiments.tsv").write_text(
+        "experimentId\ttime\tconditionId\ne0\t-inf\tpre\ne0\t0\ttreat\n", encoding="utf-8"
+    )
+    meas = work / "measurements.tsv"
+    meas.write_text(meas.read_text().replace("obs_B\t\t", "obs_B\te0\t"), encoding="utf-8")
+    yaml = Path(empty_yaml)
+    yaml.write_text(
+        yaml.read_text()
+        + "condition_files:\n- conditions.tsv\nexperiment_files:\n- experiments.tsv\n",
+        encoding="utf-8",
+    )
+    return PetabSession(
+        empty_yaml, provenance_dir=str(tmp_path / "prov"), resolver=StubReferenceResolver()
     )

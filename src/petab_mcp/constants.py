@@ -20,6 +20,14 @@ from __future__ import annotations
 # CLI default read this one value so they cannot drift; overridable per commit via ``n_starts``.
 DEFAULT_AUTO_FIT_STARTS = 5
 
+#: The most starts one fit may run, as a multiple of the session's configured default
+#: (``PetabSession.max_fit_starts``). dessauges in sweep 63522750 climbed to 8000 starts a fit,
+#: each still with 1 start at the best: an optimum that narrow is the model's, and every start
+#: past the first raise only cost the shared fit pool (PEtab-MCP#287). 10, not lower, keeps
+#: gemot's scripted reference builds legal: bruno floors its fit at 400 starts, fujita at 300,
+#: on a default of 50 or more.
+MAX_FIT_STARTS_FACTOR = 10
+
 # -- early-stop chain (effect-size gate + non-improving-streak cap + best-score checkpoint) ---
 # The model-building loop otherwise wanders past the noise floor until the client's step limit or
 # a provider error fires — a whole-model op is ~4 agent steps, so by the time a 500-step limit
@@ -32,17 +40,13 @@ DEFAULT_AUTO_FIT_STARTS = 5
 # scale every named penalty shares, so they carry over unchanged when the penalty is swapped.
 # They are literals rather than derived from the criterion; docs/RATIONALE.md says what that costs.
 #
-# (a) Minimum score improvement for a fit to count as a NEW BEST — the gate on ``is_new_best``
-# (see :func:`fitting.clears_new_best_bar`). ``is_new_best`` tracks the same score the checkpoint
-# stores, so the flag, the non-improving-streak reset, and the best-model
-# checkpoint all move on one coherent notion of "better". Without a threshold the flag fired on
-# ANY score twitch (down to ~1e-6, or an nll drop bought by an extra parameter that actually
-# RAISES the score), so noise-floor wander looked like progress and kept resetting the streak.
-# Δ ≥ 2 is the conventional "positive evidence" bar. The comparison is against the current
-# best-score CHECKPOINT (not the raw running minimum), so a steady sub-threshold creep still
-# registers a new best once it CUMULATIVELY clears the bar, rather than starving the streak while
-# it improves.
-NEW_BEST_MIN_DELTA_SCORE = 2.0
+# (a) The score gain a new best must make for the non-improving streak to reset. The best itself
+# is the strict minimum of the score (see :func:`fitting.beats_best`); this bar decides only what
+# counts as PROGRESS. Without it any score twitch (down to ~1e-6) reset the streak, so noise-floor
+# wander looked like progress. Δ ≥ 2 is the conventional "positive evidence" bar. The gain is
+# measured from the best at the streak's last reset (``PetabSession.streak_mark``), so a steady
+# sub-threshold creep still resets it once it CUMULATIVELY clears the bar.
+STREAK_RESET_MIN_SCORE_GAIN = 2.0
 
 # (b) Hard cap on consecutive fitted commits with NO new best (post the gate above): once the
 # streak reaches this, the session stops. This is the load-bearing early-stop lever — the worst
@@ -50,11 +54,11 @@ NEW_BEST_MIN_DELTA_SCORE = 2.0
 # to the client's step limit. Sized well below the ~40-46-op streaks observed in the trace review.
 NON_IMPROVING_STREAK_CAP = 15
 
-# (b, softer) Plateau early-stop: once the best model is statistically adequate AND the best score
-# has improved by less than ``PLATEAU_MIN_SCORE_GAIN`` over the last ``PLATEAU_WINDOW`` fitted ops,
-# stop — there is nothing left to gain. Complements the hard cap (which catches never-adequate
-# sessions); this one lets an already-good session finish promptly instead of polishing the noise
-# floor.
+# (b, softer) Plateau early-stop: once the best model is shown adequate (its chi2 GoF against FIXED
+# noise sigmas; see session.progress_report) AND the best score has improved by less than
+# ``PLATEAU_MIN_SCORE_GAIN`` over the last ``PLATEAU_WINDOW`` fitted ops, stop — there is nothing
+# left to gain. Complements the hard cap (which catches never-adequate sessions); this one lets an
+# already-good session finish promptly instead of polishing the noise floor.
 PLATEAU_MIN_SCORE_GAIN = 1.0
 PLATEAU_WINDOW = 5
 
@@ -66,15 +70,18 @@ PLATEAU_WINDOW = 5
 
 # The chi2 goodness-of-fit p-value at/above which the best model is considered statistically
 # adequate for the plateau gate (its residuals are consistent with the known measurement noise).
-ADEQUATE_GOF_PVALUE = 0.05
+# 0.1, stricter than the conventional 0.05, and the level of gemot's own chi2 bar
+# (``gemot.scenario.REFERENCE_FREE_GOF_ALPHA``): at 0.05 the plateau gate stopped, as adequate, a
+# run that the judge then failed with 0.05 <= p < 0.1.
+ADEQUATE_GOF_PVALUE = 0.1
 
 # The OTHER tail of the same chi2 GoF test. A p-value close to 1 means chi2 is far BELOW its
 # degrees of freedom — the residuals are much smaller than the KNOWN noise, i.e. the model is
-# fitting the noise rather than the signal. Testing only `p >= 0.05` is one-sided and scores such
+# fitting the noise rather than the signal. Testing only `p >= ADEQUATE_GOF_PVALUE` is one-sided and scores such
 # an overfit as "adequate" (observed: fits at chi2/n = 0.016 and 0.051 with p = 0.9999999).
 # Only meaningful for a FIXED sigma: when sigma is ESTIMATED the MLE absorbs residual shrinkage
 # into sigma itself, pinning chi2/n at ~1 from below (empirical floor 0.98 over 40 fits), so this
-# tail is unreachable there and the estimated-sigma branch judges the sigma's plausibility instead.
+# tail is unreachable there, and an estimated-sigma model is never adequate for the plateau stop.
 OVERFIT_GOF_PVALUE = 0.995
 
 # -- default parameter-table bounds ----------------------------------------
@@ -93,6 +100,9 @@ DEFAULT_PARAMETER_UPPER_BOUND = 1e2
 # stiff and the fit plateau; tight linear bounds keep it biophysically sane.
 EXPONENT_LOWER_BOUND = 1.0
 EXPONENT_UPPER_BOUND = 8.0
+# An exponent's upper bound past which a bounds edit is warned: the Hill term is then near its
+# step-function limit. alkan 72 widened `n_p21` to 32 and alkan 73 `hrep` to 100 (PEtab-MCP#285).
+EXPONENT_WIDENING_WARNING_BOUND = 10.0
 
 # -- at-bound reporting -----------------------------------------------------
 # A fitted parameter within this fraction of its lower/upper bound (measured on its own
@@ -104,11 +114,23 @@ EXPONENT_UPPER_BOUND = 8.0
 # to eyeball `get_parameters()` against the fitted value after every commit.
 PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
 
+#: How close to a best objective another must end to count as having reached it: 1 nll, 2 in BIC.
+#: A start within it is at the best (``fitting``'s ``starts_at_best``), and a nested child within it
+#: of its parent has reached the parent's optimum (:mod:`nesting`).
+AT_BEST_NLL_TOL = 1.0
+
+# -- merge hints -----------------------------------------------------------
+#: A merge hint whose ``move_scaled`` reaches this carries ``price_unreliable``: its price is a
+#: local quadratic at the fit's optimum, and one decade is where that stops being local on the
+#: log10 scale minted rows use. Ties that moved 2-3 decades realised +4 to +12 nll against prices
+#: of 0.05-2.5 (blasi, fujita; sweep gemot_pools_20261107, PEtab-MCP#336).
+MERGE_PRICE_UNRELIABLE_MOVE = 1.0
+
 # -- noise-sigma reporting ---------------------------------------------------
 # An ESTIMATED noise-sigma parameter above this fraction of its observable's own raw
 # measurement std (across every time point / condition) is flagged in the standard fit report.
 # A sigma free to float lets the optimizer make almost ANY mechanism look "statistically
-# adequate" (chi2_gof_pvalue >= 0.05) by simply inflating the assumed noise until residuals fit
+# adequate" (chi2_gof_pvalue >= ADEQUATE_GOF_PVALUE) by simply inflating the assumed noise until residuals fit
 # inside it — agents did exactly this (sigma fit to 20-60x its nominal scale) while
 # the underlying mechanism was missing whole reaction pathways. A sigma that has to explain a
 # large fraction of the data's own variability isn't measurement noise anymore; it's covering
@@ -169,9 +191,9 @@ NOISE_SIGMA_REPLICATE_MIN_DOF = 6
 # Per-point two-sided Student-t p on the pooled df, HOLM-adjusted across the replicated points of
 # ONE noise parameter, flagged below this alpha. On that problem (15 points, pooled df 237) the 1%
 # Holm bar is |z| > 3.45: the truth's worst point sits at 1.483 (Holm p 1) and the failing fit's at
-# 11.050 (Holm p 5.5e-22), with 8 of its 15 points flagged. 0.01 rather than 0.05 because the flag
-# is a STOP condition and these p-values are not exact (below). Per point rather than one
-# lack-of-fit F over the family because the advice has to NAME the points where the form is wrong.
+# 11.050 (Holm p 5.5e-22), with 8 of its 15 points flagged. 0.01 rather than 0.05 because a flag
+# sends the agent after those points and these p-values are not exact (below). Per point rather
+# than one lack-of-fit F over the family because the advice has to NAME the points.
 #
 # NOT an axis independent of the noise report. With one ML-fitted sigma over rows that are ALL
 # replicated, sum z_i^2 = N * r^2 - sum(n_i - 1) exactly, r = fitted sigma / that sigma's
@@ -207,7 +229,7 @@ REPLICATE_LOF_ALPHA = 0.01
 REPLICATE_LOF_MIN_DF = 2
 
 # Below this many usable replicated points the Holm family is too small to conclude anything, so the
-# arm reports NO EVIDENCE either way. 3 is the smallest count at which a single flagged point
+# arm reports NOT TESTED either way. 3 is the smallest count at which a single flagged point
 # survives a Holm correction at alpha 0.01 without needing an absurd |z|.
 #
 # This is the floor for a FAMILY to be testable at all, not the threshold for a pass —
@@ -240,14 +262,13 @@ REPLICATE_LOF_MIN_POINTS = 3
 #
 # ADVISORY, and only that. The df BAND reaches the summary prose the agent reads and the coverage
 # credit that clears `low_power` — that last one keys on the band, since `weak` is False on a flag
-# by construction. NO stop condition consumes any of it: a weak pass clears the plateau stop and the
-# finish gate exactly as a powered one does. That is deliberate (the objective and how a fit is
-# scored stay as published); the reader is an agent reading the prose, so here the wording IS the
-# mechanism.
+# by construction. NO stop condition consumes any of it, nor the flag (the objective and how a fit
+# is scored stay as published); the reader is an agent reading the prose, so here the wording IS
+# the mechanism.
 REPLICATE_LOF_MIN_LOF_DF = 3
 
 # At most this many of the worst FLAGGED points (by |z|) ride on a fit result — flagged only, since
-# the advice built from them tells the agent that is where the form is wrong, and a point the model
+# the advice built from them tells the agent that is where the fit is off, and a point the model
 # already reproduces is not one of those. The verdict is re-sent in the agent's history on EVERY
 # subsequent turn (PR #23 cut ~40% of the per-call prompt by trimming exactly this kind of payload),
 # so the arm emits a one-line verdict plus a handful of NAMED points — never the full table (a
@@ -295,15 +316,16 @@ NOISE_SIGMA_BAND_MIN_DF = 3.0
 # under-explored: widening its box just lets the optimum slide to the new edge and re-pin for a
 # negligible fit gain, chasing the search space toward infinity (one agent widened one rate 4x
 # this way before finally fixing it). ``change_parameters`` REJECTS a THIRD such widening
-# of a still-pinned parameter when the previous widening bought less than this much BIC. The
-# threshold is in BIC because a bounds-only re-fit keeps k and n fixed, so an NLL improvement
-# converts as delta_bic = 2 * delta_nll; a BIC gain below ~2 is "not worth more than a bare
-# mention". The skill guidance is stricter still (widen at most once) — this is the hard backstop.
+# of a still-pinned parameter when the previous bounds-only widening bought a BIC gain of at
+# least 0 but less than this. The threshold is in BIC because a bounds-only re-fit keeps k and n
+# fixed, so an NLL improvement converts as delta_bic = 2 * delta_nll; a BIC gain below ~2 is "not
+# worth more than a bare mention". The skill guidance is stricter still (widen at most once) —
+# this is the hard backstop.
 WIDENING_NEGLIGIBLE_BIC_GAIN = 2.0
 
 # -- structural-inadequacy nudge (issue #82) --------------------------------
-# When the misfit is STRUCTURAL — the model's structure itself cannot fit the data, not the
-# optimizer or the bounds — the fix is to change the model's FORM (add a latent/unobserved state,
+# When the misfit is STRUCTURAL — the model's structure itself cannot fit the data — the fix is to
+# change the model's FORM (add a latent/unobserved state,
 # add a feedback/regulation reaction, raise the interaction order), NOT to re-parameterize or widen
 # bounds within the same structure. The failure mode this addresses (seen across one problem's
 # deep-dive) is an agent that correctly DIAGNOSES structural inadequacy and then re-fits the same

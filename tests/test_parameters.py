@@ -93,3 +93,48 @@ def test_update_coerces_numeric_string(session):
 def test_update_non_editable_field(session):
     with pytest.raises(ParameterError):
         P.update_parameters(session.problem, [{"id": "k1", "parameterName": "x"}])
+
+
+def test_an_unknown_id_is_told_the_ids_nearest_it(session):
+    """`Unknown parameter id` listed every id, 17 times in 11 runs of gemot round 5, for guesses
+    like `koff_ip3_1` beside `kon_ip3_1` and a mechanism's bare `Ka` for `s6_phos_Ka` (#251)."""
+    known = ["kon_ip3_1", "egfr_act_k1", "s6_phos_Ka", "sigma_B", *(f"x{i}" for i in range(30))]
+    assert "['kon_ip3_1']" in P._unknown_id("koff_ip3_1", known, ())
+    assert "['egfr_act_k1']" in P._unknown_id("egfr_erec_k", known, ())
+    said = P._unknown_id("Ka", known, ("s6_phos",))
+    assert "['s6_phos_Ka']" in said and "`<prefix>_<name>`: ['s6_phos_Ka']" in said
+    with pytest.raises(
+        ParameterError,
+        match=r"Unknown parameter id 'init'.*`<prefix>_<name>`: "
+        r"\['A_init'\]",
+    ):
+        P.update_parameters(session.problem, [{"id": "init", "lowerBound": 0.1}], ["A"])
+
+
+def test_an_unknown_id_is_told_the_id_one_edit_away():
+    """fujita 63612603_61 sent `k_ri` for `kri`; the list held only `k_*` ids, so the agent
+    decided `parameters` could not reach the id its own model edits had just added (#337)."""
+    known = ["kri", "k_int_lig", "k_rec", "k_deg", *(f"x{i}" for i in range(30))]
+    said = P._unknown_id("k_ri", known, ())
+    assert said.startswith("The ids nearest it: ['kri', ")
+    assert P._edits("k_ri", "kri") == 1 and P._edits("kd_on", "dk_on") == 1
+    # An id the same call's model edits added is said to be one `parameters` reaches.
+    said = P._unknown_id("k_ri", known, (), before=known[1:])
+    assert "This call's model edits added ['kri'], which `parameters` can set." in said
+    # An id they removed is said to be removed, not guessed at (deepseek froehlich 53, 54).
+    said = P._unknown_id("k_old", known, (), before=[*known, "k_old"])
+    assert said.startswith("This call's model edits removed it")
+
+
+def test_a_condition_target_is_not_guessed_at():
+    """A condition table's target got the ids nearest it, none of them related (#337)."""
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from petab_mcp.reconcile import not_a_parameter
+
+    cdf = pd.DataFrame({"conditionId": ["c1"], "targetId": ["EGF_dose"], "targetValue": [1.0]})
+    problem = SimpleNamespace(observable_df=None, condition_df=cdf, model=None)
+    assert "target of the condition table" in not_a_parameter(problem, "EGF_dose")
+    assert not_a_parameter(problem, "EGF_kon") is None

@@ -24,9 +24,11 @@ import pytest
 
 from pathlib import Path
 
+from conftest import confirmed
+
 from petab_mcp import operations as O
 from petab_mcp import parameters as P
-from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS
+from petab_mcp.constants import DEFAULT_AUTO_FIT_STARTS, MAX_FIT_STARTS_FACTOR
 from petab_mcp.errors import ModelUpdateError, ParameterError
 from petab_mcp.operations import OperationError
 from petab_mcp.references import StubReferenceResolver
@@ -93,6 +95,82 @@ def test_a_re_author_and_its_parameters_apply_atomically(session):
     assert edits[-1]["args"]["antimony_chars"] > 0
 
 
+def test_a_forks_dropped_parameter_warning_is_against_its_base(session):
+    """REGRESSION (#268): a fork's warning compared the re-author against HEAD's table, so it named
+    a parameter only HEAD had (lun 14 forked v2 and was told it dropped `KEGF`) and missed one only
+    the base estimated."""
+    O.set_model(session, _antimony("r3: A => ; k3 * A;"), justification="the base estimates k3")
+    base = session.problem.parameter_df.copy()
+    O.set_model(session, _antimony("r4: B => ; k4 * B;"), justification="HEAD estimates k4")
+    res = O.set_model(
+        session, _antimony(), justification="fork the base without k3", restore_parameter_df=base
+    )
+    assert [w for w in res["warnings"] if "dropped previously-estimated" in w] == [
+        "the re-author dropped previously-estimated parameter(s) ['k3']: their fitted values are "
+        "gone. Re-declare them in the Antimony if that was unintended."
+    ]
+
+
+def _with_c(c_init: float) -> str:
+    """The toy model with a species `C` started at its own `C_init`, declared at ``c_init``."""
+    return _antimony(
+        "species C in compartment_;", "C = C_init;", f"C_init = {c_init};", "r3: B => C; k1 * B;"
+    )
+
+
+def test_a_start_held_fixed_by_value_is_named(session):
+    """REGRESSION (PEtab-MCP#325): a start re-declared at 1 was held fixed with no message, and
+    bounds sent for it were taken with none either (bachmann 10, 23). Both edits now say so."""
+    res = O.set_model(session, _with_c(1.0), justification="C starts normalised")
+    assert [w for w in res["warnings"] if w.startswith("Held FIXED")] == [
+        f"Held FIXED, not estimated: `C_init` = 1 (the start of `C`). {O._HELD_FIXED}"
+    ]
+    bounded = O.set_model(
+        session,
+        _with_c(1.0),
+        justification="box C's start",
+        parameters=[{"parameter_id": "C_init", "lower_bound": 0.1, "upper_bound": 10}],
+    )
+    assert any(w.startswith("`C_init` is FIXED at 1, so the bounds") for w in bounded["warnings"])
+    assert not any(w.startswith("Held FIXED") for w in bounded["warnings"])  # not moved again
+
+
+def test_a_fork_keeps_a_start_its_model_now_fixes(session):
+    """REGRESSION (PEtab-MCP#325): a fork restored its base's nominal over a row the reconcile had
+    just fixed, so bachmann 10's start re-declared at 1 was simulated fixed at the base's fitted
+    79.75, one parameter off k for free."""
+    from petab.v2.C import ESTIMATE, NOMINAL_VALUE
+
+    O.set_model(session, _with_c(5.0), justification="C starts at a guess")
+    session.problem.parameter_df.loc["C_init", NOMINAL_VALUE] = 79.75  # as the fit leaves it
+    base = session.problem.parameter_df.copy()
+    O.set_model(
+        session, _with_c(1.0), justification="fork: C normalised", restore_parameter_df=base
+    )
+    row = session.problem.parameter_df.loc["C_init"]
+    assert (float(row[NOMINAL_VALUE]), bool(row[ESTIMATE])) == (1.0, False)
+
+
+def test_a_log_scale_refusal_names_the_kept_fitted_value(session):
+    """REGRESSION (PEtab-MCP#325): a kept row's fitted value refused log10 with advice for an
+    initial condition, on a rate constant the model re-declared at 0.5 (haiku lucarelli 4)."""
+    from petab.v2.C import NOMINAL_VALUE
+
+    O.set_model(session, _antimony("r3: A => ; k3 * A;", "k3 = -0.1;"), justification="k3")
+    session.problem.parameter_df.loc["k3", NOMINAL_VALUE] = -0.03  # as the fit leaves it
+    with pytest.raises(OperationError) as err:
+        O.set_model(
+            session,
+            _antimony("r3: A => ; k3 * A;", "k3 = 0.5;"),
+            justification="k3 on log10",
+            parameters=[
+                {"parameter_id": "k3", "scale": "log10", "lower_bound": 1e-3, "upper_bound": 10}
+            ],
+        )
+    assert "-0.03 is its row's fitted value, not the 0.5 the model declares" in str(err.value)
+    assert "initial-condition" not in str(err.value)
+
+
 def test_parameters_can_target_a_newly_introduced_parameter(session):
     """The parameter edit runs AFTER the reconcile, so it can bound a symbol this very re-author
     introduced — the whole point of taking both in one call."""
@@ -112,12 +190,12 @@ def test_a_parameters_rejection_reverts_the_re_author(session):
     before_model = session.problem.model.to_sbml_str()
     before_params = _records(session)
 
-    with pytest.raises(OperationError, match="only one bound"):
+    with pytest.raises(OperationError, match="upper bound stays"):
         O.set_model(
             session,
             _antimony("r3: A => ; k3 * A;"),
             justification="bad bound entry",
-            parameters=[{"parameter_id": "k1", "lower_bound": 1e-3}],
+            parameters=[{"parameter_id": "k1", "lower_bound": 1e3}],
         )
 
     assert session.problem.model.to_sbml_str() == before_model
@@ -136,6 +214,29 @@ def test_a_parameters_entry_for_a_dropped_parameter_is_rejected(session):
             parameters=[{"parameter_id": "k3", "lower_bound": 1e-4, "upper_bound": 1e1}],
         )
     assert "k3" not in _records(session)
+
+
+def test_an_unknown_id_names_what_this_calls_model_edits_added_and_removed(session):
+    """The refusal read the candidate table alone, so it neither said that the call's own edits
+    had dropped the id (deepseek froehlich 53, 54) nor that the near id they had added was one
+    `parameters` reaches (fujita 63612603_61, `k_ri` for `kri`) (#337)."""
+    renamed = _BASE.replace("k2", "kri").format(extra="")
+    with pytest.raises(ParameterError) as exc:
+        O.set_model(
+            session,
+            renamed,
+            justification="rename the back rate",
+            parameters=[{"parameter_id": "k_ri", "lower_bound": 1e-4, "upper_bound": 1e1}],
+        )
+    assert "The ids nearest it: ['kri'" in str(exc.value)
+    assert "This call's model edits added ['kri']" in str(exc.value)
+    with pytest.raises(ParameterError, match=r"'k2'\. This call's model edits removed it"):
+        O.set_model(
+            session,
+            renamed,
+            justification="rename the back rate",
+            parameters=[{"parameter_id": "k2", "lower_bound": 1e-4, "upper_bound": 1e1}],
+        )
 
 
 def test_a_re_author_without_parameters_edits_only_the_model(session):
@@ -162,12 +263,11 @@ def test_a_malformed_parameters_argument_is_rejected(session):
         O.set_model(session, _antimony(), justification="x", parameters={"parameter_id": "k1"})
 
 
-@pytest.mark.parametrize("bad", ["1e-3", None, True, float("nan"), float("inf")])
+@pytest.mark.parametrize("bad", ["1e-3", True, float("nan"), float("inf")])
 def test_a_non_numeric_bound_is_a_clean_rejection(session, bad):
     """Bounds are type-checked during normalization, not left to `update_parameters`' bare
     `float(value)`: a ValueError there is not a PetabMcpError, so it would escape the tool's error
-    wrapper as an unstructured MCP failure instead of `applied: false`. (`None` trips the
-    both-bounds-or-neither rule; the rest trip the numeric/finite checks.)"""
+    wrapper as an unstructured MCP failure instead of `applied: false`."""
     with pytest.raises(OperationError):
         O.set_model(
             session,
@@ -267,14 +367,63 @@ def test_a_parameters_only_call_fits_too(tmp_path):
 
 
 def test_a_call_that_changes_nothing_is_rejected_before_it_fits(tmp_path):
-    """`antimony`, `model_edits` and `parameters` are each optional, but not all three: with none
-    there is nothing to score, and the call would still spend a multistart fit."""
+    """`antimony`, `model_edits`, `parameters` and `n_starts` are each optional, but not all four:
+    with none there is nothing to score, and the call would still spend a multistart fit."""
     mcp = _server(tmp_path, auto_fit=True)
     res = _call(mcp, "make_changes", {"justification": "nothing to do"})
     assert res["applied"] is False
-    assert all(arg in res["error"] for arg in ("model_edits", "antimony", "parameters"))
+    assert all(arg in res["error"] for arg in ("model_edits", "antimony", "parameters", "n_starts"))
     assert "fit" not in res and "committed" not in res
     assert _head(mcp)["current_version"] == -1
+
+
+# -- refits (PEtab-MCP#194) ------------------------------------------------------
+def _meta(tmp_path, version):
+    return json.loads((tmp_path / "prov" / "versions" / f"v{version}" / "meta.json").read_text())
+
+
+def test_base_version_with_no_edit_refits_that_version(tmp_path):
+    """REGRESSION: `base_version` without an edit was refused, so agents carried a bound change on
+    a throw-away edit, and some of those dropped inputs or terms (bachmann, fujita). With new
+    bounds it refits that version as a new one of its structure, descending from it; with no new
+    bounds and no more starts it is that version, and alone it is nothing to do."""
+    mcp = _server(tmp_path, auto_fit=True)
+    _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0", "n_starts": 2})
+    extra = {"antimony": _antimony("r3: A => ; k3 * A;"), "justification": "v1", "n_starts": 2}
+    assert _call(mcp, "make_changes", extra)["version"] == 1
+
+    same = {"justification": "v0 again", "base_version": 0, "n_starts": 2}
+    out = _call(mcp, "make_changes", same)
+    assert out["applied"] is False and "identical to v0" in out["error"], out["message"]
+    out = _call(mcp, "make_changes", {"justification": "v0 alone", "base_version": 0})
+    assert out["applied"] is False and "nothing to do" in out["error"]
+    assert _head(mcp)["current_version"] == 1
+
+    wider = [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}]
+    out = _call(mcp, "make_changes", {**same, "parameters": wider})
+    assert out["committed"] is True and out["version"] == 2, out["message"]
+    assert _meta(tmp_path, 2)["parent"] == 0
+    assert _meta(tmp_path, 2)["structure_hash"] == _meta(tmp_path, 0)["structure_hash"]
+
+
+def test_a_refit_of_the_current_model_is_ranked_like_any_fit(tmp_path):
+    """A refit that clears the new-best bar becomes `best_version`. `n_starts` alone refits too,
+    and the same search again is the version it repeats."""
+    mcp = _server(tmp_path, auto_fit=True)
+
+    def k1(lb, ub, **call):
+        box = [{"parameter_id": "k1", "lower_bound": lb, "upper_bound": ub}]
+        return _call(mcp, "make_changes", {"parameters": box, "n_starts": 2, **call})
+
+    k1(1e-3, 2e-3, antimony=_antimony(), justification="k1 boxed in")  # the data need k1 ~ 0.5
+    out = k1(1e-3, 1e3, justification="let k1 go")
+    assert out["committed"] is True and out["improvement"]["is_new_best"] is True
+    assert out["progress"]["best_version"] == 1
+    out = _call(mcp, "make_changes", {"justification": "harder", "n_starts": 3})
+    assert out["committed"] is True and out["version"] == 2 and out["n_starts"] == 3
+    again = {"justification": "as hard again", "n_starts": 3}
+    out = confirmed(lambda: _call(mcp, "make_changes", again))
+    assert out["no_change"] is True and out["version"] == 2
 
 
 def test_dedup_skip_reports_no_change(tmp_path):
@@ -391,7 +540,7 @@ def test_a_revert_to_an_earlier_model_is_refused_as_that_version(tmp_path):
     """REGRESSION: with rates invisible to the fingerprint, going back to an earlier rate was
     refused as a duplicate of HEAD, which holds a different one. The version it returns to stands
     for it, so it is refused naming that version and HEAD stays put; under new bounds it is a new
-    search, fitted and named as a revisit."""
+    search, fitted as a new version."""
     mcp = _server(tmp_path, auto_fit=True)
     _call(mcp, "make_changes", {"antimony": _ruled("k1"), "justification": "v0", "n_starts": 2})
     _call(
@@ -400,14 +549,13 @@ def test_a_revert_to_an_earlier_model_is_refused_as_that_version(tmp_path):
         {"model_edits": [_set_rate("k1 / (1 + A)")], "justification": "v1", "n_starts": 2},
     )
     back = {"model_edits": [_set_rate("k1")], "justification": "back", "n_starts": 2}
-    refused = _call(mcp, "make_changes", back)
+    refused = confirmed(lambda: _call(mcp, "make_changes", back))
     assert refused["applied"] is False and "identical to v0" in refused["error"]
     assert _head(mcp)["current_version"] == 1
 
     bounds = [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e3}]
-    wider = _call(mcp, "make_changes", {**back, "parameters": bounds})
+    wider = confirmed(lambda: _call(mcp, "make_changes", {**back, "parameters": bounds}))
     assert wider["committed"] is True and wider["version"] == 2, wider["message"]
-    assert any("version(s) [0]" in m["message"] for m in wider["messages"])
 
 
 def test_a_fit_failure_reverts_the_edit(tmp_path, monkeypatch):
@@ -510,6 +658,13 @@ def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_pa
         {"antimony": _antimony(), "justification": "score with the default starts"},
     )
     assert res["n_starts"] == default
+    # ...and how many of them reached the best value (#213), fresh and warm apart (#334)
+    split = re.fullmatch(
+        r"(\d+)/(\d+) fresh, (\d+)/(\d+) warm \(within 1 nll\)", res["starts_at_best"]
+    )
+    assert split, res["starts_at_best"]
+    fresh, n_fresh, warm, n_warm = map(int, split.groups())
+    assert fresh + warm >= 1 and n_fresh + n_warm == default
 
     # given -> exactly that count, not default + n_starts
     res = _call(
@@ -522,6 +677,24 @@ def test_the_multistart_default_and_the_starts_actually_used_are_reported(tmp_pa
         },
     )
     assert res["n_starts"] == default + 2
+
+
+def test_n_starts_above_the_cap_is_refused_before_the_edit(tmp_path, session):
+    """dessauges raised `n_starts` to 8000 a fit, each with 1 start at the best (PEtab-MCP#287):
+    the count is capped at MAX_FIT_STARTS_FACTOR times the default, and a call above it is refused
+    before its edit applies, naming the cap and why more starts would not help."""
+    cap = MAX_FIT_STARTS_FACTOR * DEFAULT_AUTO_FIT_STARTS
+    mcp = _server(tmp_path)
+    res = _call(
+        mcp,
+        "make_changes",
+        {"antimony": _antimony(), "justification": "fit harder", "n_starts": cap + 1},
+    )
+    assert res["applied"] is False and _head(mcp)["current_version"] == -1
+    assert f"at most {cap}" in res["error"] and "needle" in res["error"]
+    # the cap itself is allowed, and it follows the session's own default
+    session.auto_fit_starts = 3
+    assert session._coerce_n_starts(MAX_FIT_STARTS_FACTOR * 3) == MAX_FIT_STARTS_FACTOR * 3
 
 
 def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):
@@ -551,7 +724,7 @@ def test_a_harder_fit_of_an_unchanged_model_is_not_skipped(tmp_path):
     )
 
     # fewer starts than the new HEAD -> back to a no-op, not a weaker refit
-    weaker = _call(mcp, "make_changes", {**same_model, "n_starts": 3})
+    weaker = confirmed(lambda: _call(mcp, "make_changes", {**same_model, "n_starts": 3}))
     assert weaker["no_change"] is True and _head(mcp)["current_version"] == 1
 
 
@@ -852,9 +1025,10 @@ def _description(mcp):
 def test_the_routes_text_names_statements_only_where_it_is_offered(tmp_path):
     """It required one of `antimony` / `model_edits` / `parameters` on a server whose third
     route is `statements`; without the route the description is the one it was before."""
+    from petab_mcp.progress_signals import render
     from petab_mcp.server import _MAKE_CHANGES_DOC
 
-    assert _description(_server(tmp_path / "plain")) == _MAKE_CHANGES_DOC
+    assert _description(_server(tmp_path / "plain")) == render(_MAKE_CHANGES_DOC, True)
     required = _description(_statements_server(tmp_path)).split("at least one of ")[1]
     assert "`statements`" in required.split(" is required.")[0]
 
@@ -879,18 +1053,20 @@ def test_an_entity_map_documents_and_accepts_no_text_route(tmp_path):
 
 def _agent_facing_text(mcp):
     """Everything a client is shown before it calls anything: the instructions, every tool's
-    description and argument schema, and every listed skill in full."""
+    description and argument schema, and every skill the server lists, in full."""
     import json
-
-    from petab_mcp import skills as skills_mod
 
     tools = asyncio.run(mcp.list_tools())
     names = {t.name for t in tools}
-    skills = skills_mod.load_skills(skills_mod.default_skills_dir()) if "get_skill" in names else []
+    listed = _listed(_call(mcp, "list_skills", {})) if "get_skill" in names else []
     return "\n".join(
         [mcp.instructions or ""]
         + [f"{t.description}\n{json.dumps(t.parameters)}" for t in tools]
-        + [f"{s.description}\n{s.text}" for s in skills]
+        + [s["name"] for s in listed]
+        + [
+            f"{s['description']}\n{_listed(_call(mcp, 'get_skill', {'name': s['name']}))}"
+            for s in listed
+        ]
     )
 
 
@@ -902,6 +1078,7 @@ def test_no_text_offers_the_statements_route_where_it_does_not_exist(tmp_path):
     route = re.compile(r"(?i)\bstatements\b|statement_edits|list_mechanisms|\bindra\b")
     plain = _agent_facing_text(_server(tmp_path / "plain"))
     assert not route.findall(plain), sorted(set(route.findall(plain)))
+    assert "statements-grammar" not in plain  # the route's own skill (#193)
     tools = asyncio.run(_statements_server(tmp_path).list_tools())
     assert "'statements'" in next(t for t in tools if t.name == "get_model").description
     with pytest.raises(Exception, match="Unknown model format 'statements'"):
@@ -984,6 +1161,59 @@ def test_ungrounded_agents_are_named_once_per_call(tmp_path):
     ]
 
 
+def test_a_warning_the_last_version_carried_is_not_sent_again(tmp_path):
+    """#190: the grounding warning named ~20 species on every edit of a long session. A repeat
+    names the version whose result carried it in full; a warning that skipped a commit comes back
+    whole, since the version named must have a result that carries it."""
+    mcp = _statements_server(tmp_path)
+    back = {
+        **_statement_row(),
+        "statement": {"type": "PopulationTransition", "source": {"name": "B"}, "target": {"name": "A"}},
+        "prefix": "back",
+    }
+
+    def commit(rows, bindings):
+        out = _call(mcp, "make_changes", {"justification": "x", "statements": rows, "bindings": bindings})
+        assert out["committed"] is True, out
+        return [m["message"] for m in out["messages"] if m["source"] == "edit"]
+
+    grounding = "`statements` agents carry no grounding: A, B."
+    assert grounding in commit([_statement_row()], {"conv": "mass_action"})
+    one = {"conv": "mass_action", "back": "mass_action"}
+    assert commit([_statement_row(), back], one) == [
+        "1 warning(s) unchanged since version 0.",
+        "New estimated parameter(s): `back_k`.",  # PEtab-MCP#286
+    ]
+    shared = {"conv": "mass_action k=k_ab", "back": "mass_action k=k_ab"}
+    said = commit([_statement_row(), back], shared)
+    assert "1 warning(s) unchanged since version 0." in said and grounding not in said
+
+
+def test_a_folded_warning_is_kept_whole_in_its_version(tmp_path):
+    """A version's meta keeps every warning its change and lint gave, as its result carried them
+    before the fold. bachmann 77's dead `pSTAT5n` was a count in every result from v8 on, and the
+    best model, v10, kept it (PEtab-MCP#286): `get_version` is where a client reads it whole."""
+    mcp = _server(tmp_path)
+    dead = _antimony("species C in compartment_;", "C = 0;", "k3 = 0.2;", "r3: A => B; k3 * A * C;")
+    first = _call(mcp, "make_changes", {"antimony": dead, "justification": "C gates r3"})
+    (lint,) = [m for m in first["messages"] if m["source"] == "validation"]
+    assert "species `C` starts at 0 and stays 0" in lint["message"]
+    widen = {"parameter_id": "k1", "lower_bound": 1e-3, "upper_bound": 1e2}
+    refit = _call(mcp, "make_changes", {"parameters": [widen], "justification": "widen k1"})
+    assert refit["committed"] is True, refit
+    assert refit["messages"] == [
+        {
+            "level": "warning",
+            "source": "validation",
+            "message": "1 warning(s) unchanged since version 0, naming `C`, `r3`.",
+        }
+    ]
+    assert _call(mcp, "get_version", {"version": 1})["edit_warnings"] == [lint]
+    assert _call(mcp, "get_version", {"version": 0})["edit_warnings"] == first["messages"]
+    # Kept out of `list_versions`, whose rows every turn may re-read.
+    assert all("edit_warnings" not in row for row in _listed(_call(mcp, "list_versions", {})))
+
+
 def _text(mcp, name, args):
     """A tool's text return (FastMCP wraps a str in {"result": ...})."""
     return _listed(_call(mcp, name, args))
@@ -1011,12 +1241,15 @@ def test_a_scheme_mechanism_builds_and_is_listed_as_written(tmp_path):
         (tmp_path / "prov" / "versions" / "v0" / "statements.json").read_text()
     )["rows"]
     assert stored["emission"]["parameters"] == ["conv_k_hop"]
-    listed = _text(mcp, "list_mechanisms", {"statement_type": "PopulationTransition"})
+    listed = _text(mcp, "list_mechanisms", {"statement_types": ["PopulationTransition"]})
     assert (
         "PopulationTransition | hop (written this run) | parameters: k_hop\n"
         "  source() >> target() @ k_hop"
     ) in listed
     assert "PopulationTransition | mass_action | parameters: k\n" in listed
+    index = _text(mcp, "list_mechanisms", {}).splitlines()
+    assert ("PopulationTransition [roles source, target]: hop(k_hop) (written this run), "
+            "mass_action(k)") in index
     model = _text(mcp, "get_model", {"format": "statements"})
     assert (
         "mechanism hop: PopulationTransition, scheme, parameters k_hop\n"
@@ -1076,11 +1309,54 @@ def test_list_mechanisms_exists_only_with_the_route(tmp_path):
 
 
 def test_list_mechanisms_shows_two_step_as_its_rules(tmp_path):
-    listed = _text(_statements_server(tmp_path), "list_mechanisms", {"statement_type": "Phosphorylation"})
+    listed = _text(
+        _statements_server(tmp_path), "list_mechanisms", {"statement_types": ["Phosphorylation"]}
+    )
     assert (
         "Phosphorylation | indra_two_step | parameters: kc, kf, kr\n"
         "  enz(sub=None) + sub(mod='off', enz=None) >> enz(sub=1) % sub(mod='off', enz=1) @ kf"
     ) in listed
+
+
+def test_list_mechanisms_without_types_is_an_index_of_their_parameters(tmp_path):
+    """#191: every mechanism's rules at once was 7-9k tokens of a lead's context for the whole
+    run. The index names each entry with its parameters, the types sharing their entries on one
+    line, and the rules come from the types asked for, several in one call."""
+    mcp = _statements_server(tmp_path)
+    index = _text(mcp, "list_mechanisms", {})
+    assert " >> " not in index
+    (line,) = [line for line in index.splitlines() if "Phosphorylation" in line.split(": ")[0]]
+    assert line.startswith("Acetylation, ") and "indra_two_step(kc, kf, kr)" in line
+    assert "[roles enz, sub]: " in line
+    assert "Dephosphorylation" not in line.split(": ")[0]
+    both = _text(mcp, "list_mechanisms", {"statement_types": ["Complex", "Conversion"]})
+    assert "Complex | indra_default | parameters: kf, kr" in both
+    assert "Conversion | mass_action | parameters: k" in both
+    assert _text(mcp, "list_mechanisms", {"statement_types": ["Complex", "Nope"]}).startswith(
+        "no mechanism for Nope; the statement types are"
+    )
+
+
+def test_a_written_mechanism_the_placeholder_cannot_build_stays_listed():
+    """A scheme reading a partner only its row's statement names (`amount(PTEN)`) fails on the
+    placeholder statement; the index lists it by what it declares and its type's rules show it as
+    written (review of #198). ActiveForm's built-ins, which build no rule, stay out."""
+    from types import SimpleNamespace
+
+    from petab_mcp.server import _mechanisms_text
+
+    scheme = "enz() + sub(mod='off') >> enz() + sub(mod='on') @ kf/(1 + amount(PTEN)/Ki)"
+    session = SimpleNamespace(mechanisms={("Phosphorylation", "pten"): {
+        "statement_type": "Phosphorylation", "policy": "pten", "scheme": scheme,
+        "parameters": ["kf", "Ki"]}})
+    index = _mechanisms_text(session, None).splitlines()
+    assert "Phosphorylation [roles enz, sub]: basal(k), indra_default(kf), indra_interactions_only(kf), " \
+        "indra_michaelis_menten(Km, kc), indra_two_step(kc, kf, kr), processive(kf), " \
+        "pten(Ki, kf) (written this run)" in index
+    assert not any(line.startswith("ActiveForm") for line in index)
+    assert (
+        f"Phosphorylation | pten (written this run) | parameters: Ki, kf\n  {scheme}"
+    ) in _mechanisms_text(session, ["Phosphorylation"])
 
 
 def test_a_library_gap_is_its_own_rejection(tmp_path):
@@ -1357,14 +1633,14 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     model = _call(resumed, "get_model", {"format": "statements"})["result"]
     assert "mechanism saturating" in model
     row["prefix"] = "conv2"
-    assert _call(resumed, "make_changes", {"justification": "reuse", "statements": [row],
-                                           "bindings": {"conv2": "saturating"}})[
-        "applied"
-    ] is True
+    reuse = {"justification": "reuse", "statements": [row], "bindings": {"conv2": "saturating"}}
+    assert confirmed(lambda: _call(resumed, "make_changes", reuse))["applied"] is True
     # Model text without rows changes the model under them: that version records none. A server
     # offers the text routes or `statements`, never both, so the text comes from a server without
     # the map resuming the same store.
-    out = _call(_server(tmp_path), "make_changes", {"justification": "by hand", "antimony": _antimony()})
+    text = _server(tmp_path)
+    by_hand = {"justification": "by hand", "antimony": _antimony()}
+    out = confirmed(lambda: _call(text, "make_changes", by_hand))
     assert out["committed"] is True
     assert not (versions / "v3" / "statements.json").exists()
     # Resumed at v3, which has no rows, the run's written mechanisms still come back: a row names
@@ -1372,13 +1648,11 @@ def test_a_version_without_new_rows_keeps_its_parents(tmp_path):
     again = _statements_server(tmp_path)
     row["prefix"] = "conv3"
     rows = {"statements": [row], "bindings": {"conv3": "saturating"}}
-    assert _call(again, "make_changes", {"justification": "back", **rows})[
-        "applied"
-    ] is True
+    back = {"justification": "back", **rows}
+    assert confirmed(lambda: _call(again, "make_changes", back))["applied"] is True
     changed = {**_SATURATING, "rate": "vmax"}
-    out = _call(
-        again, "make_changes", {"justification": "y", **rows, "mechanisms": [changed]}
-    )
+    redefined = {"justification": "y", **rows, "mechanisms": [changed]}
+    out = confirmed(lambda: _call(again, "make_changes", redefined))
     assert out["error_cause"] == "mechanism_redefined"
 
 
@@ -1450,7 +1724,7 @@ def test_set_seed_of_a_second_form_joins_the_first(tmp_path):
     assert _seeds_call(mcp, [{"agent": "A", "amount": 1}])["applied"] is True
     out = _call(mcp, "make_changes", {
         "justification": "part of A starts phosphorylated",
-        "statement_edits": [{"op": "set_seed", "seed": {"agent": "A{pY10}", "amount": 0.5}}]})
+        "statement_edits": [{"op": "set_seed", "agent": "A{pY10}", "amount": 0.5}]})
     assert out["applied"] is True, out.get("error")
     assert out["statement_edits_applied"] == ["set_seed A_pY10"]
     assert [s["name"] for s in _stored_rows(tmp_path, 1)["seeds"]] == ["A", "A_pY10"]
@@ -1578,6 +1852,88 @@ def test_a_condition_input_enters_a_written_rate_through_the_binding(
     assert out["applied"] is True, out.get("error")
     rows = {r["parameterId"] for r in _call(mcp, "get_parameters", {})["result"]}
     assert "EGF_0" not in rows and "conv_dose" not in rows  # the condition table sets it
+
+
+def _input_server(tmp_path, add_condition):
+    """The toy with a condition input `EGF` the entity map does not map, as in every gemot run."""
+    work = tmp_path / "problem"
+    shutil.copytree(YAML_PATH.parent, work)
+    add_condition(work / "problem.yaml", "EGF", 1.0)
+    return _statements_server(tmp_path, yaml_path=work / "problem.yaml")
+
+
+def test_a_condition_input_stated_as_an_agent_is_told_to_move_to_the_binding(
+    tmp_path, add_condition
+):
+    """`EGF` stated in a row and read in a binding was refused as "a molecule", and dropping it
+    from both failed as an unread target: 4-7 calls each in the three raimundez runs (#193)."""
+    feed = {**_statement_row(), "prefix": "feed"}
+    feed["statement"] = {**feed["statement"], "source": {"name": "EGF"}}
+    out = _call(_input_server(tmp_path, add_condition), "make_changes", {
+        "justification": "EGF drives A to B",
+        "statements": [_statement_row(), feed],
+        "bindings": {"conv": {"policy": "mass_action", "parameters": {"k": "k0*EGF"}},
+                     "feed": "mass_action"}})
+    assert out["applied"] is False
+    assert 'drop it from the statement and read it in the binding, `k="k*EGF"`' in out["error"]
+
+
+def test_a_condition_input_no_row_reads_blocks_nothing(tmp_path, add_condition):
+    """`EGF`, read by no row, was refused as an invalid target, ahead of an unknown bound (#193).
+    The reconcile declares it now (PEtab-MCP#332), so the bound is the one error."""
+    out = _call(_input_server(tmp_path, add_condition), "make_changes", {
+        "justification": "A becomes B", "statements": [_statement_row()],
+        "bindings": {"conv": "mass_action"},
+        "parameters": [{"parameter_id": "nope", "lower_bound": 1e-3, "upper_bound": 1e3}]})
+    assert out["applied"] is False
+    assert "Unknown parameter id 'nope'" in out["error"] and "invalid targets" not in out["error"]
+
+
+def _serum_call(mcp, amount, rows=()):
+    return _call(mcp, "make_changes", {
+        "justification": "serum is present", "statements": [_statement_row(), *rows],
+        "bindings": {"conv": "mass_action", **{r["prefix"]: "mass_action" for r in rows}},
+        "seeds": [{"agent": "Serum", "amount": amount}]})
+
+
+@pytest.mark.parametrize(("amount", "pruned"), [("2*EGF", True), ("EGF", False)])
+def test_a_seed_nothing_reads_names_the_input_it_leaves_unread(
+    tmp_path, add_condition, amount, pruned
+):
+    """raimundez's `Serum`, seeded at `full_medium` and read by no row, was pruned with the
+    input's only reader in 27 of 33 edits, and no reply said so (PEtab-MCP#205). At the id alone
+    the seed makes `Serum` that input (#199): kept, but read by nothing all the same."""
+    out = _serum_call(_input_server(tmp_path, add_condition), amount)
+    assert out["applied"] is True, out.get("error")
+    said = [m["message"] for m in out["messages"]]
+    removed = [m for m in said if m.startswith("Removed species")]
+    assert bool(removed) == pruned
+    assert all(re.fullmatch(r"Removed species nothing in the model reads, with their initial "
+                            r"amounts: `Serum\(\)` \(`__s\d+`\)\.", m) for m in removed)
+    assert any(m.startswith("condition target(s) `EGF` are read by nothing in the model, or only "
+                            "by assignment rules nothing reads, so the model never sees their "
+                            "value.") for m in said)
+
+
+def test_a_seed_at_an_input_a_row_reads_is_neither_removed_nor_unread(tmp_path, add_condition):
+    """The #199 route the warnings point to: no warning of either kind."""
+    feed = {**_statement_row(), "prefix": "feed"}
+    feed["statement"] = {**feed["statement"], "source": {"name": "Serum"}}
+    out = _serum_call(_input_server(tmp_path, add_condition), "EGF", [feed])
+    assert out["applied"] is True, out.get("error")
+    assert not [m for m in out["messages"] if "Removed species" in m["message"]
+                or "read by nothing" in m["message"]]
+
+
+def test_an_amount_edit_carrying_an_amount_is_told_where_a_seed_goes(tmp_path):
+    """`statement_edits.0.amount Extra inputs are not permitted`, pydantic's own, in nearly every
+    run of gemot round 3 (#193): it named neither `seeds` nor what `set_amount` is."""
+    mcp = _statements_server(tmp_path)
+    assert _seeds_call(mcp, [{"agent": "A", "amount": 1}])["applied"] is True
+    edit = {"op": "set_amount", "name": "A", "agent": "A", "amount": 5}
+    out = _call(mcp, "make_changes", {"justification": "more A", "statement_edits": [edit]})
+    assert out["applied"] is False
+    assert "`{op: 'set_seed', agent, amount}`" in out["error"] and "readout amount" in out["error"]
 
 
 @_ROUTES
@@ -1714,7 +2070,7 @@ def test_bindings_ride_with_statements(tmp_path):
          '`{"op": "replace_row", "row": "conv: A becomes B", "binding": "mass_action k=k1"}`'),
         ({"op": "replace_row", "row": {**_statement_row(), "policy": "mass_action"}},
          '`{"op": "replace_row", "row": "conv: A becomes B", "binding": "mass_action"}`'),
-        ({"op": "rebind", "prefix": "gone", "binding": "mass_action"}, "no row `gone`"),
+        ({"op": "rebind", "prefix": "gone", "binding": "mass_action"}, "no row 'gone'"),
         ({"op": "rebind", "prefix": "conv"}, "`binding` is the row's policy"),
         ({"op": "add_row", "row": _CONV, "binding": "mass_action"}, "`rebind` its binding"),
     ],
@@ -1782,7 +2138,7 @@ def test_statement_edits_change_the_rows_they_name_and_keep_the_rest(tmp_path):
             "statement_edits": [
                 {"op": "remove_row", "prefix": "back"},
                 {"op": "add_row", "row": "back2: B becomes A", "binding": "mass_action"},
-                {"op": "set_seed", "seed": {"agent": "A", "amount": 1, "name": "A_start"}},
+                {"op": "set_seed", "agent": "A", "amount": 1, "name": "A_start"},
             ],
         },
     )
@@ -1861,7 +2217,7 @@ def test_an_edit_that_names_nothing_applies_nothing(tmp_path):
         },
     )
     assert out["applied"] is False
-    assert "`statement_edits[1]` (replace_row): no row `gone`" in out["error"]
+    assert "`statement_edits[1]` (replace_row): no row 'gone'" in out["error"]
     assert "['back', 'conv']" in out["error"]
     assert not (tmp_path / "prov" / "versions" / "v1").exists()
 
@@ -2015,6 +2371,16 @@ def test_a_base_version_fork_that_changes_nothing_is_refused_as_that_version(tmp
     assert out["version"] == 1
 
 
+def test_a_refit_of_a_statements_version_keeps_its_rows(tmp_path):
+    """Version 0 refitted while HEAD holds another rate: version 0's model and rows, not HEAD's."""
+    mcp, _ = _two_rates(tmp_path)
+    harder = {"justification": "v0, harder", "base_version": 0, "n_starts": 3}
+    out = _call(mcp, "make_changes", harder)
+    assert out["committed"] is True and out["version"] == 2, out["message"]
+    assert _stored_rows(tmp_path, 2)["rows"] == _stored_rows(tmp_path, 0)["rows"]
+    assert _meta(tmp_path, 2)["structure_hash"] == _meta(tmp_path, 0)["structure_hash"]
+
+
 def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
     """Told "nothing to do — give `model_edits` ... `antimony`", an agent whose model was built
     from statements wrote Antimony."""
@@ -2034,7 +2400,7 @@ def test_on_the_statements_route_the_refusals_name_its_own_routes(tmp_path):
     )
     assert "`statement_edits` for a change to the current rows" in out["error"]
     out = _call(mcp, "make_changes", {"justification": "bare", "base_version": 0})
-    assert "`statement_edits` (or the whole revised `statements`)" in out["error"]
+    assert "`statement_edits`" in out["error"] and "`antimony`" not in out["error"]
 
 
 def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
@@ -2058,14 +2424,6 @@ def test_the_route_says_nothing_is_bound_when_the_map_is_empty(tmp_path):
     description = next(t for t in tools if t.name == "make_changes").description
     assert "NOTHING is bound" in description and "`statement_edits`" in description
     assert "statement_edits" in _make_changes_schema(mcp)
-
-
-def test_an_unread_condition_target_is_explained():
-    from petab_mcp.operations import _rejection_summary
-
-    text = _rejection_summary(["Condition table contains invalid targets: {'rit'}"])
-    assert "{'rit'}" in text and "input the condition table SETS" in text
-    assert "SETS" not in _rejection_summary(["something else"])
 
 
 # -- readouts, bindings and written mechanisms -------------------------------------------
@@ -2409,9 +2767,9 @@ def test_an_edit_reports_only_the_rows_it_touches(tmp_path):
         {"op": "add_row", "row": "back: B becomes A", "binding": "mass_action"}]})
     assert out["applied"] is True, out.get("error")
     assert said(out) == []
-    out = _call(mcp, "make_changes", {"justification": "z", "statement_edits": [
+    out = confirmed(lambda: _call(mcp, "make_changes", {"justification": "z", "statement_edits": [
         {"op": "remove_row", "prefix": "aa"},
-        {"op": "add_row", "row": "back2: B becomes A, modulated by C", "binding": "slowed"}]})
+        {"op": "add_row", "row": "back2: B becomes A, modulated by C", "binding": "slowed"}]}))
     assert out["applied"] is True, out.get("error")
     (message,) = said(out)
     assert message.startswith("`back2`: you stated `modulated by C`")
@@ -2728,3 +3086,153 @@ def test_concurrent_statement_edits_keep_each_others_rows(tmp_path, monkeypatch)
     assert all(out["applied"] for out in _concurrently(monkeypatch, mcp, *calls))
     text = _text(mcp, "get_model", {"format": "statements"})
     assert "conv: A becomes B" in text and all(f"{p}: B becomes A" in text for p in ("back", "back2"))
+
+
+def test_a_result_names_the_version_it_was_applied_to_and_the_best(tmp_path):
+    """PEtab-MCP#282: a change applies to the working model unless `base_version` names another,
+    and agents assumed it was the best. Each result says which it was applied to and which is the
+    best. An explicit `base_version` off the best is the agent's choice and draws no warning
+    (#341)."""
+    mcp = _server(tmp_path, auto_fit=True)
+
+    def k1(lb, ub, **call):
+        box = [{"parameter_id": "k1", "lower_bound": lb, "upper_bound": ub}]
+        return _call(mcp, "make_changes", {"parameters": box, "n_starts": 2, **call})
+
+    out = k1(1e-3, 2e-3, antimony=_antimony(), justification="k1 boxed in")
+    assert out["message"] == "Change applied to the loaded problem and saved as v0; best is v0."
+    out = k1(1e-3, 1e3, justification="let k1 go")  # the data need k1 ~ 0.5
+    assert out["message"] == "Change applied to v0 and saved as v1; best is v1."
+    out = k1(1e-3, 3e-3, justification="k1 boxed in again", base_version=0)
+    assert out["message"] == "Change applied to v0 and saved as v2; best is v1."
+    assert not [m for m in out["messages"] if "not the best" in m["message"]]
+    # The fitted values moved against the base sent, v0, not HEAD v1 (#341).
+    assert "vs v0, which v2 was made from" in out["fitted_parameters_note"]
+
+    # PEtab-MCP#330: HEAD v2 is not the best, and a call without `base_version` would fit a change
+    # to it; one sent by mistake cost a 75-minute fit. Refused before anything runs, once per call.
+    asked = k1(1e-3, 4e-3, justification="a mistake?")
+    assert asked["applied"] is False and asked["error_cause"] == "implicit_base"
+    assert asked["error"] == (
+        "make_changes: no `base_version`, so this change would apply to the working model, v2, "
+        "which is not the best version; v1 is. NOTHING was applied. Send `base_version=1` to "
+        "change the best, or this same call again to change v2."
+    )
+    assert k1(1e-3, 5e-3, justification="another")["error_cause"] == "implicit_base"
+    out = k1(1e-3, 5e-3, justification="yes, v2")
+    assert out["message"] == "Change applied to v2 and saved as v3; best is v1."
+    # A HEAD the agent restored is a base it chose.
+    assert _call(mcp, "restore_version", {"version": 0})["version"] == 0
+    out = k1(1e-3, 6e-3, justification="on from v0")
+    assert out["message"] == "Change applied to v0 and saved as v4; best is v1."
+
+
+def test_reads_during_a_fit_show_the_last_version_and_say_so(tmp_path, monkeypatch):
+    """PEtab-MCP#330: reads take no lock, so beside a fit they saw the change being fitted and the
+    last fit at once: `get_fit_summary` charged that change's k beside the last fit's nll, a BIC
+    no version has, and `query_data` paired its parameter table with the last fit's records. Each
+    read now says which version it shows, and while a fit runs, that one is running."""
+    import threading
+
+    from petab_mcp.errors import ModelUpdateError
+
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp, "make_changes", {"antimony": _antimony(), "justification": "v0", "n_starts": 2}
+    )
+    assert first["committed"] is True, first.get("error")
+    settled = _call(mcp, "get_fit_summary", {})
+    assert settled["version"] == 0 and "fit_running" not in settled
+    assert _call(mcp, "get_model_structure", {})["version"] == 0
+
+    fitting_, release = threading.Event(), threading.Event()
+
+    def _fit(self, n_starts=None):
+        fitting_.set()
+        release.wait(60)
+        raise ModelUpdateError("the stub's fit ended")
+
+    monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit)
+    change = {"antimony": _antimony("r3: A => ; k3 * A;"), "justification": "a loss of A"}
+    running = threading.Thread(target=_call, args=(mcp, "make_changes", change))
+    running.start()
+    try:
+        assert fitting_.wait(60)
+        summary = _call(mcp, "get_fit_summary", {})
+        table = _call(mcp, "query_data", {"sql": "SELECT parameter_id FROM parameters"})
+        structure = _call(mcp, "get_model_structure", {})
+    finally:
+        release.set()
+        running.join(60)
+
+    assert summary["version"] == 0 and summary["k"] == settled["k"]
+    assert summary["bic"] == settled["bic"]
+    assert summary["fit_running"].startswith("a change is being fitted; this read shows v0")
+    assert table["version"] == 0 and "fit_running" in table
+    assert "k3" not in {row["parameter_id"] for row in table["rows"]}
+    assert structure["version"] is None and "k3" in structure["parameters"]
+    assert "that change's model, not a version yet" in structure["fit_running"]
+
+
+def test_a_merge_hint_names_its_rename_and_taking_it_merges_the_pair(tmp_path):
+    """PEtab-MCP#283, end to end: `k1*k3` is one rate written as two, so the fit's hints offer the
+    tie with the op that makes it. Sent as given, it merges the two in one op: the result says
+    which row stayed and warns of no dropped parameter."""
+    mcp = _server(tmp_path, auto_fit=True)
+    first = _call(
+        mcp,
+        "make_changes",
+        {
+            "antimony": _antimony("k3 = 2.0;").replace("k1 * A;", "k1 * k3 * A;"),
+            "justification": "a split rate",
+            "n_starts": 4,
+        },
+    )
+    assert first["committed"] is True, first["message"]
+    (hint,) = [h for h in first["merge_hints"] if set(h["parameters"]) == {"k1", "k3"}]
+    old, new = hint["parameters"][1], hint["parameters"][0]
+    assert hint["take"] == [{"op": "rename", "old": old, "new": new}]
+    res = _call(
+        mcp,
+        "make_changes",
+        {"model_edits": hint["take"], "justification": "one rate", "n_starts": 2},
+    )
+    assert res["committed"] is True, res["message"]
+    texts = [m["message"] for m in res["messages"]]
+    assert any(t.startswith(f"rename merged `{old}` into `{new}`") for t in texts), texts
+    assert not any("dropped previously-estimated" in t for t in texts), texts
+
+
+def test_the_ops_that_tie_two_minted_initial_values_commit(tmp_path):
+    """PEtab-MCP#336: boehm agents were offered a `rename` of a minted `<species>_init`, which
+    fails ("does not occur in the model") and, written the other way, is refused (the reconcile
+    reserves the name). The ops a hint now gives for two minted rows commit, and a tie v0's fit
+    does not hint is warned."""
+    from petab.v2.models.sbml_model import SbmlModel
+
+    from petab_mcp.identifiability import UNHINTED_TIE, tie_ops
+
+    mcp = _server(tmp_path, auto_fit=True)
+    source = _antimony(
+        "species C in compartment_;",
+        "species D in compartment_;",
+        "C = 2.0;",
+        "D = 3.0;",
+        "k3 = 0.2;",
+        "r3: C => D; k3 * C;",
+    )
+    first = _call(
+        mcp, "make_changes", {"antimony": source, "justification": "pools", "n_starts": 1}
+    )
+    assert first["committed"] is True, first["message"]
+    render = SbmlModel.from_antimony(_text(mcp, "get_model", {})).sbml_model
+    ops = tie_ops("C_init", "D_init", source, render)
+    assert [(op["op"], op["id"]) for op in ops] == [("set_initial", "C"), ("set_initial", "D")]
+    res = _call(
+        mcp, "make_changes", {"model_edits": ops, "justification": "one size", "n_starts": 1}
+    )
+    assert res["committed"] is True, res["message"]
+    assert re.search(r"\bD = C_init;", _text(mcp, "get_model", {}))
+    hinted = {frozenset(h["parameters"]) for h in first.get("merge_hints") or []}
+    warned = [m for m in res["messages"] if m["message"].startswith(UNHINTED_TIE)]
+    assert bool(warned) == (frozenset({"C_init", "D_init"}) not in hinted), warned

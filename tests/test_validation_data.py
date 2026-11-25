@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from petab_mcp import validation_data as V
+from petab_mcp.fitting import FIT_AMICI_ATOL
 from petab_mcp.problem import WorkingProblem
 
 DATA = Path(__file__).parent / "data"
@@ -388,7 +389,43 @@ def test_arity_is_reported_as_arity_not_as_a_name_mismatch():
         V._reduced_from_named(_PP(), [0.5], ["k", "sigma", "scale"])
 
 
+class _Model:
+    def get_observable_ids(self):
+        return ()
+
+
+class _Solver:
+    """AMICI's solver as `validation_data._solver_at` sets and reads it, at the fit's settings."""
+
+    def __init__(self):
+        self.atol, self.rtol, self.max_steps = 1e-10, 1e-8, 10_000
+
+    def set_absolute_tolerance(self, v):
+        self.atol = v
+
+    def set_relative_tolerance(self, v):
+        self.rtol = v
+
+    def set_max_steps(self, v):
+        self.max_steps = v
+
+    def get_absolute_tolerance(self):
+        return self.atol
+
+    def get_relative_tolerance(self):
+        return self.rtol
+
+    def get_max_steps(self):
+        return self.max_steps
+
+
+_FIT_SETTINGS = {"atol": 1e-10, "rtol": 1e-8, "max_steps": 10_000}
+
+
 class _Objective:
+    amici_model = _Model()
+    amici_solver = _Solver()
+
     def __call__(self, x, **kwargs):
         return {"fval": 1.0, "rdatas": []}
 
@@ -429,6 +466,39 @@ def test_score_problem_adds_a_fixed_sets_design_before_building(monkeypatch):
     assert list(view.experiment_df["experimentId"]) == ["e_knockdown"]
     assert list(problem.condition_df["conditionId"]) == ["c_train", "c_test"]
     assert list(problem.experiment_df["experimentId"]) == ["e_train", "e_test"]
+    assert out["tolerances"] == [_FIT_SETTINGS], "one attempt, at the fit's settings"
+
+
+@pytest.mark.parametrize("integrates_there", [True, False])
+def test_a_non_finite_score_is_retried_at_the_audit_settings(monkeypatch, integrates_there):
+    """#323: 11 of 25 fujita runs were scored `non_finite` at the fit's atol 1e-10, and the paper's
+    audit at atol 1e-16 / rtol 1e-14 found 9 of them finite. A score the fit's settings leave
+    non-finite is taken again at `RETRY_SOLVER`, and `tolerances` records both attempts in order."""
+
+    class _Strict(_Objective):
+        def __init__(self):
+            self.amici_solver = _Solver()
+
+        def __call__(self, x, **kwargs):
+            s = self.amici_solver
+            at_audit = {"atol": s.atol, "rtol": s.rtol, "max_steps": s.max_steps} == V.RETRY_SOLVER
+            return {"fval": 2.0 if at_audit and integrates_there else float("nan"), "rdatas": []}
+
+    class _StrictPP(_PP):
+        def __init__(self):
+            self.objective = _Strict()
+
+    _intercept_build(monkeypatch, lambda view, kwargs: _StrictPP())
+    out = V.score_problem(
+        _problem(_rows("e_train")), _rows("e_train"), build_dir="/tmp/x", model_name="m"
+    )
+
+    assert out["tolerances"] == [_FIT_SETTINGS, V.RETRY_SOLVER]
+    if integrates_there:
+        assert out["status"] == V.STATUS_OK and out["nll"] == 2.0
+    else:
+        assert out["status"] == V.STATUS_NON_FINITE and "nll" not in out
+        assert "at any solver setting in `tolerances`" in out["reason"]
 
 
 def test_a_fixed_sets_design_is_checked_before_any_build(monkeypatch):
@@ -551,6 +621,8 @@ def test_score_session_scores_the_toy_at_its_fitted_point_on_an_experiment_of_th
     assert out["mode"] == V.MODE_FIXED and "k" not in out
     assert out["n"] == len(training) and out["n_experiments"] == 1
     assert math.isfinite(out["nll"])
+    (tolerances,) = out["tolerances"]
+    assert tolerances["atol"] == FIT_AMICI_ATOL, "AMICI's own solver, read back at the fit's atol"
     assert session.problem.experiment_df is None
     assert session.problem.measurement_df is training
     # Nothing committed: no version to store the records beside, and none in the reply.
@@ -649,6 +721,7 @@ def test_held_out_scalings_are_solved_hierarchically_then_written_in_as_numbers(
 
     class _HierObjective:
         calculator = _Calc()
+        amici_solver = _Solver()
 
         def __call__(self, x, **kwargs):
             return {"fval": 1.0, "inner_parameters": [3.5], "rdatas": []}

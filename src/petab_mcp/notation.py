@@ -90,6 +90,9 @@ _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
 #: parameters (``<prefix>_kf``).
 _ROW_PREFIX = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*")
 _RESIDUE_SITE = re.compile(r"([A-Z])([0-9]+)?")
+#: A control character but tab and newline, which no row, prefix or name holds: a client's stray
+#: ``\r`` (``r\r_act``) prints as the name without it.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 class NotationError(ValueError):
@@ -319,8 +322,9 @@ class _Reader:
     def __init__(self, text: str, groundings: dict[str, dict]):
         self.text, self.pos, self.groundings = text, 0, groundings
 
-    def fail(self, what: str):
-        raise NotationError(f"{what} at column {self.pos + 1}: {self.text!r}")
+    def fail(self, what: str, hint: str | None = None):
+        said = f"{what} at column {self.pos + 1}: {self.text!r}"
+        raise NotationError(said + (f"; {hint}" if hint else ""))
 
     def space(self) -> None:
         while self.pos < len(self.text) and self.text[self.pos].isspace():
@@ -450,6 +454,17 @@ class _Reader:
         return out
 
 
+_CONVERSION = "a Conversion is written `A -> B by E`"
+#: The verbs agents write for a statement the notation states otherwise (#227), each answered
+#: with the form that states it.
+_FORM_OF = {
+    "converts": _CONVERSION,
+    "converted": _CONVERSION,
+    "forms": f"{_CONVERSION}, a Complex `A binds B`",
+    "produces": "a production is written `E increases B`",
+}
+
+
 def _at(r: _Reader, st: dict[str, Any]) -> None:
     if r.take("at"):
         r.space()
@@ -499,7 +514,7 @@ def statement(r: _Reader) -> dict[str, Any]:
             return {"type": kind, "subj": None, "obj": first}
         cls = _PASSIVE.get(word)
         if cls is None:
-            r.fail(f"unknown verb 'is {word}'")
+            r.fail(f"unknown verb 'is {word}'", _FORM_OF.get(word))
         st = {"type": cls, "enz": None, "sub": first, "residue": None, "position": None}
         _at(r, st)
         return st
@@ -519,7 +534,7 @@ def statement(r: _Reader) -> dict[str, Any]:
         return st
     cls = _ACTIVE.get(word)
     if cls is None:
-        r.fail(f"unknown verb {word!r}")
+        r.fail(f"unknown verb {word!r}", _FORM_OF.get(word))
     st = {"type": cls, "enz": first, "sub": r.agent(), "residue": None, "position": None}
     _at(r, st)
     return st
@@ -567,6 +582,16 @@ def split_advice(prefix: str, statement: str, binding: str, op: str | None = Non
     )
 
 
+def refuse_control(what: str, text: str) -> None:
+    """Refuse ``text`` (``what`` names it) where it holds a control character, named by its escape
+    and column."""
+    if m := _CONTROL.search(text):
+        raise NotationError(
+            f"{what} {text!r} holds the control character {m.group()!r} at column {m.start()}: "
+            "send it without one"
+        )
+
+
 def refuse_inline(text: str) -> None:
     """Refuse ``text``, a row, where it carries its binding after a ``|`` (:class:`InlineBinding`);
     whether the rest reads is :func:`parse`'s to say."""
@@ -596,6 +621,7 @@ def parse(text: str, groundings: dict[str, dict] | None = None) -> dict[str, Any
     from .statements import REGULATORS
 
     groundings = groundings or {}
+    refuse_control("row", text)
     m = _ROW_PREFIX.match(text)
     if not m:
         raise NotationError(f"a row starts with its prefix and ':': {text!r}")
@@ -606,7 +632,11 @@ def parse(text: str, groundings: dict[str, dict] | None = None) -> dict[str, Any
     while r.take(","):
         kind = next((k for k, words in REGULATORS.items() if r.take(words)), None)
         if kind is None or kind in st:
-            r.fail(f"expected one of {', '.join(map(repr, REGULATORS.values()))}, each once")
+            r.fail(
+                f"expected one of {', '.join(map(repr, REGULATORS.values()))}, each once: several "
+                "of one kind are one clause joined by `and` (`, inhibited by C and D`), and in a "
+                "JSON row a list (`inhibited_by: [{name: 'C'}, {name: 'D'}]`)"
+            )
         st[kind] = [r.agent()]
         while True:
             # What get_model marks a recorded kind with (`statement_text`): the row states it as is.

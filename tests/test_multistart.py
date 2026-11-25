@@ -12,8 +12,10 @@ import concurrent.futures
 import contextvars
 import functools
 import logging
+import math
 import multiprocessing
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -24,8 +26,10 @@ import numpy as np
 import pypesto
 import pypesto.optimize
 import pytest
+from fastmcp import Client
 
-from petab_mcp import fitting
+from petab_mcp import fitting, logging_setup
+from petab_mcp import server
 from petab_mcp import multistart as M
 from petab_mcp.errors import (
     FIT_IN_PROGRESS,
@@ -74,7 +78,7 @@ class _Pool:
     ``n_procs`` at once, and records the workers it is told to kill: a hung worker without a
     process."""
 
-    def __init__(self, n_procs, mp_context=None):
+    def __init__(self, n_procs, mp_context=None, initializer=None, initargs=()):
         self.killed = []
         self._processes = {
             i: SimpleNamespace(kill=functools.partial(self.killed.append, i))
@@ -168,13 +172,11 @@ def _fit(engine, marker=None):
 
 @pytest.fixture
 def stuck(monkeypatch):
-    """Caps short enough to watch a start stopped, in workers forked on any platform: a spawned
-    one imports pyPESTO before its start begins, which on a loaded machine outlasts them."""
+    """Caps short enough to watch a start stopped, in forked workers: one started by the fork
+    server imports pyPESTO before its start begins, which on a loaded machine outlasts them."""
     monkeypatch.setattr(M, "FIT_DEADLINE_MARGIN_S", 1.0)
     monkeypatch.setattr(M, "POLL_S", 0.05)
-    monkeypatch.setattr(
-        M.multiprocessing, "get_context", functools.partial(multiprocessing.get_context, "fork")
-    )
+    monkeypatch.setattr(M, "START_METHOD", "fork")
 
 
 def _no_worker_left():
@@ -237,6 +239,21 @@ def test_a_fit_within_its_deadline_returns_its_starts_in_task_order(monkeypatch)
     assert M.ProcessEngine(2, start_seconds=60).execute(starts) == [0, 1, 2, 3, 4]
 
 
+def test_a_worker_that_was_not_forked_logs_to_the_sessions_pypesto_log(monkeypatch, tmp_path):
+    """The workers are started by a fork server, not forked from the threaded server, whose
+    forked workers sat at 0 CPU until two fits failed as wedged; so they inherit no log routing
+    and must be given it, or every start's optimizer log is lost."""
+    monkeypatch.setattr(M, "POLL_S", 0.02)
+    assert M.START_METHOD != "fork"
+    logging_setup.configure_pypesto(tmp_path)
+    start = SimpleNamespace(
+        execute=functools.partial(logging.getLogger("pypesto").info, "a start ran")
+    )
+    with logging_setup.use_store(tmp_path):
+        M.ProcessEngine(2, start_seconds=60).execute([start, start])
+    assert logging_setup.pypesto_log_path(tmp_path).read_text().count("a start ran") == 2
+
+
 def test_a_cancelled_fit_kills_its_worker_processes(monkeypatch):
     """A hung worker is a real process the fit must kill, not wait for: none is left once the
     cancelled fit has failed."""
@@ -279,9 +296,53 @@ def test_a_running_fit_logs_how_many_of_its_starts_are_done(monkeypatch, caplog)
     threading.Timer(0.1, futures[1].set_result, (None,)).start()
     threading.Timer(0.2, futures[2].set_result, (None,)).start()
     with caplog.at_level(logging.INFO, logger=M.__name__):
-        M.watch(futures, [2, 1, 1], concurrent.futures.wait, lambda *_: ())
+        M.watch(futures, [2, 1, 1], concurrent.futures.wait, lambda *_: ((), ()))
 
     assert "fit: 2/4 starts done after 0s" in caplog.messages
+
+
+def test_a_running_fit_reports_its_starts_done_and_its_best_into_the_change(monkeypatch):
+    """`wait_for_fit` and the fit_in_progress refusal read how far a fit has got off its change's
+    Progress (PEtab-MCP#172); a start that raised has no objective to report."""
+    monkeypatch.setattr(M, "POLL_S", 0.02)
+    futures = [concurrent.futures.Future() for _ in range(3)]
+    futures[0].set_result([3.0, math.inf])
+    progress, seen = M.Progress(), []
+
+    def finish():
+        seen.append((progress.done, progress.best))
+        futures[1].set_exception(RuntimeError("a start that raised"))
+        futures[2].set_result([1.5])
+
+    threading.Timer(0.2, finish).start()
+    token = M.PROGRESS.set(progress)
+    try:
+        M.watch(
+            futures,
+            [2, 1, 1],
+            concurrent.futures.wait,
+            lambda *_: ((), ()),
+            fvals=lambda f: f.result(),
+        )
+    finally:
+        M.PROGRESS.reset(token)
+
+    assert seen == [(2, 3.0)]
+    assert (progress.total, progress.done, progress.best) == (4, 4, 1.5)
+
+
+def test_the_starts_left_are_timed_by_the_pace_of_those_done_while_running():
+    """A fit queued for a shared pool's workers is not slower: its time queued is left out."""
+    progress = M.Progress()
+    assert progress.remaining_s(10.0) is None
+    progress.began, progress.total = 0.0, 10
+    assert progress.remaining_s(10.0) is None
+    progress.done = 2
+    assert progress.remaining_s(20.0) == 80.0
+    progress.enter("queued", 20.0)
+    assert progress.remaining_s(30.0) == 80.0
+    progress.enter("running", 30.0)
+    assert progress.remaining_s(40.0) == 120.0
 
 
 def test_a_wedged_fit_is_not_rerun_sequentially(fit_session, monkeypatch):
@@ -319,22 +380,23 @@ class _StopsTheLast(M.CappedEngine):
 
 
 def test_a_stopped_start_reaches_the_result_the_version_and_the_de_dup(fit_session, monkeypatch):
-    """A fit scored without a stopped start says so: in its result, with a warning, and in its
-    version, whose fit the de-dup then lets stand only for one of as many starts as it completed,
-    so the same model asked for with all three is refit, its warm start from that fit's optimum
-    named for a rerun (#118)."""
+    """A fit scored without a stopped start says so: in its result, with a warning naming its
+    session's cap, and in its version, whose fit the de-dup then lets stand only for one of as many
+    starts as it completed, so the same model asked for with all three is refit, its warm start
+    from that fit's optimum named for a rerun (#118)."""
     reruns = []
 
-    def engine(n_starts, shared, previous, rerun):
+    def engine(n_starts, per_start_timeout, shared, previous, rerun):
         reruns.append(rerun)
         return _StopsTheLast()
 
     monkeypatch.setattr(fitting, "_fit_engine", engine)
+    fit_session.fit_per_start_timeout = 42.0
     out = fit_session.fit(n_starts=3)
 
     assert out["committed"] is True and out["neg_log_likelihood"] is not None
     assert out["n_starts"] == 3 and out["n_starts_killed"] == 1
-    assert "Starts stopped past the" in out["warnings"][-1] and "1 of 3" in out["warnings"][-1]
+    assert "Starts stopped past the 42s per-start cap: 1 of 3" in out["warnings"][-1]
     assert fit_session.provenance.get_meta(out["version"])["n_starts_killed"] == 1
     stored = fit_session.provenance.get_version(out["version"])["optimization"]
     assert stored["n_starts"] == 3 and stored["n_starts_killed"] == 1
@@ -343,6 +405,139 @@ def test_a_stopped_start_reaches_the_result_the_version_and_the_de_dup(fit_sessi
     assert again["committed"] is True
     assert any("against its 2" in w for w in again["warnings"])
     assert reruns == [frozenset(), frozenset({"0"})]
+
+
+def test_two_sessions_on_one_pool_fit_under_their_own_caps(tmp_path, monkeypatch):
+    """Each session's fits run at its own per-start cap, not one process-wide value: Fides' MAXTIME,
+    the cap the shared pool stops a start at, and the starts batched per task all follow the
+    session (#187: one server's sessions need 1200 s on one problem and 12000 s on another)."""
+    import fides
+
+    from petab_mcp.errors import PetabMcpError
+
+    class Seen(PetabMcpError):
+        pass
+
+    seen = []
+
+    def minimize(problem, *, optimizer, engine, **kwargs):
+        cap = optimizer.options[fides.Options.MAXTIME]
+        seen.append((cap, engine.start_seconds, engine.starts_per_task))
+        raise Seen
+
+    monkeypatch.setattr(pypesto.optimize, "minimize", minimize)
+    problem = SimpleNamespace(x_names=["k1"], x_free_indices=[0])
+    monkeypatch.setattr(fitting, "estimation_problem", lambda session, engine: (problem, {}))
+    monkeypatch.setattr(fitting, "FIT_TASK_SECONDS", 270.0)
+    monkeypatch.setattr(fitting, "FIT_STARTS_PER_TASK", 0)
+    pool = SimpleNamespace(
+        free_workers=lambda: 0,
+        batched=lambda k, cap, rerun: SimpleNamespace(starts_per_task=k, start_seconds=cap),
+    )
+    engine = SimpleNamespace(
+        evaluate_objective=lambda: {"neg_log_likelihood": None}, fit_engine=pool
+    )
+    for name, cap in (("a", 100.0), ("b", 300.0)):
+        session = PetabSession(
+            str(TOY / "problem.yaml"),
+            provenance_dir=str(tmp_path / name),
+            resolver=StubReferenceResolver(),
+        )
+        session.fit_per_start_timeout = cap
+        with pytest.raises(Seen):
+            fitting._run_fit(session, engine, n_starts=4)
+
+    assert seen == [(100.0, 100.0, 2), (300.0, 300.0, 1)]
+
+
+def test_a_fit_whose_starts_mostly_run_out_of_time_says_more_starts_will_not_help(
+    fit_session, monkeypatch
+):
+    """MAXTIME is a per-start cap, so a fit most of whose starts hit it is told that more starts
+    would hit it too, and what its session's cap is (#213)."""
+    fit_session.fit_per_start_timeout = 1e-9
+    out = fit_session.fit(n_starts=3)
+
+    assert out["exitflag_counts"] == {"ExitFlag.MAXTIME": 3}
+    assert any(
+        "3 of 3 starts ran out of the 0s" in w and "More starts" in w for w in out["warnings"]
+    )
+    assert not any("t=inf" in w for w in out["warnings"])
+
+
+def test_an_endpoint_only_fit_out_of_time_points_to_closed_form_steady_states(fit_session):
+    """froehlich measures only at t=inf, and its ODE fits ran up to every start to the cap: the
+    MAXTIME warning there says a closed-form steady state leaves nothing to integrate. The fit's
+    wall time rides on the result and the version (PEtab-MCP#331)."""
+    from petab.v2.C import TIME
+
+    problem = fit_session.problem
+    fit_session.problem = problem.replace(
+        measurement_df=problem.measurement_df.assign(**{TIME: math.inf})
+    )
+    fit_session.fit_per_start_timeout = 1e-9
+    out = fit_session.fit(n_starts=3)
+
+    assert any("Every measurement here is at t=inf" in w for w in out["warnings"])
+    assert isinstance(out["wall_seconds"], int) and out["wall_seconds"] >= 0
+    assert fit_session.provenance.get_meta(out["version"])["wall_seconds"] == out["wall_seconds"]
+
+
+def test_a_model_with_nothing_to_integrate_is_not_pointed_to_closed_form(session):
+    """No reaction and no rate rule: the model already IS closed form."""
+    from petab.v2.C import TIME
+
+    from petab_mcp import operations
+    from petab_mcp.session import _integrates_to_steady_state_only
+
+    problem = session.problem
+    session.problem = problem.replace(
+        measurement_df=problem.measurement_df.assign(**{TIME: math.inf})
+    )
+    assert _integrates_to_steady_state_only(session.problem)
+    operations.set_model(session, "model m\n  k1 = 0.5;\n  B := k1;\nend\n", justification="x")
+    assert not _integrates_to_steady_state_only(session.problem)
+
+
+def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
+    fit_session, monkeypatch
+):
+    """dessauges raised `n_starts` step by step to 8000, each fit with 1 start at the best
+    (PEtab-MCP#287): a raised fit that still leaves 0 to 2 FRESH starts there says the optimum is a
+    needle. Warm starts begin at the previous optimum and do not count: 401 of a refit's 408 at the
+    best were warm (PEtab-MCP#334). One at the default does not, since there a raise is still the
+    advice, and neither does one where those are half the fresh starts or more."""
+    real, forced = fitting.fit_and_simulate, {}
+
+    def forced_at_best(*args, **kwargs):
+        out = real(*args, **kwargs)
+        out.update(forced)
+        return out
+
+    def needle(n_starts=None, **counts):
+        forced.update(counts)
+        warnings = fit_session.fit(n_starts=n_starts)["warnings"]
+        return next((w for w in warnings if "needle" in w), None)
+
+    monkeypatch.setattr(fitting, "fit_and_simulate", forced_at_best)
+    one_fresh = {"n_starts_at_best": 1, "n_warm_starts": 0, "n_warm_starts_at_best": 0}
+    assert needle(**one_fresh) is None
+    assert "1 of 3 fresh starts reached" in needle(3, **one_fresh)
+    warm = {"n_warm_starts": 2, "n_warm_starts_at_best": 2}
+    assert "1 of 3 fresh starts reached" in needle(5, n_starts_at_best=3, **warm)
+    assert "0 of 4 fresh starts reached" in needle(6, n_starts_at_best=2, **warm)
+    assert needle(7, n_starts_at_best=5, n_warm_starts=3, n_warm_starts_at_best=3) is None
+
+
+def test_a_refit_at_the_cap_is_not_offered_more_starts(fit_session):
+    """A version fitted at the `n_starts` cap cannot be refitted with more (PEtab-MCP#287), so the
+    de-dup that skips its repeat offers new bounds only."""
+    fit_session.auto_fit_starts = 1
+    cap = fit_session.max_fit_starts
+    assert fit_session.fit(n_starts=cap)["committed"] is True
+    again = fit_session.fit(n_starts=cap)
+    assert again["no_change"] is True
+    assert f"`n_starts` is capped at {cap}" in again["message"]
 
 
 # -- the tool boundary --------------------------------------------------------------------------
@@ -415,6 +610,212 @@ def test_a_cancelled_call_stops_its_fit_and_undoes_its_edit(tmp_path, monkeypatc
     assert "k3" not in {r["parameterId"] for r in params.get("result", params)}
     monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit_ends)
     assert _call(mcp, "make_changes", _CHANGE).get("error_cause") != FIT_IN_PROGRESS
+
+
+def _stuck_fit(monkeypatch, **progress):
+    """Stub the fit to report ``progress`` and hold its session until the returned event is set;
+    returns ``(fitting, release)``."""
+    fitting_, release = threading.Event(), threading.Event()
+
+    def _fit(self, n_starts=None):
+        for key, value in progress.items():
+            setattr(M.PROGRESS.get(), key, value)
+        fitting_.set()
+        release.wait(30)
+        raise ModelUpdateError("the stub's fit ended")
+
+    monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit)
+    return fitting_, release
+
+
+def test_a_wait_for_the_running_fit_says_how_it_stands_then_how_it_ended(tmp_path, monkeypatch):
+    """An agent whose make_changes timed out called list_versions 3-5 times in a row while one fit
+    ran, each call a model call re-sending a 250k-token context (PEtab-MCP#172). The refusal names
+    wait_for_fit and the time left; the wait is the server's, and answers once the fit has ended."""
+    fitting_, release = _stuck_fit(
+        monkeypatch,
+        began=time.monotonic() - 60,
+        total=8,
+        done=2,
+        best=4.5,
+        phase="queued",
+        queued=3,
+    )
+    mcp = _server(tmp_path)
+    assert _call(mcp, "wait_for_fit", {}) == {"status": "idle"}
+    first = threading.Thread(target=_call, args=(mcp, "make_changes", _CHANGE))
+    first.start()
+    assert fitting_.wait(30)
+
+    refused = _call(mcp, "make_changes", _CHANGE)["error"]
+    assert "2 of its 8 starts are done, the rest at that pace about 3 min" in refused
+    assert "call wait_for_fit" in refused
+    running = _call(mcp, "wait_for_fit", {"timeout_s": 0.1})
+    assert running["status"] == "still_running"
+    assert (running["starts_done"], running["n_starts"], running["best_so_far"]) == (2, 8, 4.5)
+    assert (running["phase"], running["starts_queued"]) == ("queued", 3)
+    assert 175 <= running["remaining_s"] <= 200
+    threading.Timer(0.5, release.set).start()
+    began = time.monotonic()
+    ended = _call(mcp, "wait_for_fit", {"timeout_s": 30})
+    took = time.monotonic() - began
+    first.join(30)
+
+    assert ended == {"status": "no_version"}
+    assert took < 10, took
+
+
+def test_a_wait_for_a_fit_holds_no_worker_thread(tmp_path, monkeypatch):
+    """Sync tools share anyio's worker threads, 40 by default, which running fits already hold: a
+    wait holding one more would starve other calls. With one thread, a call made during the wait
+    still answers at once."""
+    fitting_, release = _stuck_fit(monkeypatch)
+    mcp = _server(tmp_path)
+    first = threading.Thread(target=_call, args=(mcp, "make_changes", _CHANGE))
+    first.start()
+    assert fitting_.wait(30)
+
+    async def call_during_a_wait():
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 1
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(mcp.call_tool, "wait_for_fit", {"timeout_s": 30})
+            await anyio.sleep(0.5)
+            began = time.monotonic()
+            await mcp.call_tool("get_errors", {})
+            took = time.monotonic() - began
+            release.set()
+        return took
+
+    took = asyncio.run(call_during_a_wait())
+    first.join(30)
+    assert took < 5, took
+
+
+def test_a_call_waiting_on_a_fit_gets_heartbeats_naming_the_fits_phase(tmp_path, monkeypatch):
+    """A call that lasts as long as a fit, as wait_for_fit does, hears the running change every
+    HEARTBEAT_S on gemot's protocol, 2025-11-25, as the fit's own call does (#217)."""
+    monkeypatch.setattr(server, "HEARTBEAT_S", 0.1)
+    fitting_, release = _stuck_fit(monkeypatch, total=4, done=1, phase="queued")
+    mcp = _server(tmp_path)
+    first = threading.Thread(target=_call, args=(mcp, "make_changes", _CHANGE))
+    first.start()
+    assert fitting_.wait(30)
+    beats = []
+
+    async def heard(progress, total, message):
+        beats.append((progress, message))
+        if len(beats) == 3:
+            release.set()
+
+    async def wait():
+        async with Client(mcp, mode="legacy", progress_handler=heard) as client:
+            assert client.protocol_version == "2025-11-25"
+            return await client.call_tool("wait_for_fit", {"timeout_s": 30})
+
+    outcome = asyncio.run(wait()).structured_content
+    first.join(30)
+
+    assert outcome == {"status": "no_version"}
+    assert len(beats) >= 3
+    assert all(re.fullmatch(r"queued for \d+s, 1 of 4 starts done", m) for _, m in beats[:3])
+    assert [p for p, _ in beats] == sorted(p for p, _ in beats)
+
+
+#: A genuine fit's payload, as ``record_fit_progress`` reads it.
+_FITSIM = {
+    "status": "fit",
+    "neg_log_likelihood": -50.0,
+    "chi2": 18.0,
+    "n_data_points": 20,
+    "n_estimated": 2,
+}
+
+
+def test_progress_and_timing_answer_during_a_fit_with_what_it_has_recorded(tmp_path, monkeypatch):
+    """get_progress and get_run_timing took the session's lock, which a change holds for its whole
+    edit and fit: in #177's test a get_progress mid-fit answered after 29.6 s, when the stub's fit
+    ended (PEtab-MCP#180). Both answer while the change holds it, with what it has recorded."""
+    fitting_, release, released = threading.Event(), threading.Event(), []
+
+    def _fit(self, n_starts=None):
+        self.add_timing(compile_seconds=2.5, n_compiles=1)
+        self.record_fit_progress(1, _FITSIM, {"is_new_best": True})
+        fitting_.set()
+        released.append(release.wait(30))
+        raise ModelUpdateError("the stub's fit ended")
+
+    monkeypatch.setattr(PetabSession, "_auto_fit_and_improvement", _fit)
+    mcp = _server(tmp_path)
+    first = threading.Thread(target=_call, args=(mcp, "make_changes", _CHANGE))
+    first.start()
+    assert fitting_.wait(30)
+    progress, timing = _call(mcp, "get_progress", {}), _call(mcp, "get_run_timing", {})
+    release.set()
+    first.join(30)
+
+    assert released == [True]
+    assert (progress["n_fitted_ops"], progress["best_version"]) == (1, 1)
+    assert (timing["compile_seconds"], timing["n_compiles"], timing["n_fits"]) == (2.5, 1, 0)
+
+
+class _Asked:
+    """A lock that says when it is asked for, so a test knows a reader is waiting on it."""
+
+    def __init__(self, lock):
+        self.lock, self.asked = lock, threading.Event()
+
+    def __enter__(self):
+        self.asked.set()
+        self.lock.acquire()
+
+    def __exit__(self, *exc):
+        self.lock.release()
+
+
+@pytest.mark.parametrize(
+    "write, pause_after, read",
+    [
+        (
+            lambda s: s.record_fit_progress(1, _FITSIM, {"is_new_best": True}),
+            "best",
+            PetabSession.progress_report,
+        ),
+        (
+            lambda s: s.add_timing(fit_seconds=2.5, queue_seconds=1.0, n_fits=1),
+            "fit_seconds",
+            PetabSession.run_timing,
+        ),
+    ],
+    ids=["progress", "timing"],
+)
+def test_a_read_racing_an_update_sees_all_of_it(session, monkeypatch, write, pause_after, read):
+    """A writer is stopped after its first counter (the best checkpoint before the streak and
+    op_history; fit_seconds before queue_seconds and n_fits): it holds the counters' lock there,
+    and a read asking for that lock meanwhile answers with the whole update (PEtab-MCP#180)."""
+    paused, go = threading.Event(), threading.Event()
+
+    def stop_after(self, name, value):
+        object.__setattr__(self, name, value)
+        if name == pause_after and not paused.is_set():
+            paused.set()
+            go.wait(30)
+
+    monkeypatch.setattr(PetabSession, "__setattr__", stop_after)
+    writer = threading.Thread(target=write, args=(session,))
+    writer.start()
+    assert paused.wait(30)
+    assert session.counters_lock.locked()
+    session.counters_lock = lock = _Asked(session.counters_lock)
+    seen = []
+    reader = threading.Thread(target=lambda: seen.append(read(session)))
+    reader.start()
+    assert lock.asked.wait(30)
+    assert seen == []
+    go.set()
+    writer.join(30)
+    reader.join(30)
+
+    assert seen == [read(session)]
 
 
 def _fit_ends(self, n_starts=None):
