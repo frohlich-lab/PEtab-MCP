@@ -45,12 +45,14 @@ from . import reconcile as _reconcile
 from .constants import (
     NOISE_SIGMA_MIN_POINTS,
     NOISE_SIGMA_COLLAPSE_FRACTION,
+    OVERFIT_GOF_PVALUE,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
 from .engine import build_lock
 from .errors import ModelUpdateError, PetabMcpError, ValidationError, disk_full_error
 from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
+from .progress_signals import signal
 from .problem import (
     LOG,
     LOG10,
@@ -2361,7 +2363,8 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
     ever gets there. Keyed by parameter id; each entry is ``{fitted, upper_bound_cap, data_std,
     fraction_of_data_std}`` (the last two ``None`` if the observable's std can't be computed).
     This is purely informational/for the commit-time guard in ``operations`` — it never rewrites
-    the parameter table's actual bounds.
+    the parameter table's actual bounds. A flagged entry also states its limit in the parameter's
+    own units (:func:`_fitted_limit`).
 
     ``{}`` is normal — most parameters aren't noise sigmas at all.
     """
@@ -2476,6 +2479,7 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             entry["status"] = "collapsed"  # overfitting the noise for a good-looking score
         else:
             entry["status"] = "ok"
+        entry.update(_fitted_limit(problem, pid, value, entry, fitted))
         # Whether this sigma's NUMBER can be compared to another model's fitted sigma at all. The
         # data-driven verdicts above are unaffected (the gain cancels from sd/spread), but a
         # comparison against a reference divides one model's sigma by another's, and that ratio is
@@ -2486,6 +2490,30 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             entry["scale_coupled"] = False
         out[pid] = entry
     return out
+
+
+def _fitted_limit(
+    problem: Any, pid: str, value: float, entry: dict[str, Any], fitted: dict[str, float]
+) -> dict[str, float]:
+    """A flagged entry's deciding comparison in the parameter's own units: the value of ``pid`` at
+    its cap (``fitted_cap``, inflated) or at its collapse floor (``fitted_floor``). ``effective_sigma``
+    is an sd on the noise coordinate (ln for a log-normal observable), which ``fitted`` need not
+    share (PEtab-MCP#329). ``{}`` unless that sd is proportional to ``pid``, checked at twice its
+    value."""
+    eff = entry.get("effective_sigma")
+    if entry["status"] == "inflated":
+        key, limit = "fitted_cap", entry.get("upper_bound_cap")
+    elif entry["status"] == "collapsed":
+        key, limit = "fitted_floor", NOISE_SIGMA_COLLAPSE_FRACTION * (entry.get("data_std") or 0.0)
+    else:
+        return {}
+    try:
+        doubled = _reconcile.sigma_effective_value(problem, pid, 2 * value, fitted_values=fitted)
+        if not eff or not limit or doubled is None or not math.isclose(doubled, 2 * eff):
+            return {}
+        return {key: value * limit / eff}
+    except Exception:  # noqa: BLE001 - a report field must never break a fit
+        return {}
 
 
 def noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
@@ -2768,6 +2796,8 @@ def fit_summary(session, engine) -> dict[str, Any]:
             k_eff=sim.get("k_eff"),
         )
     )
+    if note := chi2_note(session.problem, sim, out):
+        out["chi2_note"] = note
     out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
     _report = noise_sigma_report(session.problem, out.get("fitted_parameters"))
     out["noise_sigma_report"] = _report
@@ -3137,7 +3167,31 @@ def fit_result_block(
     if hints:
         block["merge_hints"] = hints
     block.update(goodness_of_fit(nll, chi2, k, n, criterion=criterion, k_eff=fitsim.get("k_eff")))
+    if note := chi2_note(problem, fitsim, block):
+        block["chi2_note"] = note
     return block
+
+
+#: A fit result's ``chi2_note`` where its chi2 GoF p is above ``OVERFIT_GOF_PVALUE`` and no
+#: estimated sigma pins chi2 (:func:`data_access.chi2_by_construction_note`).
+CHI2_BELOW_NOISE_NOTE = signal(
+    f"chi2 sits far below its degrees of freedom (goodness-of-fit p above {OVERFIT_GOF_PVALUE:g}): "
+    "the fit follows the noise, or the fixed noise sigmas are larger than the data's scatter, so "
+    "it is not shown adequate."
+)
+
+
+def chi2_note(problem: Any, fitsim: dict[str, Any], gof: dict[str, Any]) -> str | None:
+    """Why a fit's chi2 and its goodness-of-fit p do not judge the model, or ``None``: estimated
+    sigmas pin chi2 at the point count, or chi2 sits below its noise. ``gof`` holds the fit's
+    :func:`goodness_of_fit`. Rides on every fit result and ``get_fit_summary`` (PEtab-MCP#329)."""
+    from .data_access import chi2_by_construction_note
+
+    pinned = chi2_by_construction_note(problem, fitsim.get("records"))
+    p = gof.get("chi2_gof_pvalue")
+    if pinned is None and p is not None and p > OVERFIT_GOF_PVALUE:
+        return CHI2_BELOW_NOISE_NOTE
+    return pinned
 
 
 def noise_sigma_block(

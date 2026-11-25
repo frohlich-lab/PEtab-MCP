@@ -403,6 +403,30 @@ def test_chi2_pinned_by_an_estimated_sigma_the_optimizer_fits_says_so(session):
     assert note == data_access._CHI2_BY_CONSTRUCTION
 
 
+def test_a_fit_result_says_when_chi2_cannot_judge_the_fit(session):
+    """#329: only get_fit_diagnosis said chi2 = n holds by construction; make_changes showed the
+    raw chi2 and agents read it as the noise floor. A fixed-sigma chi2 far below its dof (p = 1,
+    sigmas larger than the scatter) went unremarked. The second note judges the fit, so the
+    progress_signals switch withholds it, and the first note's goodness-of-fit clause."""
+    from petab_mcp import fitting, progress_signals
+
+    _inner_solved_toy(session, sigma=True, offset=False)
+    fitsim = {**session.simulation, "chi2": 10.0, "n_data_points": 10, "n_estimated": 1}
+    block = fitting.fit_result_block({**fitsim, "neg_log_likelihood": 0.0}, problem=session.problem)
+    assert block["chi2_note"] == data_access._CHI2_BY_CONSTRUCTION
+    off = progress_signals.strip(block, False)["chi2_note"]
+    assert off.endswith("says nothing about the model.") and "goodness" not in off
+
+    _inner_solved_toy(session, sigma=False, offset=False)
+    low = {**fitsim, "chi2": 1.0, "neg_log_likelihood": 0.0}  # 9 dof: GoF p = 0.9994
+    block = fitting.fit_result_block(low, problem=session.problem)
+    assert block["chi2_note"] == fitting.CHI2_BELOW_NOISE_NOTE
+    assert "chi2_note" not in progress_signals.strip(block, False)
+    assert "chi2_note" not in fitting.fit_result_block(
+        {**low, "chi2": 9.0}, problem=session.problem
+    )
+
+
 def test_an_offset_under_per_point_sigmas_zeroes_only_the_precision_weighted_mean(session):
     """#285: dessauges 94 v4 read a mean weighted residual of 0.89 and a sign-test p of 0.0005 on
     an offset observable whose sigmas are SEMs per point, beside a note that the mean is ~0 and the
@@ -498,6 +522,54 @@ def test_fit_diagnosis_flags_systematic_bias(session):
     rollup = data_access.residual_structure_rollup(session)
     assert "obs_A" in rollup["flagged_observables"]
     assert rollup["low_power"] is False  # 10 points -> powered
+
+
+def test_the_sign_test_pools_series_too_short_to_test_alone(session):
+    """#329: raimundez's one-point series each gave p = 1, Fisher-combined to 1.0 beside 61/32
+    signs with low_power false, and the finish gate read "sign-random". Short series now pool."""
+    signs = [1.0] * 61 + [-1.0] * 32
+    session.simulation = {
+        "records": [
+            _rec("obs_A", f"e{i}", 0.0, 1.0, 1.0 - r, r, r, 1.0) for i, r in enumerate(signs)
+        ]
+    }
+    (row,) = data_access.fit_diagnosis(session)["per_observable"]
+    assert row["sign_test"]["p"] == pytest.approx(0.0035, abs=1e-4)
+    assert row["sign_test"]["n_series"] == 93 and row["sign_test"]["low_power"] is False
+    # one point per series: no runs test can reach significance, so none is combined
+    assert row["runs_test"] == {"p": None, "n_series": 0, "low_power": True}
+    assert data_access.residual_structure_rollup(session)["flagged_observables"] == ["obs_A"]
+
+
+def test_opposite_biases_in_long_series_do_not_cancel(session):
+    """A series long enough is its own stratum: an over-shoot in e0 and an under-shoot in e1 stay
+    a bias, where one pooled count would read 10/10."""
+    session.simulation = {
+        "records": [
+            _rec("obs_A", exp, float(t), 1.0, 1.0 - r, r, r, 1.0)
+            for exp, r in (("e0", 1.0), ("e1", -1.0))
+            for t in range(10)
+        ]
+    }
+    (row,) = data_access.fit_diagnosis(session)["per_observable"]
+    assert row["sign_test"]["n_pos"] == row["sign_test"]["n_neg"] == 10
+    assert row["sign_test"]["p"] < 0.001 and row["structure_flag"] is True
+
+
+def test_low_power_counts_only_series_that_can_reach_significance(session):
+    """#329: forty two-point series held 80 usable points, so low_power read false while neither
+    test could reach p < 0.05 on any of them. The sign test pools them; the runs test has none."""
+    session.simulation = {
+        "records": [
+            _rec("obs_A", f"e{i}", float(t), 1.0, 1.0 - r, r, r, 1.0)
+            for i in range(40)
+            for t, r in ((0, 1.0), (1, -1.0))
+        ]
+    }
+    (row,) = data_access.fit_diagnosis(session)["per_observable"]
+    assert row["sign_test"]["low_power"] is False and row["sign_test"]["p"] == 1.0
+    assert row["runs_test"]["low_power"] is True and row["structure_low_power"] is True
+    assert data_access.residual_structure_rollup(session)["low_power"] is True
 
 
 # -- the bare structure boolean the version meta records -------------------------------------

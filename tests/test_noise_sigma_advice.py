@@ -370,6 +370,41 @@ def test_log10_observable_sigma_is_judged_on_the_log_scale():
     assert frac > 1e-3  # NOT the ~1e-7 the linear-std bug produced
 
 
+def test_a_flagged_sigma_states_its_limit_in_its_own_units():
+    """#329: lucarelli's sd_Bmp4 read fitted 0.164 beside effective_sigma 0.377 and cap 0.316, a
+    log10 sd beside ln ones, and agents mis-sized the change. The entry now states the value of
+    the parameter itself at which the verdict turns."""
+    import pandas as pd
+
+    from petab_mcp import reconcile as R
+
+    obs = pd.DataFrame(
+        {"observableFormula": ["x"], "observableTransformation": ["log10"]},
+        index=pd.Index(["o"], name="observableId"),
+    ).assign(noiseFormula="noiseParameter1_o")
+    meas = [1e2, 1e3, 1e4, 1e5, 1e6]
+    meas = pd.DataFrame(
+        {
+            "observableId": "o",
+            "simulationConditionId": "c",
+            "time": range(len(meas)),
+            "measurement": meas,
+            "noiseParameters": "sd_o",
+        }
+    )
+    p = _upgraded(observable_df=obs, measurement_df=meas)
+    for fitted, key, limit in (
+        (5.0, "fitted_cap", "upper_bound_cap"),
+        (1e-3, "fitted_floor", None),
+    ):
+        entry = noise_sigma_report(p, {"sd_o": fitted})["sd_o"]
+        at = entry[key]
+        assert (at < fitted) is (key == "fitted_cap")
+        bound = entry[limit] if limit else NOISE_SIGMA_COLLAPSE_FRACTION * entry["data_std"]
+        assert R.sigma_effective_value(p, "sd_o", at) == pytest.approx(bound)
+    assert "fitted_cap" not in noise_sigma_report(p, {"sd_o": 0.1})["sd_o"]
+
+
 def test_proportional_noise_parameter_is_scaled_by_the_observable_magnitude():
     """With noiseFormula = noiseParameter1_o*x the parameter is a dimensionless CV, so its
     effective sd is cv * |typical value|. Comparing the bare CV against a data std (the pre-#118
