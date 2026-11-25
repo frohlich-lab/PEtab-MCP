@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the gemot preprint below."
+title: "PEtab MCP"
+abstract: "A local MCP server that wraps a PEtab parameter-estimation problem and gives LLM agents a constrained, scored and versioned loop for building mechanistic models."
+type: software
+license: MIT
+repository-code: "https://github.com/frohlich-lab/PEtab-MCP"
+keywords:
+  - petab
+  - mcp
+  - systems-biology
+  - sbml
+  - parameter-estimation
+  - amici
+authors:
+  - family-names: "Fröhlich"
+    given-names: "Fabian"
+    orcid: "https://orcid.org/0000-0002-5360-4292"
+  - family-names: "Snelling"
+    given-names: "Branwen"
+    orcid: "https://orcid.org/0000-0002-7205-5516"
+  - family-names: "de Pomereu"
+    given-names: "Theodore"
+    orcid: "https://orcid.org/0009-0009-9197-8795"
+preferred-citation:
+  type: article
+  title: "GEMOT: Towards Mechanistic World Models for Biology"
+  authors:
+    - family-names: "de Pomereu"
+      given-names: "Theodore"
+      orcid: "https://orcid.org/0009-0009-9197-8795"
+    - family-names: "Snelling"
+      given-names: "Branwen"
+      orcid: "https://orcid.org/0000-0002-7205-5516"
+    - family-names: "Fröhlich"
+      given-names: "Fabian"
+      orcid: "https://orcid.org/0000-0002-5360-4292"
+  journal: "bioRxiv"
+  doi: "10.64898/2026.09.26.754619"
+  url: "https://www.biorxiv.org/content/10.64898/2026.09.26.754619v1"
+  year: 2026
+  month: 9

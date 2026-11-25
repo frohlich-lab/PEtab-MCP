@@ -9,7 +9,11 @@ description = "A local MCP server for interactively editing a PEtab (v2) model/p
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Fabian Fröhlich" }]
+authors = [
+    { name = "Fabian Fröhlich" },
+    { name = "Branwen Snelling" },
+    { name = "Theodore de Pomereu" },
+]
 keywords = ["petab", "mcp", "systems-biology", "sbml", "parameter-estimation", "amici"]
 classifiers = [
     "Programming Language :: Python :: 3",
