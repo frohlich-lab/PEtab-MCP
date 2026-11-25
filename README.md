@@ -16,7 +16,7 @@ A local [MCP](https://modelcontextprotocol.io) server that wraps a single
 [PEtab v2](https://petab.readthedocs.io/en/latest/v2/documentation_data_format.html)
 parameter-estimation problem (a PEtab v1 problem is upgraded on load) and turns mechanistic
 model building into a **disciplined, auditable** workflow for LLM agents — the loop behind
-model-building assistants such as [petabgpt](https://github.com/frohlich-lab/petabgpt).
+model-building agents such as [gemot](https://github.com/frohlich-lab/gemot).
 
 Point an agent at a dataset and it proposes and refines a mechanistic model, one justified
 change at a time. The experimental design stays fixed and the model is edited only through
