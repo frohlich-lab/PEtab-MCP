@@ -34,6 +34,34 @@ class _Result:
         self.optimize_result = type("OL", (), {"list": starts})()
 
 
+def test_starts_at_best_counts_fresh_and_warm_apart_and_those_maxtime_cut_short():
+    """#334: a same-model refit reported 431/1000 at the best, 402 of them warm starts seeded at
+    the previous optimum, where fresh starts reached it about 1% of the time. #331: 82/100 were at
+    the best with every start stopped at MAXTIME. pyPESTO numbers the seeded starts first."""
+    starts = [
+        _OptimizerResult(id="0", fval=1.0, exitflag="ExitFlag.FTOL"),
+        _OptimizerResult(id="1", fval=1.5, exitflag="ExitFlag.MAXTIME"),
+        _OptimizerResult(id="3", fval=1.9, exitflag="ExitFlag.MAXTIME"),
+        _OptimizerResult(id="2", fval=2.5, exitflag="ExitFlag.FTOL"),
+        _OptimizerResult(id="4", fval=float("inf"), exitflag="ExitFlag.NOT_FINITE"),
+    ]
+    counts = fitting._starts_at_best(_Result(starts), 1.0, 2)
+    assert counts == {
+        "n_starts_at_best": 3,
+        "n_warm_starts": 2,
+        "n_warm_starts_at_best": 2,
+        "n_starts_at_best_maxtime": 2,
+    }
+    assert fitting._starts_at_best_text({**counts, "n_starts": 5}) == (
+        "1/3 fresh, 2/2 warm (within 1 nll); 2 of them stopped at MAXTIME, unconverged"
+    )
+    # No warm starts, or a stored payload from before the split: one count.
+    plain = {"n_starts_at_best": 3, "n_starts": 5}
+    assert fitting._starts_at_best_text(plain) == "3/5 (within 1 nll)"
+    assert fitting._starts_at_best_text({**plain, "n_warm_starts": 0}) == "3/5 (within 1 nll)"
+    assert fitting._starts_at_best_text({"n_starts": 5}) is None
+
+
 def test_extracts_starts_and_trace():
     res = _Result(
         [
@@ -358,7 +386,9 @@ def test_slim_fit_payload_slims_a_block_that_carries_no_version_of_its_own():
 def test_a_fit_result_names_only_what_is_new_since_the_parent():
     """#190: every make_changes result re-sent "log10" for each moved parameter, 16-digit values,
     and every pin the parent's result had already reported. A re-pin at a widened bound is new, and
-    so is the scale of a parameter re-scaled in place (`e`) or estimated for the first time (`f`)."""
+    so is the scale of a parameter re-scaled in place (`e`) or estimated for the first time (`f`).
+    A pin the parent held is still named, by id: agents read an empty list of new pins as "all
+    interior" and reported a value at its bound as 3.28 (sneyd 63612603_28, #334)."""
     from petab.v2.C import ESTIMATE, LOWER_BOUND, UPPER_BOUND
 
     from petab_mcp.fitting import slim_fit_payload
@@ -406,9 +436,12 @@ def test_a_fit_result_names_only_what_is_new_since_the_parent():
 
     assert out["fitted_parameters_changed"] == {"a": 99990.0, "b": 3.142, "d": 10.0, "f": 1.0}
     assert out["parameter_scales"] == {"b": "lin", "d": "log10", "e": "lin", "f": "log10"}
-    assert [p["parameter_id"] for p in out["parameters_at_bound"]] == ["a", "d"]
-    assert out["parameters_at_bound"][0]["value"] == 99990.0
-    assert out["n_parameters_at_bound"] == 3
+    assert [p["parameter_id"] for p in out["parameters_newly_at_bound"]] == ["a", "d"]
+    assert out["parameters_newly_at_bound"][0]["value"] == 99990.0
+    assert out["parameters_still_at_bound"] == ["c"]
+    assert "parameters_at_bound" not in out and "n_parameters_at_bound" not in out
+    keys = list(out)
+    assert keys.index("parameters_still_at_bound") == keys.index("parameters_newly_at_bound") + 1
 
 
 def test_slim_fitted_parameters_keeps_the_first_fit_whole():

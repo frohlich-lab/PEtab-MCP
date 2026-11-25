@@ -1290,19 +1290,22 @@ _MAKE_CHANGES_PARAMETERS_ROUTE = (
 _MAKE_CHANGES_CONTRACT = f"""\
 `n_starts` REPLACES the configured multistart count (`describe_problem` → \
 `fit_n_starts_default`) rather than adding to it, and may be at most {MAX_FIT_STARTS_FACTOR}x it: \
-omit it unless you want MORE; below it fits LESS hard. MORE is warranted once, when \
-`starts_at_best` shows only 1 or 2 starts reaching the best value; if the raised fit still shows 1 \
-or 2, the optimum is a needle, and the model needs reformulating where it is that sharp (a \
-switch-like term), not more starts. Starts multiply the fit's wall time, and do not help starts \
-that run out of the per-start time limit (`ExitFlag.MAXTIME`).
+omit it unless you want MORE; below it fits LESS hard. `starts_at_best` counts fresh starts \
+apart from warm ones, which begin at or around the previous fit's optima: only the fresh count \
+says how often the optimum is found. MORE is warranted once, when 0 to 2 fresh starts reach the \
+best value; if the raised fit still shows 0 to 2, the optimum is a needle, and the model needs \
+reformulating where it is that sharp (a switch-like term), not more starts. Starts multiply the \
+fit's wall time, and do not help starts that run out of the per-start time limit \
+(`ExitFlag.MAXTIME`).
 
 A REFIT is a call with no model route: `parameters` and/or `n_starts` alone fit the current \
 model again (version N's with `base_version=N`) as a new version. One with neither new bounds nor more starts than that model ran is refused.
 
 ALL-OR-NOTHING: a change that is rejected, or whose fit produces no version, is REVERTED, so the \
 working model is always a scored one. The result IS the fit, flat, in `get_fit_summary`'s \
-fields, with the noise report, the parameters at a bound, the `merge_hints` and the flagged \
-observables cut to what is flagged or new since the parent version. Read `applied` first: \
+fields, with the noise report, the `merge_hints` and the flagged observables cut to what is \
+flagged or new since the parent version, and its pins split into `parameters_newly_at_bound` and \
+the ids of those the parent held, `parameters_still_at_bound`. Read `applied` first: \
 `false` → nothing moved — rejected, reverted because the fit failed, or already an earlier fitted \
 version; `error`/`issues` says which, act on THAT. Then `committed`: `true` → a version exists, \
 read its score (`wall_seconds` is what its fit took, model build included); `false` with \

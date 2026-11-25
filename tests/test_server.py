@@ -1066,9 +1066,9 @@ def test_fit_tools(tmp_path):
         # left out (#190).
         assert set(res["residual_structure"]) == {"flagged_observables", "low_power", "summary"}
         assert "per_observable" not in res and "worst_points" not in res
-        # `parameters_at_bound` stays HERE, on every fit result: it is the at-bound signal the agent
-        # acts on (get_parameters carries none), and it costs ~25 bytes when empty.
-        assert "parameters_at_bound" in res
+        # The pins stay HERE, on every fit result: they are the at-bound signal the agent acts on
+        # (get_parameters carries none), split into new since the parent and still held (#334).
+        assert "parameters_newly_at_bound" in res and "parameters_still_at_bound" in res
         # ...and the tool returns the detail, in two sections, WITHOUT a second copy of the verdict.
         # The DEFAULT is the cheap residual half — the parameter half costs several kB plus a FIM,
         # and every payload asked for is re-sent in the agent's history on every later turn.

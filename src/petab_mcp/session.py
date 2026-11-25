@@ -104,7 +104,7 @@ _SIGMA_COLLAPSED_ADVICE = (
     "residuals to ~0."
 )
 
-# A fit's optimum only 1 or 2 starts of a raised multistart reach (PEtab-MCP#287), for the
+# A fit's optimum only 0 to 2 fresh starts of a raised multistart reach (PEtab-MCP#287), for the
 # `n_starts` cap's refusal and the warning on such a fit.
 _NEEDLE_ADVICE = (
     "the optimum is a needle, and more starts will not make it reliable: reformulate the model "
@@ -1156,7 +1156,8 @@ class PetabSession:
         if n_starts > (cap := self.max_fit_starts):
             raise ValidationError(
                 f"n_starts must be at most {cap}, {MAX_FIT_STARTS_FACTOR}x the default, got "
-                f"{n_starts}. If a raise still leaves 1 or 2 starts at the best, {_NEEDLE_ADVICE}."
+                f"{n_starts}. If a raise still leaves 0 to 2 fresh starts at the best, "
+                f"{_NEEDLE_ADVICE}."
             )
         return n_starts
 
@@ -1246,11 +1247,14 @@ class PetabSession:
         child_model_ant: str,
         is_new_best: bool = False,
     ) -> str | None:
-        """Advisory for a commit that gained parameters yet fits WORSE than its parent.
+        """Advisory for a commit that gained parameters, or only lost some, yet fits WORSE than its
+        parent.
 
         See :mod:`nesting`: for a NESTED model the ML nll cannot rise when a parameter is added,
-        so "k up AND nll up" on a nested child is an INVALID COMPARISON, and on any other child a
-        line naming why it is not nested. Advisory only; the commit is never blocked.
+        so "k up AND nll up" on a nested child is an INVALID COMPARISON, on one with a new
+        parameter at a bound a line naming it, and on any other child a line naming why it is not
+        nested. A deletion gets the objective at the parent's optimum. Advisory only; the commit
+        is never blocked.
 
         Also maintains ``self.invalid_comparison`` — the session's outstanding invalid
         does-adding-structure-help experiment, which ``fit_summary`` surfaces so a client's finish
@@ -1269,7 +1273,7 @@ class PetabSession:
         """
         from petab.v2.C import LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
 
-        from . import nesting
+        from . import fitting, nesting
         from .parameters import estimated_ids
 
         # The model this child DESCENDS FROM, which is not HEAD when the call forked
@@ -1310,6 +1314,10 @@ class PetabSession:
                     pid: (child_df.at[pid, LOWER_BOUND], child_df.at[pid, UPPER_BOUND])
                     for pid in child_ids
                 },
+                "at_bound": fitting.parameters_at_bound(
+                    fitsim.get("fitted_parameters"), child_df, problem=self.problem
+                ),
+                "objective_before": fitsim.get("objective_before"),
                 "model": child_model_ant,
             }
             found = nesting.nesting_advisory(parent, child)
@@ -1772,18 +1780,19 @@ class PetabSession:
                         else ""
                     ),
                 ]
-            # A raise that still leaves 1 or 2 starts at the best, fewer than half of those that
-            # ran to the end (2 of 2 completed is no needle): more will not help (#287).
+            # A raise that still leaves 0 to 2 FRESH starts at the best, fewer than half of the
+            # fresh ones that ran to the end (2 of 2 completed is no needle): more will not help
+            # (#287). Warm starts begin at the previous fit's optima, so they are left out (#334).
             elif (
                 starts > self.auto_fit_starts
-                and (at_best := fitsim.get("n_starts_at_best")) in (1, 2)
-                and 2 * at_best < starts - (killed or 0)
+                and (at_best := fitsim.get("n_starts_at_best")) is not None
+                and (fresh := at_best - (fitsim.get("n_warm_starts_at_best") or 0)) <= 2
+                and 2 * fresh < (ran := starts - (fitsim.get("n_warm_starts") or 0) - (killed or 0))
             ):
                 warnings = [
                     *warnings,
-                    f"{fitsim['n_starts_at_best']} of {starts} starts reached the best value, "
-                    f"though this fit ran more than the default {self.auto_fit_starts}: "
-                    f"{_NEEDLE_ADVICE}.",
+                    f"{fresh} of {ran} fresh starts reached the best value, though this fit ran "
+                    f"more than the default {self.auto_fit_starts}: {_NEEDLE_ADVICE}.",
                 ]
             # Starts stopped on a value that is not a number (PEtab-MCP#285), and the powers of
             # states that make one, at any share: fujita's ran 6-25% NOT_FINITE with nothing said,

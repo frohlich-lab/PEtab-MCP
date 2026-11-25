@@ -114,6 +114,11 @@ EXPONENT_WIDENING_WARNING_BOUND = 10.0
 # to eyeball `get_parameters()` against the fitted value after every commit.
 PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
 
+#: How close to a best objective another must end to count as having reached it: 1 nll, 2 in BIC.
+#: A start within it is at the best (``fitting``'s ``starts_at_best``), and a nested child within it
+#: of its parent has reached the parent's optimum (:mod:`nesting`).
+AT_BEST_NLL_TOL = 1.0
+
 # -- merge hints -----------------------------------------------------------
 #: A merge hint whose ``move_scaled`` reaches this carries ``price_unreliable``: its price is a
 #: local quadratic at the fit's optimum, and one decade is where that stops being local on the
