@@ -1792,6 +1792,7 @@ class PetabSession:
             # parameter ties the criterion would pay for, priced from the FIM at the optimum this fit just
             # reached (see identifiability.merge_hints). Computed HERE, after
             # _auto_fit_and_improvement, because that is where the fit record it reads was frozen;
+            # the hints are read off it once the snapshot has named the version that priced them.
             # None (and then absent from the result) when there is no such tie at all, or no FIM. ONLY when
             # an optimizer actually ran: with `auto_fit` off the status is "skipped", the values are
             # whatever was authored, and no record was frozen — not a point a local expansion may be
@@ -1804,9 +1805,6 @@ class PetabSession:
                 block = identifiability.fit_diagnosis_block(self)
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
-                fitsim["merge_hints"] = identifiability.merge_hints(
-                    (block or {}).get("diagnosis"), rename=self.text_route
-                )
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
@@ -1876,6 +1874,12 @@ class PetabSession:
                 sim=fitsim,
             )
             fitsim["version"] = version
+            if fitsim.get("status") == "fit":
+                fitsim["merge_hints"] = identifiability.merge_hints(
+                    (fitsim.get(identifiability.STORED_DIAGNOSIS_KEY) or {}).get("diagnosis"),
+                    version=version,
+                    model=identifiability.edit_surface(self),
+                )
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = noise_sigma_collapsed(_nsr)

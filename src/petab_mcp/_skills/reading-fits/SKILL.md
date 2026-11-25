@@ -43,7 +43,7 @@ description: >-
 - `residual_structure`: the verdict over the residual tests, with a replicate lack-of-fit arm
   where the design has replicates. A flag marks where the fit is off, not proof of a better form,
   and stops nothing. Its `sigma_heterogeneity` names the sigmas whose `p` (below) survives Holm.
-- `merge_hints`: the cheapest few priced ties (below).
+- `merge_hints`: the cheapest few ties (below).
 
 ## Diagnosis: residuals
 
@@ -71,10 +71,10 @@ different structure is in the working state.
   wanders across near-optimal starts, a model-free check); `correlations` and
   `partial_correlations`; `flat_directions`, the parameter combinations the data cannot pin;
   `candidates` ranks the parameters to cut. The FIM is local: read it with the multistart spread.
-- `merge_candidates` prices giving a pair one shared value: `dnll`, `dscore` (negative when the
-  merge lowers the score), `move_scaled` (how far the tie moves a parameter; cheap but many decades
-  rarely survives a refit). Only pairs the model's math reads, of one role and scale, neither at a
-  bound, are priced: an absent pair may be one that was skipped, not a dear one.
+- `merge_candidates` estimates tying a pair to one value: `dnll`, `dscore` (negative when the
+  merge lowers the score), `move_scaled` (how far the tie moves a parameter; a hint moving a decade
+  or more is `price_unreliable`), valid at its `priced_at_version` only. Only pairs the model's
+  math reads, of one role and scale, neither at a bound, are priced: absent is not dear.
 
 ## SQL: one row per group
 

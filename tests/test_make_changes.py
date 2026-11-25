@@ -3163,13 +3163,48 @@ def test_a_merge_hint_names_its_rename_and_taking_it_merges_the_pair(tmp_path):
     assert first["committed"] is True, first["message"]
     (hint,) = [h for h in first["merge_hints"] if set(h["parameters"]) == {"k1", "k3"}]
     old, new = hint["parameters"][1], hint["parameters"][0]
-    assert hint["take"] == {"op": "rename", "old": old, "new": new}
+    assert hint["take"] == [{"op": "rename", "old": old, "new": new}]
     res = _call(
         mcp,
         "make_changes",
-        {"model_edits": [hint["take"]], "justification": "one rate", "n_starts": 2},
+        {"model_edits": hint["take"], "justification": "one rate", "n_starts": 2},
     )
     assert res["committed"] is True, res["message"]
     texts = [m["message"] for m in res["messages"]]
     assert any(t.startswith(f"rename merged `{old}` into `{new}`") for t in texts), texts
     assert not any("dropped previously-estimated" in t for t in texts), texts
+
+
+def test_the_ops_that_tie_two_minted_initial_values_commit(tmp_path):
+    """PEtab-MCP#336: boehm agents were offered a `rename` of a minted `<species>_init`, which
+    fails ("does not occur in the model") and, written the other way, is refused (the reconcile
+    reserves the name). The ops a hint now gives for two minted rows commit, and a tie v0's fit
+    does not hint is warned."""
+    from petab.v2.models.sbml_model import SbmlModel
+
+    from petab_mcp.identifiability import UNHINTED_TIE, tie_ops
+
+    mcp = _server(tmp_path, auto_fit=True)
+    source = _antimony(
+        "species C in compartment_;",
+        "species D in compartment_;",
+        "C = 2.0;",
+        "D = 3.0;",
+        "k3 = 0.2;",
+        "r3: C => D; k3 * C;",
+    )
+    first = _call(
+        mcp, "make_changes", {"antimony": source, "justification": "pools", "n_starts": 1}
+    )
+    assert first["committed"] is True, first["message"]
+    render = SbmlModel.from_antimony(_text(mcp, "get_model", {})).sbml_model
+    ops = tie_ops("C_init", "D_init", source, render)
+    assert [(op["op"], op["id"]) for op in ops] == [("set_initial", "C"), ("set_initial", "D")]
+    res = _call(
+        mcp, "make_changes", {"model_edits": ops, "justification": "one size", "n_starts": 1}
+    )
+    assert res["committed"] is True, res["message"]
+    assert re.search(r"\bD = C_init;", _text(mcp, "get_model", {}))
+    hinted = {frozenset(h["parameters"]) for h in first.get("merge_hints") or []}
+    warned = [m for m in res["messages"] if m["message"].startswith(UNHINTED_TIE)]
+    assert bool(warned) == (frozenset({"C_init", "D_init"}) not in hinted), warned
