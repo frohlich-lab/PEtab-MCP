@@ -112,6 +112,28 @@ _NEEDLE_ADVICE = (
     "`get_fit_diagnosis(sections='parameters')`)"
 )
 
+#: The MAXTIME warning's addendum where :func:`_integrates_to_steady_state_only` (PEtab-MCP#331).
+_CLOSED_FORM_ADVICE = (
+    " Every measurement here is at t=inf, so each start integrates every experiment to its steady "
+    "state: readouts written as that steady state in closed form, functions of the parameters "
+    "with no reactions, leave nothing to integrate."
+)
+
+
+def _integrates_to_steady_state_only(problem) -> bool:
+    """Whether every measurement is at t=inf and the model has reactions or rate rules to
+    integrate there."""
+    from petab.v2.C import TIME
+
+    sm, mdf = problem.model.sbml_model, problem.measurement_df
+    return (
+        mdf is not None
+        and len(mdf) > 0
+        and bool((mdf[TIME].astype(float) == math.inf).all())
+        and (sm.getNumReactions() > 0 or any(r.isRate() for r in sm.getListOfRules()))
+    )
+
+
 #: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
 #: ``get_progress`` has the rest. ``streak_cap`` and ``plateau_window`` are constants the
 #: ``make_changes`` description states, ``criterion`` is on the fit block, and the best's score and
@@ -902,9 +924,13 @@ class PetabSession:
             {"n_constraints": len(self.constraints.items)} if self.constraints is not None else {}
         )
         authored = self.model_authored()
-        # Counted on an authored model only, never on the seed's placeholders (docs/RATIONALE.md).
+        # Counted on an authored model only, never on the seed's placeholders (docs/RATIONALE.md)
+        # or the one `reconcile.ensure_one_species` mints.
         counts = (
-            {"n_species": int(sm.getNumSpecies()), "n_model_parameters": int(sm.getNumParameters())}
+            {
+                "n_species": len(R.authored_species(sm)),
+                "n_model_parameters": int(sm.getNumParameters()),
+            }
             if authored
             else {}
         )
@@ -1691,8 +1717,11 @@ class PetabSession:
             # tool returns committed=false with an actionable message rather than crashing. Unless
             # the disk is full: the build directory is written to before the model is blamed,
             # since a build whose install step hit the quota fails only at the import after it.
+            began = time.monotonic()
             try:
                 fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+                # The fit's wall time, model build and queue included (PEtab-MCP#331).
+                wall_seconds = round(time.monotonic() - began)
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
                 if isinstance(exc, PetabMcpError):
                     error = disk_full_error(exc) or exc
@@ -1725,7 +1754,12 @@ class PetabSession:
                     f"{self.fit_per_start_timeout:.0f}s per-start time limit (MAXTIME). More "
                     "starts will not fix that: the limit applies to each start, so added starts "
                     "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
-                    "that allow extreme rates.",
+                    "that allow extreme rates."
+                    + (
+                        _CLOSED_FORM_ADVICE
+                        if _integrates_to_steady_state_only(self.problem)
+                        else ""
+                    ),
                 ]
             # A raise that still leaves 1 or 2 starts at the best, fewer than half of those that
             # ran to the end (2 of 2 completed is no needle): more will not help (#287).
@@ -1859,6 +1893,7 @@ class PetabSession:
                     # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
                     "n_starts": fitsim.get("n_starts"),
                     "n_starts_killed": fitsim.get("n_starts_killed"),
+                    "wall_seconds": wall_seconds,
                     "fit_status": fitsim.get("status"),
                     "neg_log_likelihood": nllh,
                     "chi2": fitsim.get("chi2"),
@@ -1925,6 +1960,7 @@ class PetabSession:
         return {
             "committed": True,
             "version": version,
+            "wall_seconds": wall_seconds,
             "warnings": warnings,
             "event_timestamp": event["timestamp"],
             "progress": {

@@ -2685,6 +2685,11 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
 PLACEHOLDER_SPECIES = "petab_mcp_placeholder"
 
 
+def authored_species(sm) -> list[str]:
+    """The model's species ids, in model order, without :data:`PLACEHOLDER_SPECIES`."""
+    return [s.getId() for s in sm.getListOfSpecies() if s.getId() != PLACEHOLDER_SPECIES]
+
+
 def ensure_one_species(sm) -> bool:
     """Guarantee the model has at least one species, minting :data:`PLACEHOLDER_SPECIES` if not.
 

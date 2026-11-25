@@ -1305,7 +1305,8 @@ fields, with the noise report, the parameters at a bound, the `merge_hints` and 
 observables cut to what is flagged or new since the parent version. Read `applied` first: \
 `false` → nothing moved — rejected, reverted because the fit failed, or already an earlier fitted \
 version; `error`/`issues` says which, act on THAT. Then `committed`: `true` → a version exists, \
-read its score; `false` with `no_change` → this model already IS the current version, so change \
+read its score (`wall_seconds` is what its fit took, model build included); `false` with \
+`no_change` → this model already IS the current version, so change \
 something else. `messages` is everything the call had to say, in pipeline order, each tagged \
 `level` and `source`.
 

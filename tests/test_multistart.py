@@ -462,6 +462,41 @@ def test_a_fit_whose_starts_mostly_run_out_of_time_says_more_starts_will_not_hel
     assert any(
         "3 of 3 starts ran out of the 0s" in w and "More starts" in w for w in out["warnings"]
     )
+    assert not any("t=inf" in w for w in out["warnings"])
+
+
+def test_an_endpoint_only_fit_out_of_time_points_to_closed_form_steady_states(fit_session):
+    """froehlich measures only at t=inf, and its ODE fits ran up to every start to the cap: the
+    MAXTIME warning there says a closed-form steady state leaves nothing to integrate. The fit's
+    wall time rides on the result and the version (PEtab-MCP#331)."""
+    from petab.v2.C import TIME
+
+    problem = fit_session.problem
+    fit_session.problem = problem.replace(
+        measurement_df=problem.measurement_df.assign(**{TIME: math.inf})
+    )
+    fit_session.fit_per_start_timeout = 1e-9
+    out = fit_session.fit(n_starts=3)
+
+    assert any("Every measurement here is at t=inf" in w for w in out["warnings"])
+    assert isinstance(out["wall_seconds"], int) and out["wall_seconds"] >= 0
+    assert fit_session.provenance.get_meta(out["version"])["wall_seconds"] == out["wall_seconds"]
+
+
+def test_a_model_with_nothing_to_integrate_is_not_pointed_to_closed_form(session):
+    """No reaction and no rate rule: the model already IS closed form."""
+    from petab.v2.C import TIME
+
+    from petab_mcp import operations
+    from petab_mcp.session import _integrates_to_steady_state_only
+
+    problem = session.problem
+    session.problem = problem.replace(
+        measurement_df=problem.measurement_df.assign(**{TIME: math.inf})
+    )
+    assert _integrates_to_steady_state_only(session.problem)
+    operations.set_model(session, "model m\n  k1 = 0.5;\n  B := k1;\nend\n", justification="x")
+    assert not _integrates_to_steady_state_only(session.problem)
 
 
 def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
