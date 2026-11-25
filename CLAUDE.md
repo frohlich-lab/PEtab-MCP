@@ -4,9 +4,9 @@
 problem and exposes a _deliberately constrained_ editing loop. The constraints are the product,
 not scaffolding.
 
-The agent harness that drives it (panel, judge, benchmark sweep, run explorer) lives in
-[frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp) and installs this package
-pinned to a commit; a change here reaches it only when that pin is bumped.
+The agent harness that drives it (panel, judge, run explorer) lives in
+[frohlich-lab/gemot](https://github.com/frohlich-lab/gemot) and installs this package pinned to a
+commit; a change here reaches it only when that pin is bumped.
 
 ## Read before you change behaviour
 

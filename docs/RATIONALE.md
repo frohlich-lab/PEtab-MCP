@@ -20,9 +20,9 @@ it. `#167`, `#179` and `#245` predate this budget and still carry two entries ea
 split because separate code sites cite a different one of them by name, so they are a legacy
 exception and not a precedent.
 
-The numbers on the entries below are pull requests of
-[frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp), where this package was
-developed before it moved here.
+An entry numbered `PEtab-MCP#N` is this repository's pull request or issue. A bare number is a pull
+request of frohlich-lab/gemot_iclr_2026 (then frohlich-lab/petab_mcp, private), where this package
+was developed before it moved here.
 
 PEtab-MCP#328 `model_edits` apply to the version's built model (`model.ant`, what `get_model` shows), and the agent's submitted text is kept as `model_source.ant` only as a record that nothing reads back. Applied to that text instead, a species the reconcile pruned and a rename merge's old declaration came back on every edit: 47 of the 55 runs the 2026-11 trace review cites repeated a removal notice or folded a warning that named nothing. The reasons the text was the base are gone: operations address ids, which survive the re-render, and a fork's parent is recorded in the version's meta.
 
