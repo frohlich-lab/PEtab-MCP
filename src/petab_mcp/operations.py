@@ -27,7 +27,7 @@ import re
 from typing import Any, Callable
 
 import libsbml
-from petab.v2.C import LOWER_BOUND, UPPER_BOUND
+from petab.v2.C import LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
 from petab.v2.models.sbml_model import SbmlModel
 
 from . import messages as M
@@ -393,6 +393,15 @@ def _parent(session) -> tuple[int, SbmlModel, Any]:
     return fork, _stored_model(prov.get_model_antimony(fork)), prov.get_parameter_df(fork)
 
 
+def _shown_starts(parent) -> dict[str, float]:
+    """The starts ``parent`` (:func:`_parent`) estimates directly (``<sid> = <param>``), each at
+    its row's value, which the model text shows (:func:`model.model_text`)."""
+    _, model, df = parent
+    estimated = set(estimated_ids(df))
+    starts = R._direct_ic_parameter_ids(model.sbml_model) & estimated
+    return {pid: float(df.loc[pid, NOMINAL_VALUE]) for pid in starts}
+
+
 #: Reactions a refused name's species took part in, named in :func:`_definitions`; the rest are
 #: counted.
 _REACTIONS_SHOWN = 3
@@ -680,11 +689,19 @@ def _commit_change(
         model_sbml_before = None if model_build is not None else problem.model.to_sbml_str()
 
         apply_result: Any = None
+        # The version this edit changes, read before the swap below replaces the working model.
+        base = None
         if model_build is not None:
+            base = _parent(session)
             candidate, apply_result = model_build()
             problem.model = candidate
             names = {sp.getId(): sp.getName() for sp in candidate.sbml_model.getListOfSpecies()}
-            recon = R.reconcile(problem, shipped=session.shipped_parameter_df, carried=carried)
+            recon = R.reconcile(
+                problem,
+                shipped=session.shipped_parameter_df,
+                carried=carried,
+                shown=_shown_starts(base),
+            )
             # An EMPTY model is refused rather than committed — where "empty" is the same
             # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
             # a reaction nor a rate/assignment rule). Both are unscoreable, and the first is
@@ -719,8 +736,6 @@ def _commit_change(
                 )
         else:
             recon = None
-        # The version this edit changes, read before the swap below replaces the working model.
-        base = _parent(session) if recon is not None else None
         orphans = _orphans(session, recon["parameters"]["seeded"], *base[:2]) if base else []
         if refused := [message for refuse, message in orphans if refuse]:
             raise ValidationError(
@@ -1035,9 +1050,12 @@ def set_model(
     )
     notes = [_merge_note(current, old, kept, moves) for old, kept in merged.items()]
     if dropped:
+        # Worded for both routes: a `remove_reaction` or `set_rate_law` drops a parameter as a
+        # re-author does, by leaving nothing that reads it, and "re-declare them" would be pruned.
         notes.append(
-            f"the re-author dropped previously-estimated parameter(s) {dropped}: their fitted "
-            "values are gone. Re-declare them in the Antimony if that was unintended."
+            f"nothing in the model reads previously-estimated parameter(s) "
+            f"{', '.join(f'`{p}`' for p in dropped)} any more, so their rows and fitted values are "
+            "gone. If that was unintended, keep a rate law or rule that reads them."
         )
     if notes:
         result["warnings"] = list(result.get("warnings") or []) + notes

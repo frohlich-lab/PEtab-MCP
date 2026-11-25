@@ -17,13 +17,40 @@ MODEL_FORMATS = ("antimony", "sbml")
 
 
 def get_model(session, fmt: str = "antimony") -> str:
-    """Return the current model as Antimony (canonical) or SBML (read-only view)."""
+    """Return the current model as Antimony (canonical) or SBML (read-only view), at its
+    parameter table's values (:func:`model_text`)."""
     fmt = fmt.lower()
-    if fmt == "antimony":
-        return session.model.to_antimony()
-    if fmt == "sbml":
-        return session.model.to_sbml_str()
-    raise ModelUpdateError(f"Unknown model format {fmt!r}; use one of {MODEL_FORMATS}.")
+    if fmt not in MODEL_FORMATS:
+        raise ModelUpdateError(f"Unknown model format {fmt!r}; use one of {MODEL_FORMATS}.")
+    return model_text(session.model, session.problem.parameter_df, fmt)
+
+
+def model_text(model, parameter_df, fmt: str = "antimony") -> str:
+    """``model`` as Antimony (or SBML), each parameter with a row in ``parameter_df`` at that
+    row's nominal value. The table owns a parameter's value, which a fit sets to the one it
+    found; the model's own is whatever it was written with, and progress_off alkan 15 and 18 froze
+    those, read off the model text, as if fitted (PEtab-MCP#341). A copy is set and rendered:
+    the model's SBML keys AMICI's build (:meth:`problem.WorkingProblem.module_fingerprint`), so a
+    fit leaves it as it was."""
+    import pandas as pd
+    from petab.v2.C import NOMINAL_VALUE
+    from petab.v2.models.sbml_model import SbmlModel
+
+    copy = SbmlModel.from_string(model.to_sbml_str())
+    sm = copy.sbml_model
+    for pid, value in parameter_df[NOMINAL_VALUE].items():
+        if (p := sm.getParameter(str(pid))) is not None and pd.notna(value):
+            p.setValue(float(value))
+    return copy.to_antimony() if fmt == "antimony" else copy.to_sbml_str()
+
+
+def version_text(provenance, version: int) -> str:
+    """Stored version ``version``'s model as :func:`model_text` renders it, at its own table's
+    values."""
+    from petab.v2.models.sbml_model import SbmlModel
+
+    model = SbmlModel.from_antimony(provenance.get_model_antimony(version))
+    return model_text(model, provenance.get_parameter_df(version))
 
 
 def model_structure(

@@ -109,9 +109,9 @@ def test_a_duplicate_reaction_id_changing_the_stoichiometry_says_to_remove_it_fi
 
 
 def test_remove_reaction_without_an_id_says_it_needs_one():
-    """It answered "no reaction ''" (5 runs, #284)."""
+    """It answered "no reaction ''" (5 runs, #284). An id in `antimony` is taken (#341)."""
     with pytest.raises(OperationError, match="remove_reaction needs `id`"):
-        me.apply_model_edits(SRC, [{"op": "remove_reaction", "antimony": "fwd"}])
+        me.apply_model_edits(SRC, [{"op": "remove_reaction"}])
 
 
 def test_set_initial_writes_the_initial_value_of_a_reaction_species():
@@ -903,3 +903,33 @@ def test_renames_follow_a_batch_to_the_names_it_ends_with():
         {"op": "rename", "old": " k2 ", "new": "k1"},
     ]
     assert me.renames(ops) == [("k2", "k1")]
+
+
+@pytest.mark.parametrize("sent", ["rev", "rev: B => A; k2*B;"])
+def test_remove_reaction_reads_its_id_from_antimony(sent):
+    """Runs 63612603_15, _52, _54 and _95 sent the id in `antimony`, alone or as the reaction's
+    statement, and were refused for it, a call each (PEtab-MCP#341)."""
+    out, summary = me.apply_model_edits(SRC, [{"op": "remove_reaction", "antimony": sent}])
+    assert "rev:" not in out and "fwd:" in out
+    assert summary == ["removed reaction rev (its id read from `antimony`)"]
+
+
+def test_remove_reaction_refuses_an_antimony_naming_another_reaction():
+    with pytest.raises(OperationError, match="`antimony` names 'rev', but `id` is 'fwd'"):
+        me.apply_model_edits(SRC, [{"op": "remove_reaction", "id": "fwd", "antimony": "rev"}])
+
+
+def test_every_add_reaction_onto_an_existing_id_is_refused_at_once():
+    """The batch stopped at its first failure, so each clash cost a call of its own
+    (PEtab-MCP#341). One the batch removes first is no clash; one it adds twice is."""
+    batch = [
+        {"op": "add_reaction", "antimony": "fwd: A => B; k3*A;"},
+        {"op": "remove_reaction", "id": "rev"},
+        {"op": "add_reaction", "antimony": "rev: B => A; k4*B;"},
+        {"op": "add_reaction", "antimony": "deg: B => ; kd*B;"},
+        {"op": "add_reaction", "antimony": "deg: A => ; kd*A;"},
+    ]
+    said = r"reactions 'fwd' \(model_edits\[0\]\), 'deg' \(model_edits\[4\]\) already exist"
+    with pytest.raises(OperationError, match=said) as exc:
+        me.apply_model_edits(SRC, batch)
+    assert exc.value.cause == "duplicate_reaction_id"

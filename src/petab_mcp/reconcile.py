@@ -2517,7 +2517,7 @@ def _row_defaults(pid: str, value, direct: set[str], ic_params: set[str], exp_pa
     return ((LOG10 if v0 > 0.0 else LIN), *_default_bounds(value), True)
 
 
-def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[str]]:
+def sync_parameter_table(problem, shipped=None, carried=None, shown=None) -> dict[str, list[str]]:
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff, and ``seeded``: the
     parameters nothing gives a value (no assignment in the model, no row, no shipped row), each
@@ -2547,7 +2547,10 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
     condition (``<sid> = <param>``) is held so (:func:`_row_defaults`). A row follows the value the
     model declares on every sync, so re-declaring an IC moves it, and a row the convention fixed
     that is no longer a direct IC is estimated again. A caller that needs some other IC fixed ships
-    it as a fixed parameter row, which reconcile never re-touches."""
+    it as a fixed parameter row, which reconcile never re-touches. ``shown`` maps each start the
+    model before the edit estimated directly to the value its text showed; declared at that value
+    again, it is not re-declared."""
+    shown = shown or {}
     sm = problem.model.sbml_model
     valid = set(problem.model.get_valid_parameters_for_parameter_table())
     # A parameter that is a CONDITION TARGET is set per condition (a PEtab condition change),
@@ -2656,6 +2659,11 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
             v0 = float(problem.model.get_parameter_value(pid))
         except (TypeError, ValueError):
             continue
+        # A start the changed model already estimated, declared at the value its text showed
+        # (:func:`model.model_text`, to libantimony's 15 digits), is no re-declaration: an IC
+        # fitted onto 0 or 1 is not held there by the next edit (PEtab-MCP#341).
+        if estimated and pid in shown and math.isclose(v0, shown[pid], rel_tol=1e-14):
+            continue
         scale, lb, ub, estimate = _row_defaults(pid, v0, direct, ic_params, exp_params)
         if estimate and estimated:
             continue  # still a guess: its fitted nominal and bounds stand
@@ -2753,7 +2761,9 @@ def declare_inputs(problem) -> list[str]:
     return declared
 
 
-def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) -> dict[str, Any]:
+def reconcile(
+    problem, shipped=None, carried=None, parametric_ics: bool = True, shown=None
+) -> dict[str, Any]:
     """Full reconciliation after a structural edit: promote local parameters, prune, declare the
     condition inputs the model leaves out (:func:`declare_inputs`, returned as ``inputs``),
     parametric ICs, table sync.
@@ -2761,7 +2771,8 @@ def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) 
     Initial conditions are estimated by default; an IC of exactly 1 is held FIXED and an IC of
     exactly 0 gets no parameter at all (see :func:`ensure_parametric_initial_conditions`). ``shipped`` is the problem's original parameter table, so a
     row the model reintroduces comes back as the problem defined it — see
-    :func:`sync_parameter_table`, which also takes ``carried``, the rows a ``rename`` carries.
+    :func:`sync_parameter_table`, which also takes ``carried``, the rows a ``rename`` carries, and
+    ``shown``, the starts the model before the edit estimated at the values its text showed.
 
     The content-free seed passes ``parametric_ics=False``: its placeholder species get no
     ``<sid>_init`` parameter or row, and keep the literal :data:`SEED_INITIAL_VALUE` they are
@@ -2787,5 +2798,5 @@ def reconcile(problem, shipped=None, carried=None, parametric_ics: bool = True) 
             skip_species=condition_target_symbols(problem),
             protect_ids=set(shipped.index) if shipped is not None else None,
         )
-    synced = sync_parameter_table(problem, shipped=shipped, carried=carried)
+    synced = sync_parameter_table(problem, shipped=shipped, carried=carried, shown=shown)
     return {"pruned": pruned, "parameters": synced, "inputs": inputs}
