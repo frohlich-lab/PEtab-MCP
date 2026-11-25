@@ -26,7 +26,7 @@ import json
 import re
 from typing import Any, Callable
 
-from petab.v2.C import LOWER_BOUND, UPPER_BOUND
+from petab.v2.C import LOWER_BOUND, NOMINAL_VALUE, UPPER_BOUND
 from petab.v2.models.sbml_model import SbmlModel
 
 from . import messages as M
@@ -366,6 +366,15 @@ def _parent(session) -> tuple[int, SbmlModel, Any]:
     return fork, _stored_model(prov.get_model_antimony(fork)), prov.get_parameter_df(fork)
 
 
+def _shown_starts(parent) -> dict[str, float]:
+    """The starts ``parent`` (:func:`_parent`) estimates directly (``<sid> = <param>``), each at
+    its row's value, which the model text shows (:func:`model.model_text`)."""
+    _, model, df = parent
+    estimated = set(estimated_ids(df))
+    starts = R._direct_ic_parameter_ids(model.sbml_model) & estimated
+    return {pid: float(df.loc[pid, NOMINAL_VALUE]) for pid in starts}
+
+
 def _definitions(sm) -> dict[str, str]:
     """What each species, rule target and reaction of the SBML model ``sm`` is, by id."""
     defined = {r.getId(): "a reaction" for r in sm.getListOfReactions()}
@@ -597,11 +606,19 @@ def _commit_change(
         model_sbml_before = None if model_build is not None else problem.model.to_sbml_str()
 
         apply_result: Any = None
+        # The version this edit changes, read before the swap below replaces the working model.
+        base = None
         if model_build is not None:
+            base = _parent(session)
             candidate, apply_result = model_build()
             problem.model = candidate
             names = {sp.getId(): sp.getName() for sp in candidate.sbml_model.getListOfSpecies()}
-            recon = R.reconcile(problem, shipped=session.shipped_parameter_df, carried=carried)
+            recon = R.reconcile(
+                problem,
+                shipped=session.shipped_parameter_df,
+                carried=carried,
+                shown=_shown_starts(base),
+            )
             # An EMPTY model is refused rather than committed — where "empty" is the same
             # predicate `model_authored` reports: no species at all, or no DYNAMICS (neither
             # a reaction nor a rate/assignment rule). Both are unscoreable, and the first is
@@ -636,8 +653,6 @@ def _commit_change(
                 )
         else:
             recon = None
-        # The version this edit changes, read before the swap below replaces the working model.
-        base = _parent(session) if recon is not None else None
 
         def lint() -> dict:
             # A parameter that ships FIXED and is a mechanistic/structural constant (a
