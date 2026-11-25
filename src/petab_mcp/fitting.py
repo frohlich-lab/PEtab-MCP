@@ -44,9 +44,10 @@ from . import literals as _literals
 from . import reconcile as _reconcile
 from .constants import (
     AT_BEST_NLL_TOL,
-    NOISE_SIGMA_MIN_POINTS,
-    NOISE_SIGMA_COLLAPSE_FRACTION,
+    NOISE_SIGMA_CAP_OF_REPLICATE,
+    NOISE_SIGMA_COLLAPSE_OF_REPLICATE,
     NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
+    NOISE_SIGMA_MIN_POINTS,
     OVERFIT_GOF_PVALUE,
     PARAMETER_AT_BOUND_RELATIVE_TOL,
 )
@@ -2364,43 +2365,59 @@ def _inner_sigmas(problem: Any) -> set[str]:
     return {pid for pid, kind in inner.items() if kind == _reconcile.INNER_TYPE_SIGMA}
 
 
-def _entry_inflated(entry: "dict[str, Any]") -> bool:
-    """Whether ONE noise_sigma_report entry is inflated: fitted above its data-driven cap (the
-    noise absorbing model misfit). Shared by the per-entry ``status`` and :func:`noise_sigma_inflated`
-    so the agent-facing status can't drift from the adequacy gate built on it.
+def _sigma_limits(entry: "dict[str, Any]") -> "tuple[float | None, float | None, float | None]":
+    """``(sigma, cap, floor)`` ONE noise_sigma_report entry is judged on: its effective sd, the cap
+    above which it is inflated and the floor below which it is collapsed, each ``None`` where there
+    is none, and all three for an entry the report marked ``unknown`` (so no reader can flag what
+    the entry's ``status`` calls unassessed). The rule of PEtab-MCP#320, stated once for
+    :func:`_entry_inflated`, :func:`_entry_collapsed`, the reported ``upper_bound_cap`` and
+    :func:`_fitted_limit`.
 
-    The data-std cap is the ONLY arm, and NO ratio against a noise floor is one: #140 added such an
-    arm (sigma above 1.5x the pure-error replicate floor); it is gone. Dividing two point
-    estimates discards the denominator's uncertainty, so no single threshold survives the problems
-    it was measured on — one needs <=1.004 for any power, another >7.83 not to condemn its own
-    reference. The sharp test keeps the floor's df instead (per-design-point lack-of-fit against
-    that same pooled floor, in the residual-structure verdict).
+    Where the sigma's data have replicates (``data_noise_method == "replicate"``, which needs
+    ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled df), the floor is ``NOISE_SIGMA_COLLAPSE_OF_REPLICATE``
+    x their pure error and the data-std cap is raised to ``NOISE_SIGMA_CAP_OF_REPLICATE`` x it.
+    Without replicates there is no floor: overfitting is out-of-sample, so BIC's ``k*ln(n)`` is the
+    guard (:func:`reconcile.sigma_difference_noise_estimate`).
+
+    The pure error only ever RAISES the cap; no ratio against it flags inflation. #140 had such an
+    arm (sigma above 1.5x the pure error): a ratio of two point estimates discards the denominator's
+    uncertainty, so no threshold held across problems — one needs <=1.004 for any power, another
+    >7.83 not to condemn its own reference. Deliberately NOT judged against the Rice difference
+    estimate without replicates either (#320's first proposal): over the 2026-11-09 sweep it flagged
+    oliveira's cumulative ``sd_cumulative_deaths`` and two bachmann sigmas, condemned oliveira's and
+    schwen's reference sigmas, and changed no run's verdict.
     """
-    # Judge the EFFECTIVE sd (noiseFormula evaluated at the fitted value) against the cap, which is
-    # a fraction of the same-scale data std; `fitted` alone is dimensionally wrong for
-    # proportional/CV and log-space sigmas. Falls back to `fitted` for entries built before
-    # effective_sigma existed (older persisted reports).
-    # Only fall back to `fitted` for an OLD persisted entry that predates effective_sigma. A
-    # FRESH entry whose key is present but None means the formula could not be evaluated, and
-    # judging the raw parameter against a scaled cap is precisely the dimensionally-invalid
-    # comparison this gate exists to avoid — such an entry is "unknown", not "inflated".
-    if "effective_sigma" in entry:
-        eff = entry.get("effective_sigma")
-    else:
-        eff = entry.get("fitted")
-    cap = entry.get("upper_bound_cap")
-    try:
-        return eff is not None and cap is not None and float(eff) > float(cap)
-    except (TypeError, ValueError):
-        return False
+    if entry.get("status") == "unknown":
+        return None, None, None
+    # The EFFECTIVE sd (noiseFormula at the fitted value) shares the cap's coordinate; `fitted`
+    # stands in only for an entry persisted before effective_sigma existed. A present None is a
+    # formula that would not evaluate: no verdict, not one on the raw parameter.
+    sigma = _flt(entry["effective_sigma"] if "effective_sigma" in entry else entry.get("fitted"))
+    cap = _flt(entry.get("upper_bound_cap"))
+    pure = _flt(entry.get("data_noise_estimate"))
+    if entry.get("data_noise_method") != "replicate" or not pure:
+        return sigma, cap, None
+    return (
+        sigma,
+        max(cap or 0.0, NOISE_SIGMA_CAP_OF_REPLICATE * pure),
+        NOISE_SIGMA_COLLAPSE_OF_REPLICATE * pure,
+    )
+
+
+def _entry_inflated(entry: "dict[str, Any]") -> bool:
+    """Whether ONE noise_sigma_report entry is inflated, the noise absorbing model misfit: its
+    effective sd above its cap (:func:`_sigma_limits`). Shared by the per-entry ``status`` and
+    :func:`noise_sigma_inflated`, so the agent-facing status can't drift from the adequacy gate."""
+    sigma, cap, _ = _sigma_limits(entry)
+    return sigma is not None and cap is not None and sigma > cap
 
 
 def _entry_collapsed(entry: "dict[str, Any]") -> bool:
-    """Whether ONE noise_sigma_report entry is collapsed: fraction of its observable's data std
-    below ``NOISE_SIGMA_COLLAPSE_FRACTION`` (overfitting the noise). Shared by the per-entry
+    """Whether ONE noise_sigma_report entry is collapsed, overfitting the noise: its effective sd
+    below its floor (:func:`_sigma_limits`), which only replicates supply. Shared by the per-entry
     ``status`` and :func:`noise_sigma_collapsed`."""
-    frac = entry.get("fraction_of_data_std")
-    return isinstance(frac, (int, float)) and frac < NOISE_SIGMA_COLLAPSE_FRACTION
+    sigma, _, floor = _sigma_limits(entry)
+    return sigma is not None and floor is not None and sigma < floor
 
 
 def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[str, dict[str, Any]]:
@@ -2408,9 +2425,9 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
     surfaced proactively on EVERY commit, not just once it's pinned at its bound (see
     :func:`parameters_at_bound`), so the agent sees where the reference comes from before it
     ever gets there. Keyed by parameter id; each entry is ``{fitted, upper_bound_cap, data_std,
-    fraction_of_data_std}`` (the last two ``None`` if the observable's std can't be computed).
-    This is purely informational/for the commit-time guard in ``operations`` — it never rewrites
-    the parameter table's actual bounds. A flagged entry also states its limit in the parameter's
+    fraction_of_data_std}`` (the last two ``None`` if the observable's std can't be computed), with
+    ``upper_bound_cap`` the cap the verdict applies (:func:`_sigma_limits`). It never rewrites the
+    parameter table's actual bounds. A flagged entry also states its limit in the parameter's
     own units (:func:`_fitted_limit`).
 
     ``{}`` is normal — most parameters aren't noise sigmas at all.
@@ -2451,8 +2468,8 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
         # A MODEL-FREE noise yardstick, independent of both the model and any ground truth. Prefer
         # the UNBIASED replicate (pure-error) estimate — the pooled scatter within repeated design
         # points — wherever the data supplies enough of them; fall back to the biased-upward
-        # successive-difference estimate otherwise. Both are REPORTED, neither GATES (see
-        # _entry_inflated); `method` records which yardstick a quoted ratio is against.
+        # successive-difference estimate otherwise. Only the replicate one enters the verdict
+        # (_sigma_limits); `method` records which yardstick a quoted ratio is against.
         data_noise = R.sigma_replicate_noise_estimate(problem, pid, fitted)
         data_noise_method = "replicate"
         if data_noise is None:
@@ -2488,12 +2505,10 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             "fitted": value,
             "effective_sigma": effective,
             "n_points": n_points,
-            # Both verdict inputs are withheld when the group is too small: _entry_inflated keys
-            # on upper_bound_cap and _entry_collapsed on fraction_of_data_std, so nulling only one
-            # would leave the other still flagging on a degenerate comparison. data_std and the
-            # Rice estimate below are still REPORTED — the numbers are informative, the verdict
-            # is not. The real bound cap (reconcile.sigma_upper_bound_cap, used when bounds are
-            # actually set) is untouched by this; only the gate's view of it is.
+            # The cap and the degenerate fraction are withheld when the group is too small (a
+            # replicate floor needs more points). data_std and the noise estimate below are still
+            # REPORTED — the numbers are informative, the verdict is not. The bound-edit warning's
+            # cap (reconcile.sigma_upper_bound_cap) is untouched by this; only the gate's view is.
             "upper_bound_cap": None
             if too_few
             else R.sigma_upper_bound_cap(problem, pid, fitted_values=fitted, data_std=data_std),
@@ -2507,6 +2522,9 @@ def noise_sigma_report(problem: Any, fitted: dict[str, float] | None) -> dict[st
             if (data_noise and effective is not None)
             else None,
         }
+        # The cap the verdict applies, raised by the replicate floor, so effective_sigma above it
+        # IS the inflated verdict for a reader of the report.
+        entry["upper_bound_cap"] = _sigma_limits(entry)[1]
         # Per-entry plausibility from the SAME predicates the top-level noise_sigma_inflated/
         # collapsed use (single source of truth, so the agent-facing status can't drift from the
         # adequacy gate). "unknown" when the observable's std can't be computed (data_std
@@ -2548,10 +2566,11 @@ def _fitted_limit(
     share (PEtab-MCP#329). ``{}`` unless that sd is proportional to ``pid``, checked at twice its
     value."""
     eff = entry.get("effective_sigma")
+    _, cap, floor = _sigma_limits(entry)
     if entry["status"] == "inflated":
-        key, limit = "fitted_cap", entry.get("upper_bound_cap")
+        key, limit = "fitted_cap", cap
     elif entry["status"] == "collapsed":
-        key, limit = "fitted_floor", NOISE_SIGMA_COLLAPSE_FRACTION * (entry.get("data_std") or 0.0)
+        key, limit = "fitted_floor", floor
     else:
         return {}
     try:
@@ -2575,40 +2594,27 @@ def noise_sigma_inflated(report: "dict[str, Any] | None") -> bool:
 
 
 def noise_sigma_collapsed(report: "dict[str, Any] | None") -> bool:
-    """True if any ESTIMATED noise sigma is fitted implausibly SMALL — below
-    ``constants.NOISE_SIGMA_COLLAPSE_FRACTION`` of its observable's own data std, i.e. the model is
-    explaining nearly all the data's variability (overfitting the noise for a suspiciously good BIC).
-    The other tail of :func:`noise_sigma_inflated`, and likewise the single source of truth shared by
-    the session's adequacy gate and a client's success gate. Best-effort: an empty/unreadable report
-    or a non-numeric ``fraction_of_data_std`` is treated as NOT collapsed."""
+    """True if any ESTIMATED noise sigma is fitted implausibly SMALL — below its floor, a fraction
+    of its data's replicate scatter (:func:`_sigma_limits`), i.e. the model follows the noise for a
+    suspiciously good BIC. The other tail of :func:`noise_sigma_inflated`, and likewise the single
+    source of truth shared by the session's adequacy gate and a client's success gate. Best-effort:
+    an empty/unreadable report or a non-numeric entry is treated as NOT collapsed."""
     if not isinstance(report, dict):
         return False
     return any(_entry_collapsed(e) for e in report.values() if isinstance(e, dict))
 
 
-def _sigma_clause(pid: str, entry: "dict[str, Any]") -> "tuple[str, bool]":
-    """One flagged sigma against its limit, in the parameter's own units where
-    :func:`_fitted_limit` gave them, and whether replicate scatter alone is above its cap."""
+def _sigma_clause(pid: str, entry: "dict[str, Any]") -> str:
+    """One flagged sigma against the limit it crossed, in the parameter's own units where
+    :func:`_fitted_limit` gave them, else as the noise sd."""
+    sigma, cap, floor = _sigma_limits(entry)
     if _entry_collapsed(entry):
-        at = entry.get("fitted_floor")
-        if at is not None:
-            return f"`{pid}` {entry['fitted']:.3g} against a floor of {at:.3g}", False
-        return f"`{pid}` at {entry['fraction_of_data_std']:.3g} x its data std", False
-    cap = float(entry["upper_bound_cap"])
-    at = entry.get("fitted_cap")
-    # One coordinate for all three numbers: the parameter's own where known, else the noise sd's.
-    if at is not None:
-        scale, value, where = at / cap, entry["fitted"], ""
+        kind, limit, at = "floor", floor, entry.get("fitted_floor")
     else:
-        scale, value, where = 1.0, entry.get("effective_sigma", entry.get("fitted")), " (noise sd)"
-    text = f"`{pid}` {float(value):.3g} against a cap of {cap * scale:.3g}{where}"
-    floor = entry.get("data_noise_estimate")
-    if entry.get("data_noise_method") != "replicate" or floor is None:
-        return text, False
-    text += f", replicate scatter alone {floor * scale:.3g}"
-    if floor < cap:
-        return text, False
-    return f"{text}, above the cap, so no model brings this sigma under it", True
+        kind, limit, at = "cap", cap, entry.get("fitted_cap")
+    if at is not None:
+        return f"`{pid}` {float(entry['fitted']):.3g} against a {kind} of {at:.3g}"
+    return f"`{pid}` {sigma:.3g} against a {kind} of {limit:.3g} (noise sd)"
 
 
 def _inner_sigmas(problem: Any) -> set[str]:
@@ -2627,35 +2633,36 @@ def noise_sigma_advice(
 ) -> str | None:
     """Agent-facing advice for an implausible noise model, built from THIS fit, or ``None`` when its
     estimated sigmas are plausible. Names every flagged sigma at once (:func:`_sigma_clause`), the
-    cap rule, a cap that replicate scatter alone breaks, whether the fit's ``residual`` verdict
-    (:func:`data_access.residual_structure_rollup`) flags anything, and which bounds not to widen:
-    none of a sigma ``problem``'s fit solves analytically, whose bounds are refused. Fixed strings
-    said the verdict "still flags the structure" beside a verdict that flagged nothing
-    (PEtab-MCP#333)."""
-    entries = [(pid, e) for pid, e in (report or {}).items() if isinstance(e, dict)]
-    inflated = [_sigma_clause(pid, e) + (pid,) for pid, e in entries if _entry_inflated(e)]
-    collapsed = [_sigma_clause(pid, e)[0] for pid, e in entries if _entry_collapsed(e)]
+    rule, whether the fit's ``residual`` verdict (:func:`data_access.residual_structure_rollup`)
+    flags anything, and which bounds not to widen: none of a sigma ``problem``'s fit solves
+    analytically, whose bounds are refused. Fixed strings said the verdict "still flags the
+    structure" beside a verdict that flagged nothing (PEtab-MCP#333)."""
+    report = {pid: e for pid, e in (report or {}).items() if isinstance(e, dict)}
+    inflated = [pid for pid, e in report.items() if _entry_inflated(e)]
+    collapsed = [pid for pid, e in report.items() if _entry_collapsed(e)]
     if not inflated and not collapsed:
         return None
     parts = []
     if inflated:
         parts.append(
             "ESTIMATED noise sigma above its cap, absorbing misfit, so the chi2 goodness-of-fit is "
-            f"not adequacy here: {'; '.join(c for c, _, _ in inflated)}. A cap is "
-            f"{NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:g} x the data std of the sigma's observables."
+            f"not adequacy here: {'; '.join(_sigma_clause(pid, report[pid]) for pid in inflated)}. "
+            f"A cap is {NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD:g} x the data std of the sigma's "
+            f"observables, or {NOISE_SIGMA_CAP_OF_REPLICATE:g} x their replicate scatter where that "
+            "is larger."
         )
-        meetable = [pid for _, unmeetable, pid in inflated if not unmeetable]
-        outer = [f"`{pid}`" for pid in meetable if pid not in _inner_sigmas(problem)]
-        if meetable:
-            parts.append(
-                "Fix the mechanism so the residuals shrink at a plausible sigma"
-                + (f"; widening the bounds of {', '.join(outer)} does not help." if outer else ".")
-            )
+        inner = _inner_sigmas(problem)
+        outer = [f"`{pid}`" for pid in inflated if pid not in inner]
+        parts.append(
+            "Fix the mechanism so the residuals shrink at a plausible sigma"
+            + (f"; widening the bounds of {', '.join(outer)} does not help." if outer else ".")
+        )
     if collapsed:
         parts.append(
-            f"ESTIMATED noise sigma below {NOISE_SIGMA_COLLAPSE_FRACTION:g} x its data std, "
-            f"overfitting the noise for a good-looking score: {'; '.join(collapsed)}. Prefer a "
-            "simpler mechanism at a plausible sigma over one that drives the residuals to ~0."
+            f"ESTIMATED noise sigma below {NOISE_SIGMA_COLLAPSE_OF_REPLICATE:g} x its replicate "
+            "scatter, overfitting the noise for a good-looking score: "
+            f"{'; '.join(_sigma_clause(pid, report[pid]) for pid in collapsed)}. Prefer a simpler "
+            "mechanism at a plausible sigma over one that drives the residuals to ~0."
         )
     flagged = (residual or {}).get("flagged_observables")
     if isinstance(flagged, list):
@@ -2664,8 +2671,7 @@ def noise_sigma_advice(
         parts.append(
             f"This fit's residual_structure verdict flags {n or 'no'} observable{'' if n == 1 else 's'}."
         )
-    if collapsed or any(not unmeetable for _, unmeetable, _ in inflated):
-        parts.append("A fit resting on an implausible sigma is not accepted as finished.")
+    parts.append("A fit resting on an implausible sigma is not accepted as finished.")
     return " ".join(parts)
 
 

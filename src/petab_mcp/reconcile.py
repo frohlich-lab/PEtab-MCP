@@ -1457,10 +1457,10 @@ def sigma_replicate_noise_estimate(problem, pid: str, fitted_values=None) -> flo
     so ``fitted_over_data_noise`` against it is at least dimensionally sound, unlike the biased
     difference-based ratio.
 
-    ADVISORY: the RATIO against this floor gates nothing (the #140 arm that did is gone — see
-    ``fitting._entry_inflated``). The same pooled scatter, with its df, is the replicate
-    lack-of-fit yardstick (:func:`residual_tests.replicate_lack_of_fit`). Still worth REPORTING:
-    the only model-free yardstick here that is not biased upward.
+    It sets the noise-sigma verdict's collapse floor and raises its cap
+    (``fitting._sigma_limits``); no ratio against it flags inflation on its own. The same pooled
+    scatter, with its df, is the replicate lack-of-fit yardstick
+    (:func:`residual_tests.replicate_lack_of_fit`).
 
     Returns ``None`` when the data cannot supply it: no time column to identify replicates, or fewer
     than ``NOISE_SIGMA_REPLICATE_MIN_DOF`` pooled replicate residuals (most published problems are

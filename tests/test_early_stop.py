@@ -15,7 +15,7 @@ import pytest
 from petab_mcp import fitting
 from petab_mcp.constants import (
     ADEQUATE_GOF_PVALUE,
-    NOISE_SIGMA_COLLAPSE_FRACTION,
+    NOISE_SIGMA_COLLAPSE_OF_REPLICATE,
     NON_IMPROVING_STREAK_CAP,
     OVERFIT_GOF_PVALUE,
     PLATEAU_WINDOW,
@@ -319,17 +319,19 @@ def test_inflated_sigma_streak_cap_reason_carries_sigma_advice(session):
 
 
 def _fitsim_collapsed_sigma(nll: float, chi2: float, *, n: int = 20, k: int = 2) -> dict:
-    """Like ``_fitsim`` but the fit reports an ESTIMATED sigma collapsed far below the data std
-    (fraction < NOISE_SIGMA_COLLAPSE_FRACTION) — overfitting the noise, the other implausible tail."""
+    """Like ``_fitsim`` but the fit reports an ESTIMATED sigma collapsed far below its replicate
+    scatter (under NOISE_SIGMA_COLLAPSE_OF_REPLICATE x it) — overfitting the noise, the other
+    implausible tail."""
     fs = _fitsim(nll, chi2, n=n, k=k)
     fs["noise_sigma_report"] = {
         "sigma": {
-            "fitted": NOISE_SIGMA_COLLAPSE_FRACTION / 10,
-            "upper_bound_cap": 0.5,
-            "data_std": 1.0,
             # derived from the constant so a threshold recalibration can't silently make
             # this fixture stop being "collapsed" (it did, at [0.01, 0.75] — see #118)
-            "fraction_of_data_std": NOISE_SIGMA_COLLAPSE_FRACTION / 10,
+            "fitted": NOISE_SIGMA_COLLAPSE_OF_REPLICATE / 10,
+            "upper_bound_cap": 0.5,
+            "data_std": 1.0,
+            "data_noise_estimate": 1.0,
+            "data_noise_method": "replicate",
         }
     }
     return fs

@@ -32,11 +32,11 @@ description: >-
   at most once. A parameter that re-pins after a widening is unidentifiable and its optimum
   unbounded, often an exponent faking a mechanism the model lacks: remove its term, or leave it
   pinned. Its limit is safe only for some roles (an exponent's is a step function).
-- `noise_sigma_report`: each estimated noise sigma against a data-driven reference (a fraction of
-  its observable's measurement std), with a `status` of `ok`, `inflated`, `collapsed`, or
-  `unknown` (no std to compare with). `data_noise_estimate` is a model-free noise level from
-  successive measurement differences, biased HIGH, so a sigma far above it (`fitted_over_data_noise`)
-  is strong evidence of inflation and one below it only weak evidence of collapse.
+- `noise_sigma_report`: each estimated noise sigma's `effective_sigma`, with a `status` of `ok`,
+  `inflated` (above `upper_bound_cap`: a fraction of its observables' measurement std, raised to a
+  multiple of their replicate scatter), `collapsed` (below a fraction of that scatter; only with
+  replicates), or `unknown`. `data_noise_estimate` is that scatter where `data_noise_method` is
+  `replicate`, else a level from successive differences, biased HIGH.
   `noise_sigma_inflated` / `noise_sigma_collapsed` with `noise_sigma_advice` flag either case: an
   inflated sigma absorbs misfit, a collapsed one overfits the noise, and either way the score is
   not genuine adequacy. The fix is the model's form, not the noise.
