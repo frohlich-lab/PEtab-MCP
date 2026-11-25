@@ -1628,8 +1628,8 @@ def _get_model_doc(statements: bool) -> str:
         f"version's record and parameter table. `format` is {formats}. For the "
         "structure alone `get_model_structure` is the cheaper read.\n\n"
         "The trailing `const ...;` line is DERIVED (a parameter is constant unless declared "
-        "`var`): read past it; no operation addresses it. In the Antimony an estimated "
-        "parameter's value is the one its version's fit found, not the one it was written with."
+        "`var`): read past it; no operation addresses it. A parameter with a row in the "
+        "parameter table shows that row's value: an estimated one's is what the fit found."
     )
 
 
@@ -1670,12 +1670,9 @@ def _register_model_tools(
         if statements_route and (format or "").lower() == "statements":
             return _statements_text(session, version)
         if version is None:
-            # The RECONCILED model — what is actually fitted, and what `test_make_changes` pins
-            # as identical to the stored version ("the working model is always a scored one").
-            # It need not equal the source that `model_edits` applies to: operations address
-            # reactions by ID, and ids survive the re-render, so nothing here is quoted. What
-            # differs is the reconcile's own additions, which is exactly what a reader wants to
-            # see here rather than in the source.
+            # The RECONCILED model — what is actually fitted, what `model_edits` apply to, and
+            # what `test_make_changes` pins as identical to the stored version ("the working
+            # model is always a scored one").
             text = model_mod.get_model(session, format)
         else:
             if (format or "antimony").lower() != "antimony":
@@ -1688,25 +1685,14 @@ def _register_model_tools(
                 )
                 ctx.log_error("get_model", {"version": version, "format": format}, exc)
                 raise exc from None
-            # The version's own SOURCE when it has one, because this read exists to be paired
-            # with `base_version=N`: the operations apply to that stored source, and showing the
-            # reconciled render instead would answer a different question than the one the next
-            # call acts on (the render carries reconcile-minted declarations the source lacks).
-            # Falls back to the render for versions stored before sources were kept.
-            # An absent version is a BAD ARGUMENT, not a missing source: `get_model_source`
-            # raises for it, so the `or` fallback below can only ever cover a version that exists
-            # without a stored source. Say which versions there are, and RECORD it — this tool is
-            # registered without `ctx.run`, so a rejection raised straight out of here would burn
-            # the caller's turns while showing zero errors in `get_errors`. This call is the
-            # natural read before a `base_version=N` fork, so a wrong N is a reachable, ordinary
-            # mistake.
+            # The version's built model: what a `base_version=N` fork's operations apply to.
+            # An absent version is a BAD ARGUMENT: say which versions there are, and RECORD it —
+            # this tool is registered without `ctx.run`, so a rejection raised straight out of
+            # here would burn the caller's turns while showing zero errors in `get_errors`. This
+            # call is the natural read before a `base_version=N` fork, so a wrong N is a
+            # reachable, ordinary mistake.
             try:
-                text = session.provenance.get_model_source(
-                    int(version)
-                ) or session.provenance.get_model_antimony(int(version))
-                text = model_mod.at_fitted_values(
-                    text, session.provenance.get_parameter_df(int(version))
-                )
+                text = model_mod.version_text(session.provenance, int(version))
             except UnknownEntityError:
                 have = [m.get("version") for m in session.provenance.list_versions()]
                 exc = ValidationError(
@@ -1966,22 +1952,17 @@ def _register_model_tools(
             op_summary: list[str] = []
             base_parameter_df = None
             if ops:
-                # STRUCTURED edits apply to the model SOURCE — the text the caller last authored
-                # or last edited — not to the reconciled re-render. That is the whole point: no
-                # anchor to quote, so nothing to keep in sync with a text the server rewrites,
-                # and `child.source == parent.source + ops` makes lineage checkable.
-                #
-                # Resolved INSIDE the lock so the source cannot move between read and edit. A
-                # base_version fork takes THAT version's source; falling back to the rendered
-                # model covers versions written before sources were stored, and the very first
-                # edit of a shipped (not agent-authored) model.
+                # STRUCTURED edits apply to the BUILT model at its table's values — the one text
+                # `get_model` shows (:func:`model.model_text`). Operations address
+                # reactions and symbols by id, and ids survive the re-render, so nothing is
+                # quoted. Editing the agent's own text instead kept what the reconcile pruned and
+                # what a merge left, so they came back on every edit (PEtab-MCP#328). Resolved
+                # INSIDE the lock so the base cannot move between read and edit.
                 try:
                     if base_version is not None:
-                        base_src = session.provenance.get_model_source(int(base_version))
-                        if base_src is None:
-                            base_src = session.provenance.get_model_antimony(int(base_version))
+                        base_src = model_mod.version_text(session.provenance, int(base_version))
                     else:
-                        base_src = session.model_source or model_mod.get_model(session, "antimony")
+                        base_src = model_mod.get_model(session, "antimony")
                     fixed = (
                         reconcile_mod.fixed_table_parameters(session.problem)
                         if any(
@@ -2014,12 +1995,12 @@ def _register_model_tools(
                 # The statements route: the rows are this call's (given whole, or `base_version`'s
                 # record edited), and the version's SEARCH SPACE and fitted point come with them,
                 # as they do for `model_edits`. With no model route at all it is a REFIT of that
-                # version: its stored source and rows, rebuilt as a fork with no edit.
+                # version: its built model and rows, rebuilt as a fork with no edit.
                 try:
                     base_parameter_df = session.provenance.get_parameter_df(int(base_version))
                     if not (antimony or rows):
                         v, prov = int(base_version), session.provenance
-                        antimony = prov.get_model_source(v) or prov.get_model_antimony(v)
+                        antimony = prov.get_model_antimony(v)
                         statement_record = prov.get_statements(v)
                 except (PetabMcpError, OSError, ValueError, TypeError) as exc:
                     return ctx.reject_operation(
@@ -2033,13 +2014,9 @@ def _register_model_tools(
             # `finally` so a later ordinary commit cannot inherit a stale fork parent.
             session.derived_from = int(base_version) if base_version is not None else None
             session.renamed = model_edits_mod.renames(ops or [])
-            # PROVENANCE: the text SUBMITTED to the pipeline — the wholesale `antimony`, or
-            # the result of applying this call's operations to the base source. Stored beside
-            # the committed model as model_source.ant (see session.submitted_source), and read
-            # back by `base_version` forks and by `get_model(version=N)`. On BOTH routes this is
-            # the agent's own text, less the declarations of what the reconcile prunes
-            # (`operations._commit_change`): operations apply to the source, never to the
-            # re-render, so `child.source == parent.source + ops`, less those prunes.
+            # PROVENANCE: the text SUBMITTED to the pipeline — the wholesale `antimony`, or this
+            # call's operations applied to the base model. Stored beside the committed model as
+            # model_source.ant, a record of what went in that nothing reads back.
             session.submitted_source = antimony
             session.submitted_statements = statement_record
             try:
@@ -2078,19 +2055,16 @@ def _register_model_tools(
                     return result
                 result["messages"] = statement_warnings + (result.get("messages") or [])
                 out = ctx.edit_then_fit(result, n_starts, justification, before)
-                # What the version stored as its source: without what the reconcile pruned.
-                stored = session.submitted_source
             finally:
                 session.derived_from = None
                 session.renamed = []
                 session.submitted_source = None
                 session.submitted_statements = None
             if out.get("applied") and not out.get("no_change") and antimony:
-                # The submitted text becomes this branch's source for the next structured edit.
-                # A rejected or fit-reverted call leaves the model where it was (`applied` false),
-                # and a de-dup no-op leaves the session on the version it duplicates (see
-                # `edit_then_fit`), so in both the source correctly stays put.
-                session.model_source = stored
+                # The rows become this branch's for the next statements edit. A rejected or
+                # fit-reverted call leaves the model where it was (`applied` false), and a de-dup
+                # no-op leaves the session on the version it duplicates (see `edit_then_fit`), so
+                # in both the rows correctly stay put.
                 session.model_statements = statement_record
                 if written is not None:
                     session.mechanisms = written
@@ -2763,6 +2737,7 @@ def _register_provenance_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
 
         def run() -> dict[str, Any]:
             out = session.provenance.get_version(version, parts)
+            out["model_antimony"] = model_mod.version_text(session.provenance, version)
             # ids × points values, which query_data's state_trajectories pages instead.
             (out.get("simulation") or {}).pop("state_trajectories", None)
             if omitted:

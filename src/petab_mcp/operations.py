@@ -638,15 +638,6 @@ def _commit_change(
             recon = None
         # The version this edit changes, read before the swap below replaces the working model.
         base = _parent(session) if recon is not None else None
-        # The text this change stores as its source, without what the reconcile pruned: a source
-        # that still declared it was pruned again on every later edit, and a fold of the prune's
-        # warning named nothing (PEtab-MCP#328).
-        source = getattr(session, "submitted_source", None)
-        if recon is not None and source:
-            from .model_edits import strip_pruned
-
-            pruned = recon["pruned"]
-            source = strip_pruned(source, [*pruned["species"], *pruned["parameters"]])
 
         def lint() -> dict:
             # A parameter that ships FIXED and is a mechanistic/structural constant (a
@@ -796,8 +787,6 @@ def _commit_change(
         # can throw. A throw after the swap would leave the live problem changed while the caller
         # reports `applied: false`, and `make_changes` returns on that without reverting.
         session.problem = problem
-        if recon is not None and source:
-            session.submitted_source = source
         if signed is not None and model_build is not None:
             record.clear()  # the caller keeps this record as the new model's rows
             record.update(signed)

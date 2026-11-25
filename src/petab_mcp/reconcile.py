@@ -2539,7 +2539,8 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
     e.g. a conserved-total set to 1). Fixing it BY VALUE names no species, so unlike a shipped fixed
     row it leaks no hidden structure to the agent building the model. Only a DIRECT initial
     condition (``<sid> = <param>``) is held so (:func:`_row_defaults`). A row follows the value the
-    model declares on every sync, so re-declaring an IC moves it, and a row the convention fixed
+    model declares on every sync, so re-declaring an IC moves it (the value its estimated row holds
+    is no re-declaration), and a row the convention fixed
     that is no longer a direct IC is estimated again. A caller that needs some other IC fixed ships
     it as a fixed parameter row, which reconcile never re-touches."""
     sm = problem.model.sbml_model
@@ -2649,6 +2650,11 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
         try:
             v0 = float(problem.model.get_parameter_value(pid))
         except (TypeError, ValueError):
+            continue
+        # The row's own value, as the edit base shows it (:func:`model.model_text`, libantimony's
+        # 15 digits), is no re-declaration: an IC fitted onto 0 or 1 is not held there by the next
+        # edit (PEtab-MCP#341).
+        if estimated and math.isclose(v0, float(df.loc[pid, NOMINAL_VALUE]), rel_tol=1e-14):
             continue
         scale, lb, ub, estimate = _row_defaults(pid, v0, direct, ic_params, exp_params)
         if estimate and estimated:

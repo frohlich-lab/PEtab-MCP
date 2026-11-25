@@ -1169,6 +1169,7 @@ def test_a_pruned_species_leaves_the_stored_source_and_is_reported_once(tmp_path
         m["message"].startswith("Removed species") and "`C`" in m["message"] for m in v0["messages"]
     ), v0["messages"]
     assert not re.search(r"\bC\b", _call(mcp, "get_model", {"version": 0})["result"])
+    # The next structured edit applies to that built model, which has nothing left to prune.
     edit = [{"op": "set_rate_law", "id": "r2", "antimony": "k2 * B * B"}]
     v1 = _call(mcp, "make_changes", {"model_edits": edit, "justification": "r2 is bimolecular"})
     assert v1["committed"] is True, v1
@@ -1177,14 +1178,15 @@ def test_a_pruned_species_leaves_the_stored_source_and_is_reported_once(tmp_path
 
 def test_a_rename_merge_leaves_one_declaration_in_what_get_model_serves(tmp_path):
     """oliveira 57: `get_model(version=18)` served `beta_asy` declared three times, one per
-    merge (PEtab-MCP#328)."""
+    merge (PEtab-MCP#328). It serves the built model now, which declares each name once."""
     mcp = _server(tmp_path)
     _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0"})
     tie = [{"op": "rename", "old": "k2", "new": "k1"}]
     v1 = _call(mcp, "make_changes", {"model_edits": tie, "justification": "one rate"})
     assert v1["committed"] is True, v1
-    source = _call(mcp, "get_model", {"version": v1["version"]})["result"]
-    assert re.findall(r"(?<![\w.])k1\s*=(?![>=])[^;]*", source) == ["k1 = 0.5"], source
+    shown = _call(mcp, "get_model", {"version": v1["version"]})["result"]
+    assert len(re.findall(r"(?<![\w.])k1\s*=(?![>=])", shown)) == 1, shown
+    assert shown == _call(mcp, "get_version", {"version": v1["version"]})["model_antimony"]
 
 
 def test_a_fork_folds_against_its_base_not_the_last_commit(tmp_path):
@@ -3195,7 +3197,8 @@ def test_a_stored_versions_model_text_shows_its_fitted_values(tmp_path):
     df.loc["k1", "nominalValue"] = 3.214567891
     df.to_csv(stored, sep="\t")
     text = _call(mcp, "get_model", {"version": 0})["result"]
-    assert "k1 = 3.21457;" in text and "k2 = 0.1;" in text
+    assert "k1 = 3.214567891;" in text and "k2 = 0.1;" in text
+    assert _call(mcp, "get_version", {"version": 0})["model_antimony"] == text
 
 
 def test_the_working_model_text_shows_its_fitted_values(session):
@@ -3203,18 +3206,21 @@ def test_the_working_model_text_shows_its_fitted_values(session):
     from petab_mcp import model as model_mod
 
     session.problem.parameter_df.loc["k1", "nominalValue"] = 3.214567891
-    assert re.search(r"\bk1 = 3\.21457;", model_mod.get_model(session))
+    assert re.search(r"\bk1 = 3\.214567891;", model_mod.get_model(session))
 
 
-def test_a_fitted_value_near_0_or_1_is_not_shown_as_either():
-    """A species' initial value written 0 or 1 is held FIXED there, so a fitted 0.9999996 shown as
-    `1` would fix it for an agent that copies the text back."""
+def test_an_initial_value_sent_back_at_its_fitted_value_stays_estimated(session):
+    """The model text shows the table's values, so an initial value fitted onto 1 reads `= 1`.
+    Sent back, the 0/1 convention read that as a re-declaration and held it fixed on the next,
+    unrelated edit (PEtab-MCP#341)."""
     from petab_mcp import model as model_mod
-    import pandas as pd
+    from petab_mcp.parameters import estimated_ids
 
-    df = pd.DataFrame(
-        {"nominalValue": [0.9999996, 7.0], "estimate": [True, False]}, index=["X_init", "k"]
-    )
-    df.index.name = "parameterId"
-    text = model_mod.at_fitted_values("model m\n  X = 5; k = 2;\n  r: X => ; k*X;\nend\n", df)
-    assert "X = 0.9999996; k = 2;" in text
+    extra = ("species C in compartment_;", "C = C_init;", "C_init = 5;", "r3: C => ; k1 * C;")
+    O.set_model(session, _antimony(*extra), justification="C decays")
+    assert "C_init" in estimated_ids(session.problem.parameter_df)
+    session.problem.parameter_df.loc["C_init", "nominalValue"] = 1.0  # where its fit put it
+    text = model_mod.get_model(session)
+    assert "C_init = 1;" in text
+    O.set_model(session, text, justification="the model as shown")
+    assert "C_init" in estimated_ids(session.problem.parameter_df)
