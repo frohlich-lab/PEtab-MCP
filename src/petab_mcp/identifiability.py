@@ -17,7 +17,8 @@ models, so the two are meant to be read together. All output is bounded (top-N p
 One verdict off that diagnosis rides on EVERY fit result instead of waiting to be asked for:
 :func:`fit_merge_hints` names the parameter ties whose cost the complexity penalty already pays for (see
 :func:`merge_hints`). It is the same computation the section reports, condensed — a tool called
-once a session cannot inform a decision made every turn.
+once a session cannot inform a decision made every turn. One edit reads the same geometry: a pin
+(:func:`pin_image`) moves the optimum along a flat direction and checks the fit stays put.
 
 NOTHING HERE MAY BUILD A MODEL. A diagnosis describes a fit that already happened, and the module
 that fit was compiled with already exists, so every entry point reads the frozen
@@ -40,6 +41,25 @@ from typing import Any
 from . import criteria
 from .constants import PARAMETER_AT_BOUND_RELATIVE_TOL
 
+#: An eigenvalue of the FIM below this fraction of its largest is a flat axis.
+FLAT_REL = 1e-3
+#: An eigenvector component above this names its parameter as a member of the direction.
+_MEMBER_WEIGHT = 0.15
+#: The nll a pin may move the fit by and still be exact: numerical noise, as for the nesting check.
+PIN_NLL_TOLERANCE = 1e-3
+
+
+def _inside_spectrum(H, at_bound):
+    """``(inside, eigenvalues, eigenvectors, largest)`` of ``H``'s block over the parameters inside
+    their bounds. A pinned one is held by its bound, not the data, so the flat axis through it is
+    no combination to remove: ``at_bound`` names it, and naming it as a direction sent agents hours
+    into remapping it, and the rank it dropped refused true models (issue #338)."""
+    import numpy as np
+
+    inside = [i for i, pinned in enumerate(at_bound) if not pinned]
+    evals, evecs = np.linalg.eigh(H[np.ix_(inside, inside)])
+    return inside, evals, evecs, float(evals.max()) if evals.size else 0.0
+
 
 def _identifiability_stats(
     params_meta: list[dict[str, Any]],
@@ -48,7 +68,7 @@ def _identifiability_stats(
     *,
     top_n: int = 8,
     corr_threshold: float = 0.9,
-    flat_rel: float = 1e-3,
+    flat_rel: float = FLAT_REL,
     se_unconstrained: float = 1.0,
     spread_unstable: float = 0.5,
     roles: dict[str, str] | None = None,
@@ -131,13 +151,10 @@ def _identifiability_stats(
         partials = partials[:top_n]
         # The rank, the conditioning and the flat directions (eigenvectors with near-zero
         # eigenvalue = non-identifiable combinations) are those of the parameters inside their
-        # bounds. A pinned one is held by its bound, not the data, so the flat axis through it is
-        # no combination to remove: `at_bound` names it, and naming it here sent agents hours into
-        # remapping it, and the rank it dropped refused true models (issue #338).
-        inside = [i for i, p in enumerate(params_meta) if not p.get("at_bound")]
-        H_inside = H[np.ix_(inside, inside)]
-        evals, evecs = np.linalg.eigh(H_inside)
-        emax = float(evals.max()) if evals.size else 0.0
+        # bounds (see _inside_spectrum).
+        inside, evals, evecs, emax = _inside_spectrum(
+            H, [bool(p.get("at_bound")) for p in params_meta]
+        )
         for idx in range(len(evals)):
             ev = float(evals[idx])
             rel = ev / emax if emax > 0 else 0.0
@@ -147,12 +164,12 @@ def _identifiability_stats(
                 participants = [
                     {"id": names[inside[k]], "weight": round(float(vec[k]), 3)}
                     for k in order[:4]
-                    if abs(vec[k]) > 0.15
+                    if abs(vec[k]) > _MEMBER_WEIGHT
                 ]
                 flat_directions.append(
                     {"eigenvalue": round(ev, 6), "rel": round(rel, 6), "participants": participants}
                 )
-        rank = int(np.linalg.matrix_rank(H_inside)) if inside else 0
+        rank = int(np.linalg.matrix_rank(H[np.ix_(inside, inside)])) if inside else 0
         cond = float(
             emax / max(float(evals[evals > 0].min()) if (evals > 0).any() else emax, 1e-300)
         )
@@ -926,6 +943,79 @@ def identifiability(session, *, top_n: int = 8, corr_threshold: float = 0.9) -> 
     elif working_table_moved(session, record):
         out["working_table_note"] = WORKING_TABLE_NOTE
     return out
+
+
+def pin_image(session, pid: str, value: float) -> dict[str, float] | str:
+    """Where pinning ``pid`` at ``value`` moves the other members of its flat direction, as each
+    one's new (linear) value, or why it cannot be pinned, as text for the refusal.
+
+    The fit's optimum moves along the FIM's flattest axis through ``pid`` (on the estimation scale,
+    over the parameters inside their bounds) until ``pid`` reaches ``value``, and on to a decade
+    beyond it. The fit must not change at either point. The second is what tells a symmetry from a
+    value frozen where the fit left it: at ``value`` equal to the fit the first point IS the
+    optimum, so only a direction the data truly leave free keeps the fit a decade on. Two objective
+    evaluations on the frozen problem; nothing is built or fitted.
+    """
+    import numpy as np
+
+    from .problem import scale, unscale
+
+    record = fit_record(session)
+    if record is None or is_stale(session, record):
+        return "a pin moves this model's fitted optimum, and it has no fit here: refit, then pin."
+    meta = _params_meta(record)
+    names = [p["id"] for p in meta]
+    if pid not in names:
+        return f"`{pid}` is not estimated in this fit, so there is nothing to pin."
+    i = names.index(pid)
+    if meta[i]["at_bound"]:
+        return f"`{pid}` sits at a bound, which holds it: no flat direction runs through it."
+    sc = meta[i]["scale"]
+    if sc in ("log", "log10") and not value > 0:
+        return f"`{pid}` is estimated on {sc}, so it can only be pinned at a positive value."
+    with session.lock:
+        H = _compute_fim(record)
+    if H is None:
+        return (
+            "this fit's FIM could not be computed (see the server log), so no direction is known."
+        )
+    at_bound = [p["at_bound"] for p in meta]
+    inside, evals, evecs, emax = _inside_spectrum(np.asarray(H, dtype=float), at_bound)
+    k = inside.index(i)
+    axes = [evecs[:, a] for a in range(len(evals)) if emax > 0 and evals[a] / emax < FLAT_REL]
+    vec = max(axes, key=lambda v: abs(v[k]), default=None)
+    if vec is None or abs(vec[k]) <= _MEMBER_WEIGHT:
+        return (
+            f"`{pid}` is in no flat direction of this fit: the data set it, so it stays estimated."
+        )
+    lb, ub = np.asarray(record.lb, dtype=float), np.asarray(record.ub, dtype=float)
+    x = np.asarray(record.x_free, dtype=float)
+
+    def image(v: float):
+        point = x.copy()
+        point[inside] += (float(scale(v, sc)) - x[i]) / vec[k] * vec
+        return point
+
+    target = image(value)
+    if not lb[i] <= target[i] <= ub[i]:
+        return f"`{pid}` can only be pinned inside its bounds."
+    probe = image(value * 10 if scale(value * 10, sc) <= ub[i] else value / 10)
+    moved = [j for j in inside if j != i and abs(target[j] - x[j]) > 1e-9]
+    if outside := [names[j] for j in moved if not lb[j] <= target[j] <= ub[j]]:
+        return (
+            f"pinning `{pid}` at {value:g} moves {outside} past their bounds: widen them first, "
+            "then pin."
+        )
+    try:
+        base, *at = (float(record.pypesto_problem.objective(p)) for p in (x, target, probe))
+    except Exception:  # noqa: BLE001 - an unsimulable point is not one the fit is invariant at
+        base, at = 0.0, [math.inf]
+    if not all(math.isfinite(f) and abs(f - base) <= PIN_NLL_TOLERANCE for f in at):
+        return (
+            f"moving `{pid}` along its flat direction changes the fit: it is flat only near the "
+            f"optimum, so the data do set `{pid}` there. Merge or remove the term instead."
+        )
+    return {names[j]: float(unscale(target[j], meta[j]["scale"])) for j in moved}
 
 
 #: How many ties ride beside a fit's score. Every one shown is a merge the criterion already pays

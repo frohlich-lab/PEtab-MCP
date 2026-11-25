@@ -42,7 +42,7 @@ def test_schema_names_parameter_id_as_required():
 
 def test_schema_names_every_allowed_key():
     props = _schema()["properties"]
-    assert set(props) == {"parameter_id", "lower_bound", "upper_bound", "scale"}
+    assert set(props) == {"parameter_id", "lower_bound", "upper_bound", "scale", "pin"}
 
 
 def test_schema_forbids_extra_keys():

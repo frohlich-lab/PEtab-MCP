@@ -140,7 +140,7 @@ _STATEMENTS_SKILL_INSTRUCTION = (
 # Keep the class docstring SHORT and model-facing: FastMCP copies it into the tool's JSON schema
 # as this argument's description, so maintainer rationale belongs here in a comment, not there.
 class ParameterChange(BaseModel):
-    """One parameter's estimation bounds and/or scale."""
+    """One parameter's estimation bounds and/or scale, or its pin."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -158,6 +158,14 @@ class ParameterChange(BaseModel):
         default=None,
         description="the scale the parameter is ESTIMATED on (log10 for a positive quantity "
         "that may span decades). Exactly these three values.",
+    )
+    pin: float | None = Field(
+        default=None,
+        description="FIX the parameter at this value and move the other members of its flat "
+        "direction so the fit is unchanged: k drops by one. Refused unless the fit is the same "
+        "there and a decade beyond, which only a combination the data cannot pin passes. Alone "
+        "in its entry, one per call, in a call with no model route; the next model edit "
+        "estimates it again.",
     )
 
 
