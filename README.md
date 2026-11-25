@@ -31,10 +31,6 @@ optimization uses [pyPESTO](https://github.com/ICB-DCM/pyPESTO) with the
 [Fides](https://github.com/fides-dev/fides) trust-region optimizer. All are **required** —
 fitting is not optional machinery.
 
-The agent harness that drives this server — the analyst panel, the judge, the zero-shot
-benchmark examples and the run explorer — lives in
-[frohlich-lab/petab_mcp](https://github.com/frohlich-lab/petab_mcp).
-
 ## Install
 
 ```bash
