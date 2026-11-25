@@ -554,9 +554,9 @@ def test_query_data_static_tables(tmp_path):
 
     async def go():
         out = _structured(
-            await mcp.call_tool("query_data", {"sql": "SELECT parameterId FROM parameters"})
+            await mcp.call_tool("query_data", {"sql": "SELECT parameter_id FROM parameters"})
         )
-        ids = {r["parameterId"] for r in out["rows"]}
+        ids = {r["parameter_id"] for r in out["rows"]}
         assert ids == {"k1", "k2", "sigma_B", "A_init", "B_init"}
         assert out["truncated"] is False
 

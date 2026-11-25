@@ -321,7 +321,8 @@ def not_a_parameter(problem, pid: str, known=None) -> str | None:
     such names off the problem and asked for them as parameters (#86): an observable's placeholder
     (``noiseParameter1_<obs>``), which the measurement table fills, and an assignment rule's target
     (a statements binding's ``d16_kf_pinned`` / ``a_act_k_bound``), whose reads are followed
-    through other rules to the ids in ``known`` (default: the live parameter table)."""
+    through other rules to the ids in ``known`` (default: the live parameter table). A condition
+    table's target got guesses at unrelated ids (#337)."""
     odf = getattr(problem, "observable_df", None)
     for oid in [] if odf is None else odf.index:
         for kind, column in (("noise", NOISE_PARAMETERS), ("observable", OBSERVABLE_PARAMETERS)):
@@ -332,6 +333,11 @@ def not_a_parameter(problem, pid: str, known=None) -> str | None:
                     "of its own. Where that column names a parameter rather than a number, that "
                     "parameter is the row to edit."
                 )
+    if pid in condition_target_symbols(problem):
+        return (
+            f"{pid!r} is a target of the condition table: each condition sets its value, so it "
+            "has no row to bound or estimate."
+        )
     model = getattr(problem, "model", None)
     sm = model.sbml_model if model is not None else None
     rule = sm.getAssignmentRuleByVariable(pid) if sm is not None else None

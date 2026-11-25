@@ -216,6 +216,29 @@ def test_a_parameters_entry_for_a_dropped_parameter_is_rejected(session):
     assert "k3" not in _records(session)
 
 
+def test_an_unknown_id_names_what_this_calls_model_edits_added_and_removed(session):
+    """The refusal read the candidate table alone, so it neither said that the call's own edits
+    had dropped the id (deepseek froehlich 53, 54) nor that the near id they had added was one
+    `parameters` reaches (fujita 63612603_61, `k_ri` for `kri`) (#337)."""
+    renamed = _BASE.replace("k2", "kri").format(extra="")
+    with pytest.raises(ParameterError) as exc:
+        O.set_model(
+            session,
+            renamed,
+            justification="rename the back rate",
+            parameters=[{"parameter_id": "k_ri", "lower_bound": 1e-4, "upper_bound": 1e1}],
+        )
+    assert "The ids nearest it: ['kri'" in str(exc.value)
+    assert "This call's model edits added ['kri']" in str(exc.value)
+    with pytest.raises(ParameterError, match=r"'k2'\. This call's model edits removed it"):
+        O.set_model(
+            session,
+            renamed,
+            justification="rename the back rate",
+            parameters=[{"parameter_id": "k2", "lower_bound": 1e-4, "upper_bound": 1e1}],
+        )
+
+
 def test_a_re_author_without_parameters_edits_only_the_model(session):
     res = O.set_model(session, _antimony(), justification="plain re-author")
     assert res["applied"] is True and res["version"] is None
@@ -3131,7 +3154,7 @@ def test_reads_during_a_fit_show_the_last_version_and_say_so(tmp_path, monkeypat
     try:
         assert fitting_.wait(60)
         summary = _call(mcp, "get_fit_summary", {})
-        table = _call(mcp, "query_data", {"sql": "SELECT parameterId FROM parameters"})
+        table = _call(mcp, "query_data", {"sql": "SELECT parameter_id FROM parameters"})
         structure = _call(mcp, "get_model_structure", {})
     finally:
         release.set()
@@ -3141,7 +3164,7 @@ def test_reads_during_a_fit_show_the_last_version_and_say_so(tmp_path, monkeypat
     assert summary["bic"] == settled["bic"]
     assert summary["fit_running"].startswith("a change is being fitted; this read shows v0")
     assert table["version"] == 0 and "fit_running" in table
-    assert "k3" not in {row["parameterId"] for row in table["rows"]}
+    assert "k3" not in {row["parameter_id"] for row in table["rows"]}
     assert structure["version"] is None and "k3" in structure["parameters"]
     assert "that change's model, not a version yet" in structure["fit_running"]
 

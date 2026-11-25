@@ -2526,9 +2526,11 @@ def _parameter_edit(
             if scale is not None:
                 summary["scale"] = scale
             changed.append(summary)
-        # One transactional write for the whole batch — a single parameter-table snapshot.
+        # One transactional write for the whole batch — a single parameter-table snapshot. The
+        # live table is the one before this call's model edits, for the unknown-id refusal.
         rows = (session.model_statements or {}).get("rows") or []
-        update_parameters(problem, updates, [row["prefix"] for row in rows])
+        before = {str(k) for k in session.problem.parameter_df.index}
+        update_parameters(problem, updates, [row["prefix"] for row in rows], before)
         for pid, scale in scale_checks:
             # Positive-box check reads the NEW scale + bounds (a bound alone: against the row's
             # scale), so it runs AFTER the update.

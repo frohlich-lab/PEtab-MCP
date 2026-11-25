@@ -9,6 +9,7 @@ synthetic ``session.simulation`` payload, so residual analysis — the thing the
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
 
@@ -45,9 +46,9 @@ def test_static_tables_queryable_without_simulation(session):
     assert "measurement" in out["columns"]
 
     params = data_access.run_query(
-        session, "SELECT parameterId FROM parameters ORDER BY parameterId"
+        session, "SELECT parameter_id FROM parameters ORDER BY parameter_id"
     )
-    ids = {r["parameterId"] for r in params["rows"]}
+    ids = {r["parameter_id"] for r in params["rows"]}
     assert ids == {"A_init", "B_init", "k1", "k2", "sigma_B"}
 
 
@@ -71,7 +72,7 @@ def test_empty_parameter_table_does_not_break_queries(session):
     # the empty parameters table is still there, queryable, with its canonical columns
     params = data_access.run_query(session, "SELECT * FROM parameters")
     assert params["row_count"] == 0
-    assert set(data_access.PARAMETER_COLUMNS) <= set(params["columns"])
+    assert {data_access._snake(c) for c in data_access.PARAMETER_COLUMNS} <= set(params["columns"])
 
 
 def test_absent_optional_table_does_not_break_queries(session):
@@ -82,7 +83,7 @@ def test_absent_optional_table_does_not_break_queries(session):
     assert out["rows"][0]["one"] == 1
     cond = data_access.run_query(session, "SELECT * FROM conditions")
     assert cond["row_count"] == 0
-    assert set(data_access.CONDITION_COLUMNS) <= set(cond["columns"])
+    assert {data_access._snake(c) for c in data_access.CONDITION_COLUMNS} <= set(cond["columns"])
 
 
 def test_empty_parameter_table_schema_keeps_columns(session):
@@ -90,26 +91,53 @@ def test_empty_parameter_table_schema_keeps_columns(session):
     session.problem.parameter_df = session.problem.parameter_df.iloc[0:0]
     tables = {t["table"]: t for t in data_access.table_schema(session)["tables"]}
     assert tables["parameters"]["n_rows"] == 0
-    assert set(data_access.PARAMETER_COLUMNS) <= set(tables["parameters"]["columns"])
+    columns = set(tables["parameters"]["columns"])
+    assert {data_access._snake(c) for c in data_access.PARAMETER_COLUMNS} <= columns
 
 
-def test_sql_error_points_at_list_data_tables_only(session):
-    # The SQL error names list_data_tables, query_data's companion, and no other tool.
+@pytest.mark.parametrize(
+    "sql, hinted",
+    [
+        ("SELECT nope FROM simulations", True),  # binder: unknown column
+        ("SELECT * FROM nonexistent_table", True),  # catalog: unknown table
+        ("SELECT CAST('a' AS DOUBLE)", False),  # conversion
+        ("SELECT regexp_matches('a', '(')", False),  # invalid regex
+        ("SELEC 1", False),  # parser
+    ],
+)
+def test_only_name_errors_point_at_list_data_tables(session, sql, hinted):
+    """Every SQL error ended "Call `list_data_tables`", cast and regex errors too, where the table
+    list cannot help (#337). The hint names query_data's companion and no other tool (#299)."""
     with pytest.raises(ValidationError) as excinfo:
-        data_access.run_query(session, "SELECT * FROM nonexistent_table")
+        data_access.run_query(session, sql)
     msg = str(excinfo.value)
-    assert "list_data_tables" in msg and "get_measurements" not in msg
+    assert ("list_data_tables" in msg) is hinted and "get_measurements" not in msg
 
 
 def test_named_index_promoted_to_column(session):
     # observables are indexed by their id; it must be a queryable column. The condition and
     # experiment tables keep their keys as plain columns, so they are queryable even when empty.
-    obs = data_access.run_query(session, "SELECT observableId FROM observables")
-    assert obs["row_count"] >= 1 and "observableId" in obs["columns"]
-    cond = data_access.run_query(session, "SELECT conditionId FROM conditions")
-    assert "conditionId" in cond["columns"]
-    exps = data_access.run_query(session, "SELECT experimentId FROM experiments")
-    assert "experimentId" in exps["columns"]
+    obs = data_access.run_query(session, "SELECT observable_id FROM observables")
+    assert obs["row_count"] >= 1 and "observable_id" in obs["columns"]
+    cond = data_access.run_query(session, "SELECT condition_id FROM conditions")
+    assert "condition_id" in cond["columns"]
+    exps = data_access.run_query(session, "SELECT experiment_id FROM experiments")
+    assert "experiment_id" in exps["columns"]
+
+
+def test_every_table_names_its_columns_in_snake_case(session):
+    """PEtab tables kept camelCase beside snake_case simulation tables: `experimentId` sent to
+    `simulations` and `experiment_id` to `measurements` were binder errors in 49 of 310
+    transcripts (#337). One convention, so a measurement joins its simulated point by name."""
+    session.simulation = {"records": [_rec("obs_B", "", 1.0, 0.3, 0.25, 0.05, 0.5, 0.1)]}
+    for table in data_access.table_schema(session)["tables"]:
+        assert all(re.fullmatch(r"[a-z0-9_]+", c) for c in table["columns"]), table
+    out = data_access.run_query(
+        session,
+        "SELECT count(*) AS n FROM measurements m JOIN simulations s "
+        "USING (observable_id, experiment_id, time)",
+    )
+    assert out["rows"][0]["n"] == 1
 
 
 def test_simulations_table_empty_but_typed(session):
@@ -161,9 +189,9 @@ def test_join_measurements_against_simulations(session):
     # observables table shows arbitrary cross-table SQL works.
     out = data_access.run_query(
         session,
-        "SELECT s.observable_id, o.observableFormula "
-        "FROM simulations s JOIN observables o ON s.observable_id = o.observableId "
-        "GROUP BY s.observable_id, o.observableFormula",
+        "SELECT s.observable_id, o.observable_formula "
+        "FROM simulations s JOIN observables o ON s.observable_id = o.observable_id "
+        "GROUP BY s.observable_id, o.observable_formula",
     )
     assert out["row_count"] >= 1
 
@@ -195,7 +223,7 @@ def test_query_runs_on_disposable_copy(session):
 
     data_access.run_query(session, "DELETE FROM measurements")
     data_access.run_query(session, "DROP TABLE parameters")
-    data_access.run_query(session, "UPDATE observables SET observableFormula = 'x'")
+    data_access.run_query(session, "UPDATE observables SET observable_formula = 'x'")
 
     # the source DataFrame is untouched ...
     assert len(session.problem.measurement_df) == len(df_before)
@@ -214,7 +242,7 @@ def test_multi_statement_and_temp_tables_allowed(session):
     # The full SQL surface is available; the last statement's result is returned.
     out = data_access.run_query(
         session,
-        "CREATE TEMP TABLE t AS SELECT observableId FROM measurements; SELECT count(*) AS n FROM t",
+        "CREATE TEMP TABLE t AS SELECT observable_id FROM measurements; SELECT count(*) AS n FROM t",
     )
     assert out["rows"][0]["n"] == 6
 
@@ -1099,7 +1127,7 @@ def test_query_pages_without_overlap_or_gap(session):
     while True:
         out = data_access.run_query(
             session,
-            "SELECT time, observableId FROM measurements ORDER BY observableId, time",
+            "SELECT time, observable_id FROM measurements ORDER BY observable_id, time",
             max_rows=2,
             offset=offset,
         )
