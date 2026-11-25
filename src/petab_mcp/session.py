@@ -85,17 +85,13 @@ _UNSCORED_STALL_ADVICE = (
     "unbounded rate) before drawing any conclusion about the structure."
 )
 
-# Appended to the structural nudge when the best model's chi2 GoF only looks adequate because an
-# ESTIMATED noise sigma inflated to absorb the misfit (see fitting.noise_sigma_inflated / constants.
-# NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD). The chi2 GoF test is then powerless — it rescales to
-# whatever sigma makes chi2/dof ~= 1 — so an underfit model reads as "adequate" and the session
-# would stop early on it. The fix is mechanistic, not noise-side.
+# Appended to the structural nudge when the best model's ESTIMATED noise sigma is inflated (see
+# fitting.noise_sigma_inflated). A checkpoint keeps only the flag, so the specifics are that
+# version's own noise_sigma_advice, which reads its fit (PEtab-MCP#333).
 _SIGMA_INFLATED_ADVICE = (
-    " NOTE: the best model's fit only looks statistically adequate because its ESTIMATED noise "
-    "sigma is inflated above its data-driven cap, absorbing the misfit — the chi2 goodness-of-fit "
-    "is not real adequacy here. Do NOT widen or lean on the noise; fix the mechanism so the "
-    "residuals shrink at a plausible sigma (the fit result's residual_structure verdict still "
-    "flags the structure)."
+    " NOTE: the best model's ESTIMATED noise sigma is inflated above its data-driven cap, absorbing "
+    "misfit, so its chi2 goodness-of-fit is no evidence of adequacy. That version's "
+    "noise_sigma_advice names the sigma, its cap and what to change."
 )
 
 # The other tail: the best model's ESTIMATED noise sigma collapsed implausibly small, so the fit
@@ -115,6 +111,28 @@ _NEEDLE_ADVICE = (
     "where it is that sharp (a switch-like term, e.g. a steep Hill exponent or a gate at a bound; "
     "`get_fit_diagnosis(sections='parameters')`)"
 )
+
+#: The MAXTIME warning's addendum where :func:`_integrates_to_steady_state_only` (PEtab-MCP#331).
+_CLOSED_FORM_ADVICE = (
+    " Every measurement here is at t=inf, so each start integrates every experiment to its steady "
+    "state: readouts written as that steady state in closed form, functions of the parameters "
+    "with no reactions, leave nothing to integrate."
+)
+
+
+def _integrates_to_steady_state_only(problem) -> bool:
+    """Whether every measurement is at t=inf and the model has reactions or rate rules to
+    integrate there."""
+    from petab.v2.C import TIME
+
+    sm, mdf = problem.model.sbml_model, problem.measurement_df
+    return (
+        mdf is not None
+        and len(mdf) > 0
+        and bool((mdf[TIME].astype(float) == math.inf).all())
+        and (sm.getNumReactions() > 0 or any(r.isRate() for r in sm.getListOfRules()))
+    )
+
 
 #: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
 #: ``get_progress`` has the rest. ``streak_cap`` and ``plateau_window`` are constants the
@@ -262,6 +280,17 @@ class PetabSession:
             from . import reconcile as R
 
             self._set_model_from_antimony(f"model {R.ZERO_SHOT_MODEL_ID}\nend")
+        if self.problem.model is not None:
+            from . import reconcile as R
+
+            sm = self.problem.model.sbml_model
+            # A model whose every state is a PARAMETER driven by a rate rule declares no species
+            # and no reaction, yet moves. `has_model` (species or reactions) reads it as the empty
+            # skeleton, so `_seed_initial_model` below would replace it with the seed and a
+            # delivered model would be scored as never built. The placeholder species keeps the
+            # one-species invariant AMICI's import needs and leaves the mechanism as it came.
+            if R.has_dynamics(sm) and sm.getNumSpecies() == 0:
+                R.ensure_one_species(sm)
 
         self.lock = threading.RLock()
         # Held only while the timing accumulators and the early-stop state below are updated
@@ -402,6 +431,11 @@ class PetabSession:
         # the duration of such a call (see server.make_changes); everything else leaves it None
         # and the snapshot falls back to HEAD, which is correct for an edit of the working model.
         self.derived_from: int | None = None
+        # A `make_changes` without `base_version` on a HEAD that is not the best is refused once
+        # and applied when sent again (`server._implicit_base`): `implicit_base_asked` is the HEAD
+        # and arguments of the call refused, `head_restored` the HEAD `restore_version` chose.
+        self.implicit_base_asked: tuple[int, str] | None = None
+        self.head_restored: int | None = None
         # The `(old, new)` of each `rename` in the running `make_changes` call's `model_edits`
         # (:func:`model_edits.renames`), set by the server for the call like `derived_from`: the
         # reconcile carries each old id's row to its new id (`operations.set_model`), and the fit
@@ -880,9 +914,13 @@ class PetabSession:
             {"n_constraints": len(self.constraints.items)} if self.constraints is not None else {}
         )
         authored = self.model_authored()
-        # Counted on an authored model only, never on the seed's placeholders (docs/RATIONALE.md).
+        # Counted on an authored model only, never on the seed's placeholders (docs/RATIONALE.md)
+        # or the one `reconcile.ensure_one_species` mints.
         counts = (
-            {"n_species": int(sm.getNumSpecies()), "n_model_parameters": int(sm.getNumParameters())}
+            {
+                "n_species": len(R.authored_species(sm)),
+                "n_model_parameters": int(sm.getNumParameters()),
+            }
             if authored
             else {}
         )
@@ -956,6 +994,15 @@ class PetabSession:
             ),
             optimization=None,
         )
+
+    def fit_problem(self) -> Any:
+        """The problem :attr:`simulation` was fitted on, whose table reads pair with its records:
+        the working problem, except while a change is being fitted (:attr:`change_began`), when
+        the working table is that change's and the fit's is its version's stored one (#330)."""
+        version = (self.simulation or {}).get("version")
+        if self.change_began is None or not isinstance(version, int) or version < 0:
+            return self.problem
+        return self.problem.replace(parameter_df=self.provenance.get_parameter_df(version))
 
     def _snapshot_version(
         self,
@@ -1649,8 +1696,11 @@ class PetabSession:
             # tool returns committed=false with an actionable message rather than crashing. Unless
             # the disk is full: the build directory is written to before the model is blamed,
             # since a build whose install step hit the quota fails only at the import after it.
+            began = time.monotonic()
             try:
                 fitsim, improvement = self._auto_fit_and_improvement(n_starts)
+                # The fit's wall time, model build and queue included (PEtab-MCP#331).
+                wall_seconds = round(time.monotonic() - began)
             except Exception as exc:  # noqa: BLE001 - surface as a clean, actionable rejection
                 if isinstance(exc, PetabMcpError):
                     error = disk_full_error(exc) or exc
@@ -1683,7 +1733,12 @@ class PetabSession:
                     f"{self.fit_per_start_timeout:.0f}s per-start time limit (MAXTIME). More "
                     "starts will not fix that: the limit applies to each start, so added starts "
                     "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
-                    "that allow extreme rates.",
+                    "that allow extreme rates."
+                    + (
+                        _CLOSED_FORM_ADVICE
+                        if _integrates_to_steady_state_only(self.problem)
+                        else ""
+                    ),
                 ]
             # A raise that still leaves 1 or 2 starts at the best, fewer than half of those that
             # ran to the end (2 of 2 completed is no needle): more will not help (#287).
@@ -1750,6 +1805,7 @@ class PetabSession:
             # parameter ties the criterion would pay for, priced from the FIM at the optimum this fit just
             # reached (see identifiability.merge_hints). Computed HERE, after
             # _auto_fit_and_improvement, because that is where the fit record it reads was frozen;
+            # the hints are read off it once the snapshot has named the version that priced them.
             # None (and then absent from the result) when there is no such tie at all, or no FIM. ONLY when
             # an optimizer actually ran: with `auto_fit` off the status is "skipped", the values are
             # whatever was authored, and no record was frozen — not a point a local expansion may be
@@ -1762,9 +1818,6 @@ class PetabSession:
                 block = identifiability.fit_diagnosis_block(self)
                 if block:
                     fitsim[identifiability.STORED_DIAGNOSIS_KEY] = block
-                fitsim["merge_hints"] = identifiability.merge_hints(
-                    (block or {}).get("diagnosis"), rename=self.text_route
-                )
             # Noise-sigma report + flags computed ONCE here and stashed on fitsim, so this event,
             # the checkpoint update in record_fit_progress (below) and the returned fit block all
             # read the SAME verdict instead of recomputing (or disagreeing).
@@ -1819,6 +1872,7 @@ class PetabSession:
                     # one did (see `_fit_dedup`) — the structure/setup hashes both ignore it.
                     "n_starts": fitsim.get("n_starts"),
                     "n_starts_killed": fitsim.get("n_starts_killed"),
+                    "wall_seconds": wall_seconds,
                     "fit_status": fitsim.get("status"),
                     "neg_log_likelihood": nllh,
                     "chi2": fitsim.get("chi2"),
@@ -1834,6 +1888,12 @@ class PetabSession:
                 sim=fitsim,
             )
             fitsim["version"] = version
+            if fitsim.get("status") == "fit":
+                fitsim["merge_hints"] = identifiability.merge_hints(
+                    (fitsim.get(identifiability.STORED_DIAGNOSIS_KEY) or {}).get("diagnosis"),
+                    version=version,
+                    model=identifiability.edit_surface(self),
+                )
             fitsim["noise_sigma_estimated"] = bool(_nsr)
             fitsim["noise_sigma_inflated"] = noise_sigma_inflated(_nsr)
             fitsim["noise_sigma_collapsed"] = noise_sigma_collapsed(_nsr)
@@ -1879,6 +1939,7 @@ class PetabSession:
         return {
             "committed": True,
             "version": version,
+            "wall_seconds": wall_seconds,
             "warnings": warnings,
             "event_timestamp": event["timestamp"],
             "progress": {
@@ -2029,4 +2090,6 @@ class PetabSession:
                     "build one.",
                     cause="constraint_violated",
                 )
-        return self.rollback_to(version, justification)
+        out = self.rollback_to(version, justification)
+        self.head_restored = int(version)
+        return out

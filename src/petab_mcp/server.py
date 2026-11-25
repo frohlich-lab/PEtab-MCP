@@ -777,6 +777,57 @@ def _fit_in_progress(began: float, progress: Any) -> str:
     )
 
 
+def _implicit_base(session: PetabSession, call: dict[str, Any]) -> str | None:
+    """The refusal of a ``make_changes`` without ``base_version`` that would apply to a HEAD that
+    is not the best version, or ``None`` to apply it.
+
+    Agents left ``base_version`` out after a regression and lost the fit of a change to the
+    rejected HEAD (75 min in one run, #330), and a warning on the result came only after it. So
+    the first such call is refused, before anything runs, and the same call (``call``, its
+    arguments bar ``justification`` and ``references``) sent again confirms it. A HEAD
+    ``restore_version`` moved to was chosen already, and is not asked about."""
+    head = session.provenance.current_version
+    best = session.best.version if session.best is not None else None
+    if best is None or head < 0 or head in (best, session.head_restored):
+        return None
+    key = (head, json.dumps(call, sort_keys=True, default=_plain))
+    if session.implicit_base_asked == key:
+        session.implicit_base_asked = None
+        return None
+    session.implicit_base_asked = key
+    return (
+        f"make_changes: no `base_version`, so this change would apply to the working model, "
+        f"v{head}, which is not the best version; v{best} is. NOTHING was applied. Send "
+        f"`base_version={best}` to change the best, or this same call again to change v{head}."
+    )
+
+
+def _plain(value: Any) -> Any:
+    """``value`` as JSON can write it: a pydantic model's fields, else its repr."""
+    return value.model_dump() if isinstance(value, BaseModel) else repr(value)
+
+
+def _labelled(
+    session: PetabSession, out: dict[str, Any], version: Any, unversioned: str
+) -> dict[str, Any]:
+    """A read's result ``out`` with ``version``, the version it shows (``None`` for none), and,
+    while a change is being fitted on ``session``, ``fit_running``, which says what the read
+    shows: that version, or ``unversioned``. Reads take no lock, so a read beside a fit sees that
+    change's working model and the last fit's records (#330). A failed read (``ok: false``) is
+    returned as it is."""
+    if out.get("ok") is False:
+        return out
+    shown = version if isinstance(version, int) and version >= 0 else None
+    out = {**out, "version": shown}
+    if session.change_began is not None:
+        out["fit_running"] = (
+            "a change is being fitted; this read shows "
+            + (f"v{shown}, the last version committed" if shown is not None else unversioned)
+            + ". The change becomes the next version when its fit ends."
+        )
+    return out
+
+
 class _Ctx:
     """One session's state + the error-wrapping helpers a tool resolves through ``route``.
 
@@ -1220,7 +1271,8 @@ k*u*X1'}`, `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: 'k
 `id := expr` rule holding at ALL times — how a `readout_*` symbol an observable formula \
 references is defined in terms of YOUR states), `{op: 'remove_assignment', id}`, `{op: 'rename', \
 old, new}` (`new` keeps `old`'s fitted value, bounds and scale; onto an existing parameter it \
-MERGES the two in one op, keeping `new`'s: a `merge_hints` row's `take`). Nothing to quote; they \
+MERGES the two in one op, keeping `new`'s; a `merge_hints` row's `take` is the ops that tie its \
+pair). Nothing to quote; they \
 apply in order, all or nothing, and a bad id is rejected with the valid ids listed. Put the WHOLE \
 change in ONE call: one call is one fit. What they cannot express (an event, a compartment) is a \
 re-author with `antimony`.
@@ -1253,12 +1305,15 @@ fields, with the noise report, the parameters at a bound, the `merge_hints` and 
 observables cut to what is flagged or new since the parent version. Read `applied` first: \
 `false` → nothing moved — rejected, reverted because the fit failed, or already an earlier fitted \
 version; `error`/`issues` says which, act on THAT. Then `committed`: `true` → a version exists, \
-read its score; `false` with `no_change` → this model already IS the current version, so change \
+read its score (`wall_seconds` is what its fit took, model build included); `false` with \
+`no_change` → this model already IS the current version, so change \
 something else. `messages` is everything the call had to say, in pipeline order, each tagged \
 `level` and `source`.
 
 `message` names the version the change was applied to (the working model, or `base_version`'s)⦃ \
-and the best version. `improvement.is_new_best` marks the version that became the best, \
+and the best version. Without `base_version`, a change to a working model that is not the best \
+and that you did not restore is refused once, naming the best; the same call sent again applies \
+it. `improvement.is_new_best` marks the version that became the best, \
 `progress.best_version`: the lowest score so far (`improvement_vs_best_prior` > 0), unless \
 `new_best_declined` says why not. `progress` is `get_progress`'s moving part: a new best resets \
 `non_improving_streak` only once the best has gained {STREAK_RESET_MIN_SCORE_GAIN:g} since the \
@@ -1585,6 +1640,7 @@ def _register_model_tools(
     mcp: FastMCP,
     route: Callable[[], _Ctx],
     statements: bool = False,
+    progress_signals: bool = True,
 ) -> None:
     # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
     statements_route = statements
@@ -1669,11 +1725,14 @@ def _register_model_tools(
         """
         ctx = route()
         session = ctx.session
-        return ctx.run(
+        # The working model: HEAD's, or while a change is being fitted, that change's.
+        version = None if session.change_began is not None else session.provenance.current_version
+        out = ctx.run(
             "get_model_structure",
             lambda: model_mod.model_structure(session, reactions, initial_conditions),
             {"reactions": reactions, "initial_conditions": initial_conditions},
         )
+        return _labelled(session, out, version, "that change's model, not a version yet")
 
     def _make_changes(
         justification: str,
@@ -1826,6 +1885,24 @@ def _register_model_tools(
                 {},
                 cause=FIT_IN_PROGRESS,
             )
+        # With progress signals off the agent is not told which version is best, and a refusal
+        # here would tell it.
+        if progress_signals and base_version is None:
+            call = {
+                "antimony": antimony,
+                "model_edits": ops,
+                "parameters": parameters,
+                "n_starts": n_starts,
+                "statements": rows,
+                "bindings": bindings,
+                "mechanisms": mechanisms,
+                "seeds": seeds,
+                "readouts": readouts,
+                "amounts": amounts,
+                "statement_edits": edits,
+            }
+            if (refusal := _implicit_base(session, call)) is not None:
+                return ctx.reject_operation("make_changes", refusal, {}, cause="implicit_base")
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.change():
@@ -1894,6 +1971,7 @@ def _register_model_tools(
                     raise
             op_summary: list[str] = []
             base_parameter_df = None
+            tie_warnings: list[dict[str, str]] = []
             if ops:
                 # STRUCTURED edits apply to the BUILT model — the version's `model.ant`, the
                 # working model's render — the one text `get_model` shows. Operations address
@@ -1916,6 +1994,16 @@ def _register_model_tools(
                     )
                     antimony, op_summary = model_edits_mod.apply_model_edits(
                         base_src, ops, fixed=fixed
+                    )
+                    tie_warnings = msg_mod.warnings_from(
+                        msg_mod.SOURCE_EDIT,
+                        identifiability_mod.unhinted_ties(
+                            session,
+                            ops,
+                            session.provenance.current_version
+                            if base_version is None
+                            else int(base_version),
+                        ),
                     )
                     # Read INSIDE the guard, next to the source read above: a version dir whose
                     # parameters.tsv is truncated raises EmptyDataError and the legacy json path
@@ -1996,7 +2084,11 @@ def _register_model_tools(
                     )
                 if not result.get("applied"):
                     return result
-                result["messages"] = statement_warnings + (result.get("messages") or [])
+                result["messages"] = [
+                    *statement_warnings,
+                    *tie_warnings,
+                    *(result.get("messages") or []),
+                ]
                 out = ctx.edit_then_fit(result, n_starts, justification, before)
             finally:
                 session.derived_from = None
@@ -2217,14 +2309,16 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         UNIDENTIFIABLE, not under-explored), `noise_sigma_report` with `noise_sigma_inflated` /
         `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise: fix
         the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
-        (parameter pairs the data cannot separate whose merge the criterion would pay for).⦃ With
+        (parameter pairs whose merge the criterion would pay for, by a local estimate at the
+        optimum of `priced_at_version`; a refit decides).⦃ With
         estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
         fit and say nothing about adequacy.⦄
         """
         ctx = route()
         session = ctx.session
         engine = ctx.engine
-        return ctx.run("get_fit_summary", lambda: fitting_mod.fit_summary(session, engine))
+        out = ctx.run("get_fit_summary", lambda: fitting_mod.fit_summary(session, engine))
+        return _labelled(session, out, out.get("version"), "no committed fit")
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_run_timing() -> dict[str, Any]:
@@ -2311,21 +2405,18 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """Run a DuckDB SQL query over the data, on a private copy (nothing it does reaches the
         session).
 
-        TWO NAMING CONVENTIONS, and they do not mix. The PEtab tables keep PEtab's camelCase:
-        `measurements(observableId, experimentId, time, measurement, observableParameters,
-        noiseParameters)`, `conditions(conditionId, targetId, targetValue)`,
-        `experiments(experimentId, time, conditionId)`, `observables(observableId, ...)`,
-        `parameters(parameterId, ...)`. The DERIVED tables use snake_case:
-        `simulations(observable_id, experiment_id, time, ...)`, `simulations_history` (the same
-        plus `version`), `state_trajectories(experiment_id, time, entity_id, value)`, and
-        `optimization_starts` / `optimization_trace`. The measurement table's key column is
-        `experimentId` — NOT `experiment_id` (that is `simulations`); an empty `experimentId`
-        ('') is a measurement of the model simulated as is. Do not carry a column list from a
-        `simulations` query onto `measurements`, or the reverse.
+        Every column is snake_case, the PEtab tables' too: `measurements(observable_id,
+        experiment_id, time, measurement, observable_parameters, noise_parameters)`,
+        `conditions(condition_id, target_id, target_value)`, `experiments(experiment_id, time,
+        condition_id)`, `observables(observable_id, ...)`, `parameters(parameter_id, lower_bound,
+        upper_bound, nominal_value, ...)`, `simulations(observable_id, experiment_id, time, ...)`,
+        `simulations_history` (the same plus `version`), `state_trajectories(experiment_id, time,
+        entity_id, value)`, and `optimization_starts` / `optimization_trace`. An empty
+        `experiment_id` ('') is a measurement of the model simulated as is.
 
         `simulations` has one row per point of the last fit: `measurement`, `simulation`,
-        `residual`, `residual_weighted`, `noise`, and the row's `noise_parameters` — residuals
-        live there, not on `measurements`. `state_trajectories` has the last fit's hidden states:
+        `residual`, `residual_weighted` (signed (m - s)/sigma: square it for chi2), `noise`, and
+        the row's `noise_parameters` — residuals live there, not on `measurements`. `state_trajectories` has the last fit's hidden states:
         each species and assignment rule (`entity_id`) at the times its experiment was measured.
         `simulations_history` is the only way to compare versions point by point, e.g.
         `SELECT observable_id, experiment_id, time,
@@ -2333,8 +2424,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         max(CASE WHEN version=4 THEN residual_weighted END) AS v4
         FROM simulations_history WHERE version IN (3, 4) GROUP BY 1, 2, 3
         ORDER BY abs(v4) - abs(v3) DESC`. A measurement reaches its inputs through its experiment:
-        `measurements.experimentId = experiments.experimentId`, then `experiments.conditionId =
-        conditions.conditionId`. `list_data_tables` has every table's columns.
+        `measurements.experiment_id = experiments.experiment_id`, then `experiments.condition_id =
+        conditions.condition_id`. `list_data_tables` has every table's columns.
 
         Aggregate only NUMERIC columns, filter `residual_weighted IS NOT NULL` for residual
         statistics, and prefer aggregations: rows are capped at `max_rows`. When `truncated` is
@@ -2372,9 +2463,12 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         # Log the query (truncated) alongside max_rows so a failed call is reproducible
         # from `get_errors`.
         logged_sql = sql[:1000] if isinstance(sql, str) else sql
-        return ctx.run(
+        out = ctx.run(
             "query_data", run, {"sql": logged_sql, "max_rows": max_rows, "offset": offset}
         )
+        # The version of the fit tables (`simulations`, `parameters`, the optimization's).
+        version = (session.simulation or {}).get("version")
+        return _labelled(session, out, version, "no committed fit")
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_fit_diagnosis(
@@ -2408,7 +2502,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         PARAMETERS (`identifiability`), from the Fisher information at the optimum and the
         multistart spread: per-parameter standard error and fold uncertainty, marginal and partial
         correlations, the near-flat eigen-directions (the parameter COMBINATIONS the data cannot
-        pin), and a ranked `candidates` list. `merge_candidates` prices giving a pair ONE SHARED
+        pin), and a ranked `candidates` list. `merge_candidates` estimates giving a pair ONE SHARED
         value: `dnll`, cheapest first; `dscore`, NEGATIVE when the merge lowers the score;
         `move_scaled`, how far the tie moves a parameter. Only same-role, same-scale pairs with
         neither member at a bound are priced (`n_ties_skipped` counts the rest), and the fit
@@ -3149,7 +3243,7 @@ def create_server(
         return ctx
 
     _register_read_tools(mcp, route)
-    _register_model_tools(mcp, route, statements=statements)
+    _register_model_tools(mcp, route, statements=statements, progress_signals=progress_signals)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:

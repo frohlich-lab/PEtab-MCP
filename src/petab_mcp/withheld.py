@@ -4,9 +4,10 @@ point the agent at what to change, or at where the fit is off (gemot's ``fix_poi
 The server still computes, stores and reads every one of them (a stop, the de-dup or a refusal may
 rest on one); only what leaves it is cut, by :func:`strip` in ``server._FixPointers``, so a stored
 version read back is cut the same way. Text is left as written, bar the observables and replicated
-points a residual verdict's ``summary`` names. Cut:
+points a residual verdict's ``summary`` names, and the warning that a tie has no merge hint at its
+base (:func:`identifiability.unhinted_ties`), which goes whole. Cut:
 
-* the payoff of an edit: ``merge_hints`` (each with the ``rename`` that takes it) and
+* the payoff of an edit: ``merge_hints`` (each with the ops that take it) and
   ``n_merge_hints``; a priced tie's ``dscore`` and ``merge_improves_score``, and
   ``n_merges_improving_score``; the ranked ``candidates``; a data regime's ``support_for_extension``
   and ``delta_bic_favouring_two``;
@@ -25,6 +26,7 @@ import re
 from typing import Any
 
 from .data_access import _MAX_NAMED
+from .identifiability import UNHINTED_TIE
 
 _CUT = frozenset(
     {
@@ -52,7 +54,7 @@ _LOF_POINTS = re.compile(r"\([^()]*; Holm p ")
 def strip(value: Any) -> Any:
     """``value`` (a JSON-like result) without the fields this module cuts, at any depth."""
     if isinstance(value, list):
-        return [strip(v) for v in value]
+        return [strip(v) for v in value if not _unhinted(v)]
     if not isinstance(value, dict):
         return value
     out = {k: strip(v) for k, v in value.items() if k not in _CUT}
@@ -72,6 +74,12 @@ def strip(value: Any) -> Any:
         if isinstance(out.get(key), str):
             out[key] = _LOF_POINTS.sub("(Holm p ", out[key])
     return out
+
+
+def _unhinted(item: Any) -> bool:
+    """Is ``item`` the :func:`identifiability.unhinted_ties` warning, as text or a message entry?"""
+    text = item.get("message") if isinstance(item, dict) else item
+    return isinstance(text, str) and text.startswith(UNHINTED_TIE)
 
 
 def _unnamed(summary: str, flagged: list, n: int) -> str:

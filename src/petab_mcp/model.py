@@ -46,7 +46,8 @@ def model_structure(
 
     Until a model is authored (``session.model_authored()``) the species, parameters and initial
     conditions are empty: the working model is then the seed, whose species are placeholders for
-    the names the observable formulas and condition table use.
+    the names the observable formulas and condition table use. The species the server mints for
+    a model with none (:data:`reconcile.PLACEHOLDER_SPECIES`) is never listed.
     """
     from . import reconcile as R
 
@@ -56,9 +57,7 @@ def model_structure(
     out = {
         "model_id": session.model.model_id,
         "compartments": [sm.getCompartment(i).getId() for i in range(sm.getNumCompartments())],
-        "species": (
-            [sm.getSpecies(i).getId() for i in range(sm.getNumSpecies())] if authored else []
-        ),
+        "species": R.authored_species(sm) if authored else [],
         "parameters": (
             [p for p in session.model.get_parameter_ids() if p not in readouts] if authored else []
         ),
@@ -68,7 +67,11 @@ def model_structure(
     if initial_conditions is not None:
         match = _search("initial_conditions", initial_conditions)
         report = R.initial_conditions_report(session.problem) if authored else []
-        out["initial_conditions"] = [row for row in report if match(row["species"])]
+        out["initial_conditions"] = [
+            row
+            for row in report
+            if match(row["species"]) and row["species"] != R.PLACEHOLDER_SPECIES
+        ]
     if reactions is not None:
         match = _search("reactions", reactions)
         out["reactions"] = []

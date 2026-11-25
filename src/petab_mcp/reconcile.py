@@ -321,7 +321,8 @@ def not_a_parameter(problem, pid: str, known=None) -> str | None:
     such names off the problem and asked for them as parameters (#86): an observable's placeholder
     (``noiseParameter1_<obs>``), which the measurement table fills, and an assignment rule's target
     (a statements binding's ``d16_kf_pinned`` / ``a_act_k_bound``), whose reads are followed
-    through other rules to the ids in ``known`` (default: the live parameter table)."""
+    through other rules to the ids in ``known`` (default: the live parameter table). A condition
+    table's target got guesses at unrelated ids (#337)."""
     odf = getattr(problem, "observable_df", None)
     for oid in [] if odf is None else odf.index:
         for kind, column in (("noise", NOISE_PARAMETERS), ("observable", OBSERVABLE_PARAMETERS)):
@@ -332,6 +333,11 @@ def not_a_parameter(problem, pid: str, known=None) -> str | None:
                     "of its own. Where that column names a parameter rather than a number, that "
                     "parameter is the row to edit."
                 )
+    if pid in condition_target_symbols(problem):
+        return (
+            f"{pid!r} is a target of the condition table: each condition sets its value, so it "
+            "has no row to bound or estimate."
+        )
     model = getattr(problem, "model", None)
     sm = model.sbml_model if model is not None else None
     rule = sm.getAssignmentRuleByVariable(pid) if sm is not None else None
@@ -2515,7 +2521,7 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
     """Add rows for new model parameters; remove rows for parameters gone from the model
     (keeping observable/noise parameters). Returns the add/remove diff, and ``seeded``: the
     parameters nothing gives a value (no assignment in the model, no row, no shipped row), each
-    started at the seed. :func:`operations._orphan_warnings` names those the parent defined. And
+    started at the seed. :func:`operations._orphans` names those a version defined. And
     ``fixed``: the rows this sync holds FIXED by the 0/1 convention below, minted so or moved there,
     which :func:`operations._held_fixed_warnings` names.
 
@@ -2683,6 +2689,11 @@ def sync_parameter_table(problem, shipped=None, carried=None) -> dict[str, list[
 #: The species minted when a model would otherwise have none. Named to be obviously not the
 #: caller's: it exists only to keep the "there is always at least one species" invariant true.
 PLACEHOLDER_SPECIES = "petab_mcp_placeholder"
+
+
+def authored_species(sm) -> list[str]:
+    """The model's species ids, in model order, without :data:`PLACEHOLDER_SPECIES`."""
+    return [s.getId() for s in sm.getListOfSpecies() if s.getId() != PLACEHOLDER_SPECIES]
 
 
 def ensure_one_species(sm) -> bool:

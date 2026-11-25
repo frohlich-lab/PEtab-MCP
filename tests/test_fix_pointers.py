@@ -83,6 +83,16 @@ def test_a_ties_payoff_goes_and_its_cost_stays():
     }
 
 
+def test_the_warning_a_tie_has_no_merge_hint_at_its_base_goes_with_the_hints():
+    """PEtab-MCP#336: it says whether the base hints the pair, which is `merge_improves_score`
+    (cut) in other words; the edit's other warnings stay."""
+    from petab_mcp.identifiability import UNHINTED_TIE
+
+    other = {"level": "warning", "source": "edit", "message": "rename merged `k3` into `k1`"}
+    tie = {**other, "message": f"{UNHINTED_TIE}v2, which this change applies to, ..."}
+    assert withheld.strip({"messages": [tie, other]}) == {"messages": [other]}
+
+
 def _servers(tmp_path, *, auto_fit=False):
     return {
         pointers: create_server(
