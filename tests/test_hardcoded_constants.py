@@ -55,8 +55,9 @@ def _rate_law(law: str) -> str:
         ("0.5*kf*A - 0.25*kf*B", []),  # 1/2 and 1/4 by value
         ("kf*A*(1/3) + kf*B*(1/6)", []),
         ("kf*A/6 - kf*B/4", []),
-        ("100*kf*A", []),  # percent: a unit with nothing to absorb it into
-        ("kf*A/100", []),
+        # percent is free only as a readout's factor (see the readout test): in a rate it is a rate
+        ("100*kf*A", ["100"]),
+        ("kf*A/100", ["100"]),
         # ...and nothing else is. A unit or scale factor is a magnitude like any other: name it, or
         # pay for it. These were all free under the old three-significant-digit threshold.
         ("1000000*kf*A", ["1000000"]),
@@ -84,7 +85,7 @@ def test_the_free_set_is_closed_under_sign_and_reciprocal():
     an author toward the spelling that happens to be free."""
     from fractions import Fraction
 
-    for n in (1, 2, 3, 4, 6, 100):
+    for n in (1, 2, 3, 4, 6):
         for v in (Fraction(n), -Fraction(n), Fraction(1, n), -Fraction(1, n)):
             assert v in L.STRUCTURAL_VALUES, v
     assert Fraction(0) in L.STRUCTURAL_VALUES
@@ -92,6 +93,70 @@ def test_the_free_set_is_closed_under_sign_and_reciprocal():
     # value admitted is a value a fitted number could be rounded onto.
     assert Fraction(5) not in L.STRUCTURAL_VALUES
     assert Fraction(1, 5) not in L.STRUCTURAL_VALUES
+    assert Fraction(100) not in L.STRUCTURAL_VALUES
+
+
+@pytest.mark.parametrize(
+    "law, priced",
+    [
+        # issue #338: a Hill switch of order 8 written as a product of eight factors was free
+        ("kf*A*A*A*A*A*A*A*A/(K^8 + A*A*A*A*A*A*A*A)", ["A^8"]),
+        ("kf*A^4*A^4", ["A^8"]),
+        ("kf*(A^4)^2", ["A^8"]),
+        ("kf*(A*A)^4", ["A^8"]),
+        ("kf*A^(4 + 4)", ["A^8"]),
+        ("kf*A*A*A*A*A*A", []),  # a hexamer is still structural
+        # free literals multiplied, added or passed through exp into a value that is not free
+        ("2*2*2*kf*A", ["2 * 2 * 2"]),
+        ("kf*A/2/2/2", ["0.125"]),
+        ("3*0.5*kf*A", ["3 * 0.5"]),
+        ("(6 - 1)*kf*A", ["6 - 1"]),
+        ("exp(-4)*A", ["exp(-4)"]),
+        ("kf*A + kf*A + kf*A + kf*A + kf*A", ["5*(kf * A)"]),
+        # ...while a value already charged as written is not charged again for what it makes
+        ("kf*A^0.7*A^0.7", ["0.7"]),
+        ("10^-3*kf*A", ["10"]),
+        ("kf*A/5 + 5*kf*B", ["5"]),
+        ("0.5*0.5*kf*A", []),
+        ("2*pi*kf*A", []),
+    ],
+)
+def test_free_literals_do_not_combine_into_a_priced_value(law, priced):
+    """Issue #338: `x^8` written `x*x*...*x` carried no literal, so the exponent a Hill switch
+    charges was free. Normalising repeated products to powers closes that; the same holds for
+    any other way of composing free values into one that is not free."""
+    sm = _sbml_model(
+        f"model m\n  species A, B;\n  A = 5; B = 0;\n  kf = 0.5; K = 1;\n  R1: A -> B; {law};\nend\n"
+    )
+    assert L.hardcoded_constants(sm) == priced
+
+
+def test_percent_is_free_only_as_a_whole_readouts_factor():
+    """Issue #338: the exempt factor 100 froze a bound-limited rate for free (`100*LR*P3`). It
+    stays free where nothing can absorb it, a factor of a whole assignment rule nothing in the
+    dynamics reads, through a readout chain (`readout_frac := frac`) as the benchmark wires it."""
+    readout = (
+        "model m\n  species A, B;\n  A = 5; B = 0;\n  kf = 0.5;\n  R1: A -> B; kf*A;\n"
+        "  frac := {frac};\n  readout_frac := frac;\nend\n"
+    )
+    assert L.hardcoded_constants(_sbml_model(readout.format(frac="(1 - A/(A + B))*100"))) == []
+    assert L.hardcoded_constants(_sbml_model(readout.format(frac="50*A/(A + B)"))) == []
+    # not a factor of the whole readout
+    assert L.hardcoded_constants(_sbml_model(readout.format(frac="100 - 100*A/(A + B)"))) == ["100"]
+    # a rule the dynamics read is a rate, not a readout
+    feeds = "model m\n  species A, B;\n  A = 5; B = 0;\n  kr := 100*A;\n  R1: A -> B; kr;\nend\n"
+    assert L.hardcoded_constants(_sbml_model(feeds)) == ["100"]
+
+
+def test_two_rates_sharing_a_value_are_one_constant_as_their_merge_is():
+    """Issue #338 named two unrelated rates sharing `50` as a gap; it is the price of the merge
+    that dominates it. Estimating the shared value is one parameter, so the literal pair costs
+    what that merge costs and fits no better. A sign does not make it a second constant."""
+    sm = _sbml_model(
+        "model m\n  species A, B, C;\n  A = 5; B = 0; C = 0;\n"
+        "  R1: A -> B; 50*A;\n  R2: B -> C; B/(50 + B) - (-50)*C;\nend\n"
+    )
+    assert L.hardcoded_constants(sm) == ["50"]
 
 
 def test_each_distinct_value_is_charged_once_however_written():
