@@ -199,6 +199,16 @@ pip install -e '.[dev]' --group pins   # AMICI + pyPESTO are core deps; dev adds
 pytest                    # needs the full install (AMICI/pyPESTO are hard deps); PubMed is stubbed
 ```
 
+## Citation
+
+If you use PEtab MCP, please cite the preprint it was introduced in:
+
+> T. de Pomereu, B. Snelling, F. Fröhlich. GEMOT: Towards Mechanistic World Models for Biology.
+> bioRxiv (2026). [doi:10.64898/2026.09.26.754619](https://doi.org/10.64898/2026.09.26.754619)
+
+[CITATION.cff](CITATION.cff) has the same in machine-readable form (GitHub's "Cite this
+repository").
+
 ## License
 
 MIT
