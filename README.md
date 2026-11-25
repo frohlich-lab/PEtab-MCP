@@ -121,11 +121,13 @@ a walltime longer than the pool will run, and restart the pool between sweeps. A
 buys nothing: a worker reaching it drops its running batch, as a killed one does. The default
 `death-timeout` of 60 s is too short for a full job's workers to import from shared storage.
 
-A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the median
-start time of the session's previous fit, or at its per-start cap (by default
-`PETAB_MCP_FIT_PER_START_TIMEOUT`) without one; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number
-instead. A pool lost mid-fit, or a worker that cannot import a model, ends the call with
-`infrastructure_error: fit_pool: `, as a full disk does (see "Tools").
+A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 270) at the
+90th-percentile start time of the session's previous fit, or at its per-start cap (by default
+`PETAB_MCP_FIT_PER_START_TIMEOUT`) without one, but no more than spread the fit over the pool's idle
+workers; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number instead. A pool lost mid-fit, or a worker
+that cannot import a model, ends the call with `infrastructure_error: fit_pool: `, as a full disk
+does (see "Tools"). How the pool's parts fit together, and what was measured on NEMO, is in
+[docs/fit-pool.md](docs/fit-pool.md).
 
 ## Tools
 
