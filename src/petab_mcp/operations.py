@@ -26,6 +26,7 @@ import json
 import re
 from typing import Any, Callable
 
+import libsbml
 from petab.v2.C import LOWER_BOUND, UPPER_BOUND
 from petab.v2.models.sbml_model import SbmlModel
 
@@ -47,7 +48,9 @@ from .validation import (
     estimated_assignment_issues,
     frozen_parametric_stoichiometry_issues,
     piecewise_order_issues,
+    rate_reads,
     read_inputs,
+    unread_reactants,
     validate_problem,
 )
 
@@ -284,14 +287,13 @@ def _reaches_observed(sid: str, edges: dict[str, set[str]], targets: set[str]) -
 
 
 def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
-    """Advisory warning for an edit that adds a *genuinely disconnected* hidden species.
+    """Advisory warning for an edit that adds a hidden species carrying parameters no data sees.
 
-    Data only constrains species that connect to an observable, so a newly introduced species
-    that feeds no observable — a dead-end sink like ``B -> C`` — can degenerately fit a single
-    observable just as well as a repair that reuses existing species (e.g. making a reaction
-    reversible). We flag *only* that case, in-loop, without rejecting the (structurally valid)
-    edit. "New" is against ``old_species``, the species of the version the edit applies to
-    (:func:`_parent`): a fork's base, not HEAD.
+    Data only constrains species that connect to an observable. A newly introduced species that
+    feeds no observable and carries a parameter of its own (:func:`_owns_parameter`) adds a
+    direction the data cannot pin. We flag *only* that case, in-loop, without rejecting the
+    (structurally valid) edit. "New" is against ``old_species``, the species of the version the
+    edit applies to (:func:`_parent`): a fork's base, not HEAD.
 
     We deliberately do NOT flag species that are legitimately unobserved, because doing so
     trained the agent to ignore the warning entirely (it fired 62× on correct choices on one
@@ -302,7 +304,10 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
       states (see :func:`reconcile.input_species`);
     * **any species that feeds an observed species** — an enzyme, a substrate, an upstream
       regulator reaches an observable through the reaction network, so the data does constrain
-      it (see :func:`reconcile.species_influence_graph`).
+      it (see :func:`reconcile.species_influence_graph`);
+    * **a parameter-free sink** — ``C`` in ``B -> C`` with ``C`` starting at a fixed value: it is
+      read by nothing, so the fit is that of ``B ->``, and the drain's rate acts on ``B``;
+    * **the server's own** :data:`reconcile.PLACEHOLDER_SPECIES`.
     """
     sm = problem.model.sbml_model
     new_species = set(R.species_ids(sm)) - old_species
@@ -313,23 +318,43 @@ def _parsimony_warnings(problem, old_species: set[str]) -> list[str]:
     if not unobserved:
         return []
 
-    exempt = R.condition_target_symbols(problem) | R.input_species(sm)
+    exempt = R.condition_target_symbols(problem) | R.input_species(sm) | {R.PLACEHOLDER_SPECIES}
     observed_species = observed & set(R.species_ids(sm))
     edges = R.species_influence_graph(sm)
+    seen = observed_species | {
+        sid for sid in R.species_ids(sm) if _reaches_observed(sid, edges, observed_species)
+    }
     disconnected = sorted(
-        sid
-        for sid in unobserved
-        if sid not in exempt and not _reaches_observed(sid, edges, observed_species)
+        sid for sid in unobserved - exempt - seen if _owns_parameter(problem, sid, seen)
     )
     if not disconnected:
         return []
     return [
-        f"Added unobserved species {disconnected}: they feed no observable, come from no "
-        "condition-table input, and are set by no forcing rule — genuinely disconnected hidden "
-        "states that no data constrains. A repair that reuses observed/existing species (e.g. "
-        "making an existing reaction reversible) is usually preferable, since a disconnected "
-        "species can degenerately fit the data."
+        f"Added unobserved species {disconnected}: they feed no observable, and an estimated "
+        "initial value or a reaction that changes only them carries a parameter no data "
+        "constrains. A repair that reuses observed/existing species (e.g. making an existing "
+        "reaction reversible) is usually preferable."
     ]
+
+
+def _owns_parameter(problem, sid: str, seen: set[str]) -> bool:
+    """Whether species ``sid`` carries a parameter of its own: an estimated initial value, or a
+    reaction that changes no species in ``seen`` (those an observable reads or that feed one)."""
+    sm = problem.model.sbml_model
+    ic = R._ic_symbol_for(sm, sid)
+    if any(
+        R.is_parameter_estimated(problem, p)
+        for p in ({ic} if ic else R._ic_expression_params(sm, sid))
+    ):
+        return True
+    held = R.input_species(sm)
+    for rxn in sm.getListOfReactions():
+        changed = {
+            ref.getSpecies() for ref in (*rxn.getListOfReactants(), *rxn.getListOfProducts())
+        }
+        if sid in changed and not (changed - held) & seen:
+            return True
+    return False
 
 
 def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
@@ -338,7 +363,9 @@ def _pruned_warnings(pruned: list[str], names: dict[str, str]) -> list[str]:
     A seed whose species nothing reads goes with its initial amount, which may have been a
     condition input's only reader: raimundez's ``Serum`` in 27 of 33 edits, with no reply saying so
     (PEtab-MCP#205). An input that leaves unread is the lint's to name
-    (:func:`validation._unread_input_issues`)."""
+    (:func:`validation._unread_input_issues`). The server's own
+    :data:`reconcile.PLACEHOLDER_SPECIES` goes unnamed."""
+    pruned = [sid for sid in pruned if sid != R.PLACEHOLDER_SPECIES]
     if not pruned:
         return []
     shown = ", ".join(
@@ -366,24 +393,52 @@ def _parent(session) -> tuple[int, SbmlModel, Any]:
     return fork, _stored_model(prov.get_model_antimony(fork)), prov.get_parameter_df(fork)
 
 
-def _definitions(sm) -> dict[str, str]:
-    """What each species, rule target and reaction of the SBML model ``sm`` is, by id."""
-    defined = {r.getId(): "a reaction" for r in sm.getListOfReactions()}
-    defined |= {s.getId(): "a species" for s in sm.getListOfSpecies()}
+#: Reactions a refused name's species took part in, named in :func:`_definitions`; the rest are
+#: counted.
+_REACTIONS_SHOWN = 3
+
+
+def _definitions(sm) -> dict[str, tuple[bool, str]]:
+    """What each species, rule target and reaction of the SBML model ``sm`` is, by id, and whether
+    minting it as a constant is refused (a species or a rule) rather than warned about."""
+    defined = {r.getId(): (False, "a reaction") for r in sm.getListOfReactions()}
+    takes_part = [
+        (
+            f"`{r.getId()}`",
+            {
+                ref.getSpecies()
+                for ref in (
+                    *r.getListOfReactants(),
+                    *r.getListOfProducts(),
+                    *r.getListOfModifiers(),
+                )
+            },
+        )
+        for r in sm.getListOfReactions()
+    ]
+    for sp in sm.getListOfSpecies():
+        sid = sp.getId()
+        rxns = [rid for rid, sids in takes_part if sid in sids]
+        more = len(rxns) - _REACTIONS_SHOWN
+        shown = ", ".join(rxns[:_REACTIONS_SHOWN]) + (f" and {more} more" if more > 0 else "")
+        defined[sid] = (True, f"a species in {shown}" if rxns else "a species in no reaction")
     for rule in sm.getListOfRules():
+        target, math = rule.getVariable(), libsbml.formulaToL3String(rule.getMath())
         if rule.isAssignment():
-            defined[rule.getVariable()] = f"an assignment rule (`{rule.getVariable()} := …`)"
+            defined[target] = (True, f"the assignment rule `{target} := {math}`")
         elif rule.isRate():
-            defined[rule.getVariable()] = "a rate rule"
+            defined[target] = (True, f"the rate rule `{target}' = {math}`")
     return defined
 
 
-def _orphan_warnings(session, seeded: list[str], version: int, parent: SbmlModel) -> list[str]:
-    """One warning for each name the reconcile seeded (``seeded`` of
+def _orphans(session, seeded: list[str], version: int, parent: SbmlModel) -> list[tuple[bool, str]]:
+    """``(refused, message)`` for each name the reconcile seeded (``seeded`` of
     :func:`reconcile.sync_parameter_table`) that a version defined as a species, a rule or a
     reaction: the edit dropped that definition, or never had it, and kept a reader, so the
-    quantity is now a constant the fit tunes. fontaine's `GliS`, renamed away from the reaction
-    making it, was fitted so, 140 nll worse, with no reply naming it (PEtab-MCP#264).
+    quantity would be a constant the fit tunes. fontaine's `GliS`, renamed away from the reaction
+    making it, was fitted so, 140 nll worse (PEtab-MCP#264). A species or a rule is refused, with
+    the definition that version had: a warning naming it was fitted anyway, for 0.4–3.4 h
+    (PEtab-MCP#324). A reaction's id is only warned about.
 
     ``version`` is the one this edit changes and ``parent`` its model. A name it does not define
     is looked up in every other stored version, newest first, reading only those whose text
@@ -411,16 +466,20 @@ def _orphan_warnings(session, seeded: list[str], version: int, parent: SbmlModel
     for pid in seeded:
         if pid not in found:
             continue
-        n, kind = found[pid]
+        n, (refused, kind) = found[pid]
         where = (
             f"Version {n} had it as {kind}: define it again"
             if n == version
             else f"Version {n} had it as {kind}, and version {version}, which this edit changes, "
             "does not: define it here too"
         )
+        minted = "" if refused else "; it was created as an estimated parameter"
         out.append(
-            f"`{pid}` is used but defined nowhere; it was created as an estimated parameter. "
-            f"{where}, or read the name that replaced it."
+            (
+                refused,
+                f"`{pid}` is used but defined nowhere{minted}. {where}, or read the name "
+                "that replaced it.",
+            )
         )
     return out
 
@@ -505,6 +564,30 @@ def _still_read_warnings(parent: SbmlModel, problem) -> list[str]:
                 f"`{pid}` no longer sets the initial amount of {', '.join(sids)} but stays "
                 f"estimated, since it is still read by {', '.join(readers)}: rewrite "
                 f"{'that' if len(readers) == 1 else 'those'} without it to drop its row."
+            )
+    return out
+
+
+def _dropped_read_warnings(version: int, parent: SbmlModel, problem) -> list[str]:
+    """One warning per reaction whose rate law, read through its rules (:func:`rate_reads`), no
+    longer reads a species its law in ``parent`` (version ``version``) read and the model still
+    has: ``set_rate_law`` swaps the rate alone, and a law that lost what the old one read committed
+    with no word (PEtab-MCP#324). A consumed species :func:`unread_reactants` names is left to
+    that lint's warning. Reactions are matched by id, so the statements route, which numbers them
+    afresh on every build, is not checked by the caller."""
+    sm = problem.model.sbml_model
+    species = R.species_ids(sm) & R.species_ids(parent.sbml_model)
+    before, after, unread = rate_reads(parent.sbml_model), rate_reads(sm), unread_reactants(sm)
+    out = []
+    for rid, now in after.items():
+        dropped = sorted((before.get(rid, set()) & species) - now - set(unread.get(rid, ())))
+        if dropped:
+            names = ", ".join(f"`{s}`" for s in dropped)
+            it, they, acts = ("it", "it", "acts") if len(dropped) == 1 else ("them", "they", "act")
+            out.append(
+                f"the rate of reaction `{rid}` no longer reads {names}, which it read in version "
+                f"{version}, so it no longer changes with {it}. If {they} still {acts} on this "
+                f"reaction, read {it} in its rate again."
             )
     return out
 
@@ -638,6 +721,11 @@ def _commit_change(
             recon = None
         # The version this edit changes, read before the swap below replaces the working model.
         base = _parent(session) if recon is not None else None
+        orphans = _orphans(session, recon["parameters"]["seeded"], *base[:2]) if base else []
+        if refused := [message for refuse, message in orphans if refuse]:
+            raise ValidationError(
+                f"Operation {op!r} rejected: {_rejection_summary(refused)}", issues=refused
+            )
 
         def lint() -> dict:
             # A parameter that ships FIXED and is a mechanistic/structural constant (a
@@ -696,12 +784,14 @@ def _commit_change(
         if base is not None:
             version, parent, parent_df = base
             added = recon["parameters"]["added"]
+            statements = getattr(session, "submitted_statements", None) is not None
             warnings = [
                 *_pruned_warnings(recon["pruned"]["species"], names),
                 *_minted_warnings(problem, added, parent_df, session.shipped_parameter_df),
                 *_held_fixed_warnings(problem, recon["parameters"]["fixed"]),
-                *_orphan_warnings(session, recon["parameters"]["seeded"], version, parent),
+                *(message for refuse, message in orphans if not refuse),
                 *_still_read_warnings(parent, problem),
+                *([] if statements else _dropped_read_warnings(version, parent, problem)),
                 *_parsimony_warnings(problem, set(R.species_ids(parent.sbml_model))),
             ]
         # A row's regulators are signed on this version's bounds: an edit of a bound or a scale
@@ -2436,9 +2526,11 @@ def _parameter_edit(
             if scale is not None:
                 summary["scale"] = scale
             changed.append(summary)
-        # One transactional write for the whole batch — a single parameter-table snapshot.
+        # One transactional write for the whole batch — a single parameter-table snapshot. The
+        # live table is the one before this call's model edits, for the unknown-id refusal.
         rows = (session.model_statements or {}).get("rows") or []
-        update_parameters(problem, updates, [row["prefix"] for row in rows])
+        before = {str(k) for k in session.problem.parameter_df.index}
+        update_parameters(problem, updates, [row["prefix"] for row in rows], before)
         for pid, scale in scale_checks:
             # Positive-box check reads the NEW scale + bounds (a bound alone: against the row's
             # scale), so it runs AFTER the update.

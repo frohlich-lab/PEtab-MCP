@@ -119,6 +119,13 @@ PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
 #: of its parent has reached the parent's optimum (:mod:`nesting`).
 AT_BEST_NLL_TOL = 1.0
 
+# -- merge hints -----------------------------------------------------------
+#: A merge hint whose ``move_scaled`` reaches this carries ``price_unreliable``: its price is a
+#: local quadratic at the fit's optimum, and one decade is where that stops being local on the
+#: log10 scale minted rows use. Ties that moved 2-3 decades realised +4 to +12 nll against prices
+#: of 0.05-2.5 (blasi, fujita; sweep gemot_pools_20261107, PEtab-MCP#336).
+MERGE_PRICE_UNRELIABLE_MOVE = 1.0
+
 # -- noise-sigma reporting ---------------------------------------------------
 # An ESTIMATED noise-sigma parameter above this fraction of its observable's own raw
 # measurement std (across every time point / condition) is flagged in the standard fit report.

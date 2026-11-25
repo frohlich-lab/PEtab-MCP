@@ -1271,7 +1271,8 @@ k*u*X1'}`, `{op: 'remove_reaction', id}`, `{op: 'set_rate_law', id, antimony: 'k
 `id := expr` rule holding at ALL times — how a `readout_*` symbol an observable formula \
 references is defined in terms of YOUR states), `{op: 'remove_assignment', id}`, `{op: 'rename', \
 old, new}` (`new` keeps `old`'s fitted value, bounds and scale; onto an existing parameter it \
-MERGES the two in one op, keeping `new`'s: a `merge_hints` row's `take`). Nothing to quote; they \
+MERGES the two in one op, keeping `new`'s; a `merge_hints` row's `take` is the ops that tie its \
+pair). Nothing to quote; they \
 apply in order, all or nothing, and a bad id is rejected with the valid ids listed. Put the WHOLE \
 change in ONE call: one call is one fit. What they cannot express (an event, a compartment) is a \
 re-author with `antimony`.
@@ -1307,7 +1308,8 @@ flagged or new since the parent version, and its pins split into `parameters_new
 the ids of those the parent held, `parameters_still_at_bound`. Read `applied` first: \
 `false` → nothing moved — rejected, reverted because the fit failed, or already an earlier fitted \
 version; `error`/`issues` says which, act on THAT. Then `committed`: `true` → a version exists, \
-read its score; `false` with `no_change` → this model already IS the current version, so change \
+read its score (`wall_seconds` is what its fit took, model build included); `false` with \
+`no_change` → this model already IS the current version, so change \
 something else. `messages` is everything the call had to say, in pipeline order, each tagged \
 `level` and `source`.
 
@@ -1983,6 +1985,7 @@ def _register_model_tools(
                     raise
             op_summary: list[str] = []
             base_parameter_df = None
+            tie_warnings: list[dict[str, str]] = []
             if ops:
                 # STRUCTURED edits apply to the model SOURCE — the text the caller last authored
                 # or last edited — not to the reconciled re-render. That is the whole point: no
@@ -2010,6 +2013,16 @@ def _register_model_tools(
                     )
                     antimony, op_summary = model_edits_mod.apply_model_edits(
                         base_src, ops, fixed=fixed
+                    )
+                    tie_warnings = msg_mod.warnings_from(
+                        msg_mod.SOURCE_EDIT,
+                        identifiability_mod.unhinted_ties(
+                            session,
+                            ops,
+                            session.provenance.current_version
+                            if base_version is None
+                            else int(base_version),
+                        ),
                     )
                     # Read INSIDE the guard, next to the source read above: a version dir whose
                     # parameters.tsv is truncated raises EmptyDataError and the legacy json path
@@ -2093,7 +2106,11 @@ def _register_model_tools(
                     )
                 if not result.get("applied"):
                     return result
-                result["messages"] = statement_warnings + (result.get("messages") or [])
+                result["messages"] = [
+                    *statement_warnings,
+                    *tie_warnings,
+                    *(result.get("messages") or []),
+                ]
                 out = ctx.edit_then_fit(result, n_starts, justification, before)
             finally:
                 session.derived_from = None
@@ -2315,7 +2332,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         UNIDENTIFIABLE, not under-explored), `noise_sigma_report` with `noise_sigma_inflated` /
         `noise_sigma_collapsed` (an estimated sigma absorbing misfit or overfitting the noise: fix
         the model's form, not the noise), the `residual_structure` verdict, and `merge_hints`
-        (parameter pairs the data cannot separate whose merge the criterion would pay for).⦃ With
+        (parameter pairs whose merge the criterion would pay for, by a local estimate at the
+        optimum of `priced_at_version`; a refit decides).⦃ With
         estimated sigmas, `reduced_chi2` and `chi2_gof_pvalue` sit near their null whatever the
         fit and say nothing about adequacy.⦄
         """
@@ -2410,21 +2428,18 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         """Run a DuckDB SQL query over the data, on a private copy (nothing it does reaches the
         session).
 
-        TWO NAMING CONVENTIONS, and they do not mix. The PEtab tables keep PEtab's camelCase:
-        `measurements(observableId, experimentId, time, measurement, observableParameters,
-        noiseParameters)`, `conditions(conditionId, targetId, targetValue)`,
-        `experiments(experimentId, time, conditionId)`, `observables(observableId, ...)`,
-        `parameters(parameterId, ...)`. The DERIVED tables use snake_case:
-        `simulations(observable_id, experiment_id, time, ...)`, `simulations_history` (the same
-        plus `version`), `state_trajectories(experiment_id, time, entity_id, value)`, and
-        `optimization_starts` / `optimization_trace`. The measurement table's key column is
-        `experimentId` — NOT `experiment_id` (that is `simulations`); an empty `experimentId`
-        ('') is a measurement of the model simulated as is. Do not carry a column list from a
-        `simulations` query onto `measurements`, or the reverse.
+        Every column is snake_case, the PEtab tables' too: `measurements(observable_id,
+        experiment_id, time, measurement, observable_parameters, noise_parameters)`,
+        `conditions(condition_id, target_id, target_value)`, `experiments(experiment_id, time,
+        condition_id)`, `observables(observable_id, ...)`, `parameters(parameter_id, lower_bound,
+        upper_bound, nominal_value, ...)`, `simulations(observable_id, experiment_id, time, ...)`,
+        `simulations_history` (the same plus `version`), `state_trajectories(experiment_id, time,
+        entity_id, value)`, and `optimization_starts` / `optimization_trace`. An empty
+        `experiment_id` ('') is a measurement of the model simulated as is.
 
         `simulations` has one row per point of the last fit: `measurement`, `simulation`,
-        `residual`, `residual_weighted`, `noise`, and the row's `noise_parameters` — residuals
-        live there, not on `measurements`. `state_trajectories` has the last fit's hidden states:
+        `residual`, `residual_weighted` (signed (m - s)/sigma: square it for chi2), `noise`, and
+        the row's `noise_parameters` — residuals live there, not on `measurements`. `state_trajectories` has the last fit's hidden states:
         each species and assignment rule (`entity_id`) at the times its experiment was measured.
         `simulations_history` is the only way to compare versions point by point, e.g.
         `SELECT observable_id, experiment_id, time,
@@ -2432,8 +2447,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         max(CASE WHEN version=4 THEN residual_weighted END) AS v4
         FROM simulations_history WHERE version IN (3, 4) GROUP BY 1, 2, 3
         ORDER BY abs(v4) - abs(v3) DESC`. A measurement reaches its inputs through its experiment:
-        `measurements.experimentId = experiments.experimentId`, then `experiments.conditionId =
-        conditions.conditionId`. `list_data_tables` has every table's columns.
+        `measurements.experiment_id = experiments.experiment_id`, then `experiments.condition_id =
+        conditions.condition_id`. `list_data_tables` has every table's columns.
 
         Aggregate only NUMERIC columns, filter `residual_weighted IS NOT NULL` for residual
         statistics, and prefer aggregations: rows are capped at `max_rows`. When `truncated` is
@@ -2510,7 +2525,7 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         PARAMETERS (`identifiability`), from the Fisher information at the optimum and the
         multistart spread: per-parameter standard error and fold uncertainty, marginal and partial
         correlations, the near-flat eigen-directions (the parameter COMBINATIONS the data cannot
-        pin), and a ranked `candidates` list. `merge_candidates` prices giving a pair ONE SHARED
+        pin), and a ranked `candidates` list. `merge_candidates` estimates giving a pair ONE SHARED
         value: `dnll`, cheapest first; `dscore`, NEGATIVE when the merge lowers the score;
         `move_scaled`, how far the tie moves a parameter. Only same-role, same-scale pairs with
         neither member at a bound are priced (`n_ties_skipped` counts the rest), and the fit

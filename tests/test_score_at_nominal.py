@@ -61,6 +61,33 @@ def test_score_shipped_model_reports_the_nominal_point(amici_build_root, tmp_pat
     assert summary["bic"] is not None  # k came from the table, n from the simulation
 
 
+def test_a_delivered_model_of_rate_rules_alone_is_scored(amici_build_root, tmp_path):
+    """A delivery whose states are all rate-rule PARAMETERS (no species, no reactions) is the
+    toy's own mechanism written another way, so it scores what the toy scores at the same nominal
+    values. The session used to seed over it and report it as never built. (Compiles AMICI —
+    run under srun.)"""
+    from petab_mcp import fitting
+    from petab_mcp.engine import AmiciEngine
+    from petab_mcp.references import StubReferenceResolver
+    from petab_mcp.session import PetabSession
+    from test_seed_model import rules_only_problem
+
+    def score(yaml_path, prov):
+        session = PetabSession(
+            str(yaml_path), provenance_dir=str(prov), resolver=StubReferenceResolver()
+        )
+        engine = AmiciEngine(session, build_root=str(amici_build_root))
+        session.engine = engine
+        return fitting.score_at_nominal(session, engine)
+
+    work = tmp_path / "toy"
+    shutil.copytree(TOY, work)
+    reactions = score(work / "problem.yaml", tmp_path / "prov_toy")
+    rules = score(rules_only_problem(tmp_path), tmp_path / "prov_rules")
+    assert rules["status"] == "scored_at_nominal"
+    assert rules["neg_log_likelihood"] == pytest.approx(reactions["neg_log_likelihood"], rel=1e-6)
+
+
 def _delivered_toy(tmp_path, amici_build_root):
     """The toy with `sigma_B` (0.3) and a scaling `s_B` (2.0) both estimated through placeholders,
     so the fit's hierarchical objective inner-solves both; ``(session, engine)``."""

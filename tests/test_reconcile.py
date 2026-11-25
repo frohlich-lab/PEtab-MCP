@@ -913,7 +913,7 @@ def test_an_unassigned_parameter_is_seeded_not_exported_empty():
     from petab_mcp.problem import LOG10, PARAMETER_SCALE
 
     prob = _bare_problem(_UNASSIGNED)
-    # Named for operations._orphan_warnings (#264); `k_third`'s assignment is its value.
+    # Named for operations._orphans (#264); `k_third`'s assignment is its value.
     assert R.reconcile(prob)["parameters"]["seeded"] == ["k_deg", "n"]
     row = prob.parameter_df.loc["k_deg"]
     assert (row[NOMINAL_VALUE], row[PARAMETER_SCALE]) == (R.SEED_INITIAL_VALUE, LOG10)
