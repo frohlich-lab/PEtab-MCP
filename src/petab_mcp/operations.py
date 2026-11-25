@@ -23,6 +23,7 @@ from __future__ import annotations
 import copy
 import functools
 import json
+import math
 import re
 from typing import Any, Callable
 
@@ -783,6 +784,24 @@ def _commit_change(
                 if recon is not None
                 else param_result
             )
+        # A pin was verified on one structure, so a model edit estimates it again: kept, it would
+        # be a free fixed value once the edit breaks the symmetry it rested on. A parameters-only
+        # call keeps them and adds its own.
+        pins = dict(getattr(session, "pins", None) or {})
+        unpinned_note = None
+        if model_build is not None:
+            if unpinned := sorted(p for p in pins if p in problem.parameter_df.index):
+                from .parameters import update_parameters
+
+                update_parameters(problem, [{"id": p, "estimate": True} for p in unpinned])
+                unpinned_note = (
+                    f"{unpinned} were pinned on the structure this edit changes, so they are "
+                    "estimated again, from their pinned values. Pin again after this fit if their "
+                    "direction is still flat."
+                )
+            pins = {}
+        elif isinstance(apply_result, dict):
+            pins.update(apply_result.get("pinned") or {})
         # A parameters-only call must not change the model: it never runs the reconcile or the
         # has-dynamics refusal, so a model edit smuggled through it would reach a committed
         # version unchecked. The live problem is safe either way (the candidate is a deep copy);
@@ -852,7 +871,7 @@ def _commit_change(
         # result no longer carries, so they were reaching nobody at all.
         # The regulators' too, and a constraint that could not be checked, in the edit's event as
         # in its result.
-        warnings = [*warnings, *(w for w in (said, unchecked) if w)]
+        warnings = [*warnings, *(w for w in (said, unchecked, unpinned_note) if w)]
         edit_messages = M.warnings_from(M.SOURCE_EDIT, warnings) + M.warnings_from(
             M.SOURCE_VALIDATION,
             [i["message"] for i in report["issues"] if i.get("level") == "warning"],
@@ -892,6 +911,7 @@ def _commit_change(
         # can throw. A throw after the swap would leave the live problem changed while the caller
         # reports `applied: false`, and `make_changes` returns on that without reverting.
         session.problem = problem
+        session.pins = pins
         if signed is not None and model_build is not None:
             record.clear()  # the caller keeps this record as the new model's rows
             record.update(signed)
@@ -974,6 +994,12 @@ def set_model(
         )
 
     normalized = _normalize_parameter_changes(parameters, arg="parameters") if parameters else []
+    if any(c["pin"] is not None for c in normalized):
+        raise OperationError(
+            "make_changes: a pin is verified on the structure that was fitted, and this call "
+            "changes it. Pin in a call that sends only `parameters`.",
+            cause="pin_with_model",
+        )
 
     # The parameters estimated in the version this edit starts from (the fork's base, else HEAD), so
     # we can flag any the re-author drops.
@@ -2286,18 +2312,29 @@ def _normalize_parameter_changes(
                 "and scale edits into a single entry."
             )
         seen.add(pid)
-        unknown = set(ch) - {"parameter_id", "lower_bound", "upper_bound", "scale"}
+        unknown = set(ch) - {"parameter_id", "lower_bound", "upper_bound", "scale", "pin"}
         if unknown:
             raise OperationError(
                 f"{label}: entry for {pid!r} has unknown key(s) {sorted(unknown)} — "
-                "allowed keys are parameter_id, lower_bound, upper_bound, scale (a misspelled key "
-                "would otherwise be silently ignored)."
+                "allowed keys are parameter_id, lower_bound, upper_bound, scale, pin (a "
+                "misspelled key would otherwise be silently ignored)."
             )
         lb, ub, scale = ch.get("lower_bound"), ch.get("upper_bound"), ch.get("scale")
-        if lb is None and ub is None and scale is None:
+        pin = ch.get("pin")
+        if lb is None and ub is None and scale is None and pin is None:
             raise OperationError(
                 f"{label}: the entry for {pid!r} changes nothing — give "
-                "lower_bound, upper_bound and/or scale."
+                "lower_bound, upper_bound and/or scale, or pin."
+            )
+        if pin is not None and (
+            isinstance(pin, bool)
+            or not isinstance(pin, (int, float))
+            or not math.isfinite(pin)
+            or (lb, ub, scale) != (None, None, None)
+        ):
+            raise OperationError(
+                f"{label}: pin {pid!r} at one finite number, in an entry of its own.",
+                cause="malformed_pin",
             )
         # Bounds must be real numbers HERE, not at the point of writing them: `update_parameters`
         # coerces with a bare `float(value)`, whose ValueError is not a PetabMcpError and so
@@ -2317,7 +2354,13 @@ def _normalize_parameter_changes(
                     "finite numbers."
                 )
         normalized.append(
-            {"parameter_id": pid, "lower_bound": lb, "upper_bound": ub, "scale": scale}
+            {"parameter_id": pid, "lower_bound": lb, "upper_bound": ub, "scale": scale, "pin": pin}
+        )
+    if sum(c["pin"] is not None for c in normalized) > 1:
+        raise OperationError(
+            f"{label}: one pin per call. Each is verified on the fit in place, and the second "
+            "is verified on the fit the first leaves.",
+            cause="malformed_pin",
         )
     return normalized
 
@@ -2485,6 +2528,8 @@ def _parameter_edit(
         ]
         inner = R.classify_inner_parameters(problem) if any(sent) else {}
         for ch, bounds in zip(normalized, sent):
+            if ch["pin"] is not None:
+                continue
             pid, lb, ub, scale = (
                 ch["parameter_id"],
                 ch["lower_bound"],
@@ -2544,6 +2589,27 @@ def _parameter_edit(
             if scale is not None:
                 summary["scale"] = scale
             changed.append(summary)
+        # A pin fixes its parameter and moves the rest of its flat direction to where the fit is
+        # unchanged, both read off the fit in place (identifiability.pin_image), so k drops by one
+        # at the same nll. It holds for this structure only: see `_commit_change`.
+        pinned: dict[str, float] = {}
+        for ch in normalized:
+            if ch["pin"] is None:
+                continue
+            from . import identifiability as I
+
+            pid, value = ch["parameter_id"], float(ch["pin"])
+            image = I.pin_image(session, pid, value)
+            if isinstance(image, str):
+                raise OperationError(f"Refusing to pin {pid!r}: {image}", cause="pin_refused")
+            updates.append({"id": pid, "estimate": False, "nominalValue": value})
+            updates += [{"id": m, "nominalValue": v} for m, v in image.items()]
+            pinned[pid] = value
+            changed.append({"parameter_id": pid, "pin": value, "rescaled": sorted(image)})
+            warnings.append(
+                f"{pid!r} is pinned at {value:g}, and {sorted(image)} moved with it, so the fit "
+                "is unchanged. The next model edit estimates it again."
+            )
         # One transactional write for the whole batch — a single parameter-table snapshot. The
         # live table is the one before this call's model edits, for the unknown-id refusal.
         rows = (session.model_statements or {}).get("rows") or []
@@ -2565,6 +2631,8 @@ def _parameter_edit(
                     f"bounds and scale sent for it do not change the fit. {_HELD_FIXED}"
                 )
         out: dict[str, Any] = {"changed": changed}
+        if pinned:
+            out["pinned"] = pinned
         if warnings:
             out["warnings"] = warnings  # advisory only; the edit was applied
         return out
@@ -2631,6 +2699,7 @@ def working_state(session) -> dict[str, Any]:
             "optimization": session.optimization,
             # A parameters-only edit signs the rows' regulators again on its bounds.
             "model_statements": getattr(session, "model_statements", None),
+            "pins": getattr(session, "pins", None),
         }
 
 
@@ -2652,6 +2721,7 @@ def revert_working_state(session, snapshot: dict[str, Any], reason: str) -> None
         session.optimization = snapshot["optimization"]
         if "model_statements" in snapshot:
             session.model_statements = snapshot["model_statements"]
+        session.pins = snapshot.get("pins") or {}
         session.provenance.append_event(
             {
                 "type": "revert",

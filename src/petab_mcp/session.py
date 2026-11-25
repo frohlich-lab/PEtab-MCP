@@ -401,6 +401,10 @@ class PetabSession:
         # from statements, beside its source: what `get_model(format='statements')` renders, what
         # a commit that submits no model text inherits, and restored with the version.
         self.model_statements: dict[str, Any] | None = None
+        # The working table's pins, id -> value (`make_changes`' `pin`): FIXED rows that a model
+        # edit estimates again (see operations._commit_change). Stored in each version's meta and
+        # restored with it.
+        self.pins: dict[str, float] = {}
 
         # What the `statements` route asserted for the next commit: each row with the Emission
         # it produced (:func:`operations.statements_to_antimony`). Stored as ``statements.json``
@@ -973,6 +977,7 @@ class PetabSession:
             self.version_score = (self.problem_hash(), snap.get("neg_log_likelihood"))
             # The rows move WITH the model.
             self.model_statements = self.provenance.get_statements(version)
+            self.pins = dict(self.provenance.get_meta(version).get("pins") or {})
             # Restore this version's fit artifacts too: the optimization traces/results are
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
             # durable resume brings them back rather than dropping them.
@@ -1026,6 +1031,8 @@ class PetabSession:
         # records it uniformly; best-effort, since a fingerprint/score failure must never fail a
         # snapshot.
         meta = dict(meta or {})
+        if self.pins:
+            meta["pins"] = dict(self.pins)
         if "structure_hash" not in meta:
             try:
                 meta["structure_hash"] = structure_fingerprint(
