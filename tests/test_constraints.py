@@ -438,40 +438,40 @@ def test_activity_rises_with_a_declared_active_form():
     assert not late.ok and late.why.startswith("rows `r23` change the activity of AKT1")
 
 
-#: perica_egf's route to BRAF and its constraint on a BRAF mutant (sweep 61551831, #164).
+#: A route to BRAF and a constraint on a BRAF mutant (#164).
 _RAS = (("sos1_gef", "SOS1 activates RAS"), ("ras_braf", "RAS activates BRAF"))
-_MUTANT = "c1: SOS1 increases BRAF{mut:S151A, activity:on}, indirectly"
+_MUTANT = "c1: SOS1 increases BRAF{mut:V600E, activity:on}, indirectly"
 
 
 def test_a_mutant_nothing_seeds_is_named_as_missing():
-    """#164: a generic `RAS activates BRAF` and a `BRAF` seed form no BRAF{mut:S151A}. The refusal
+    """#164: a generic `RAS activates BRAF` and a `BRAF` seed form no BRAF{mut:V600E}. The refusal
     names the seed that adds it, not `ras_braf` as the row that changes it; with that seed,
     `ras_braf` carries the claim."""
     got = _check(
-        [_MUTANT, "c2: SOS1 increases BRAF{pS151}, indirectly"],
+        [_MUTANT, "c2: SOS1 increases BRAF{pS365}, indirectly"],
         _record(*_RAS, seeds=[("BRAF", "BRAF", 1)]),
     )
     assert not got["c1"].ok and got["c1"].why == (
-        "the model has no species BRAF{mut:S151A, activity:on}; nothing seeds or forms it. A "
-        'seed `{"name": "BRAF_S151A", "agent": "BRAF{mut:S151A}", "amount": ...}` adds one, and '
+        "the model has no species BRAF{mut:V600E, activity:on}; nothing seeds or forms it. A "
+        'seed `{"name": "BRAF_V600E", "agent": "BRAF{mut:V600E}", "amount": ...}` adds one, and '
         "`ras_braf` would then reach it"
     )
     # A form of an agent the model has, which no row forms, needs a row.
     assert not got["c2"].ok and got["c2"].why.endswith("A row that forms it adds one")
-    seeded = _record(*_RAS, seeds=[("BRAF", "BRAF", 1), ("BRAF_S151A", "BRAF{mut:S151A}", 1)])
+    seeded = _record(*_RAS, seeds=[("BRAF", "BRAF", 1), ("BRAF_V600E", "BRAF{mut:V600E}", 1)])
     assert _check([_MUTANT], seeded)["c1"].rows == ("ras_braf",)
 
 
 def test_a_mutant_named_as_its_own_agent_is_still_missing():
-    """#164: agents match by name, so `BRAF_S151A`, which the trace reaches, is no
-    BRAF{mut:S151A}; the refusal names the seed, not `ras_braf_mut`."""
+    """#164: agents match by name, so `BRAF_V600E`, which the trace reaches, is no
+    BRAF{mut:V600E}; the refusal names the seed, not `ras_braf_mut`."""
     record = _record(
         *_RAS,
-        ("ras_braf_mut", "RAS activates BRAF_S151A"),
-        seeds=[("BRAF", "BRAF", 1), ("BRAF_S151A", "BRAF_S151A", "mutant_BRAF_S151A")],
+        ("ras_braf_mut", "RAS activates BRAF_V600E"),
+        seeds=[("BRAF", "BRAF", 1), ("BRAF_V600E", "BRAF_V600E", "mutant_BRAF_V600E")],
     )
     got = _check([_MUTANT], record)["c1"]
-    assert not got.ok and got.why.startswith("the model has no species BRAF{mut:S151A, act")
+    assert not got.ok and got.why.startswith("the model has no species BRAF{mut:V600E, act")
     assert got.why.endswith("adds one, and `ras_braf` would then reach it")
 
 
@@ -481,7 +481,7 @@ def test_a_subject_the_model_lacks_is_named():
     record = _record(
         ("egfr_ras", "EGFR activates RAS"),
         ("ras_braf", "RAS activates BRAF"),
-        seeds=[("BRAF_S151A", "BRAF{mut:S151A}", 1)],
+        seeds=[("BRAF_V600E", "BRAF{mut:V600E}", 1)],
     )
     got = _check([_MUTANT, "c2: SOS1 does not affect BRAF, indirectly"], record)
     assert not got["c1"].ok and got["c1"].why == (

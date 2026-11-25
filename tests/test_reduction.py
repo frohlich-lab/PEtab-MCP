@@ -163,7 +163,7 @@ def _product(trajectories: dict, split: dict, key: str) -> np.ndarray:
 
 
 def test_a_kinase_context_becomes_a_rate_factor():
-    """A multisite kinase acting on itself, as an agent writes it (perica_egf's EGFR): every
+    """A multisite kinase acting on itself (an EGFR, as an agent writes it): every
     unmentioned form of the kinase was a reaction of its own, and the reduction writes one
     reaction per substrate form at ``k·Obs(kinase)`` instead. No rule reads two of its sites on
     the substrate, so each site is tracked apart, and the readout of two is their product."""

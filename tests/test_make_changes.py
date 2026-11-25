@@ -1754,15 +1754,15 @@ def _seeds_call(mcp, seeds):
 
 def test_a_wild_type_and_its_mutant_seed_each_under_its_forms_name(tmp_path):
     """Two seeds of one agent without `name` both took the agent's, and the build refused them as
-    named twice without saying what to send (PEtab-MCP#165: perica_egf's `BRAF` beside
-    `BRAF{mut:S151A}`, in three of five runs)."""
+    named twice without saying what to send (PEtab-MCP#165: `BRAF` beside
+    `BRAF{mut:V600E}`, in three of five runs)."""
     mcp = _statements_server(tmp_path)
     out = _seeds_call(mcp, [{"agent": "A", "amount": "1 - mutant_A"},
-                            {"agent": "A{mut:S151A}", "amount": "mutant_A"}])
+                            {"agent": "A{mut:V600E}", "amount": "mutant_A"}])
     assert out["applied"] is True, out.get("error")
-    assert [s["name"] for s in _stored_rows(tmp_path, 0)["seeds"]] == ["A", "A_S151A"]
+    assert [s["name"] for s in _stored_rows(tmp_path, 0)["seeds"]] == ["A", "A_V600E"]
     shown = _text(mcp, "get_model", {"format": "statements"})
-    assert "seed A: A = 1 - mutant_A\nseed A_S151A: A{mut:S151A} = mutant_A" in shown
+    assert "seed A: A = 1 - mutant_A\nseed A_V600E: A{mut:V600E} = mutant_A" in shown
 
 
 def test_set_seed_of_a_second_form_joins_the_first(tmp_path):
@@ -1792,11 +1792,11 @@ def test_a_shared_name_is_refused_with_the_second_seed_named_apart(tmp_path):
     (PEtab-MCP#165); it now gives the second entry back, named."""
     out = _seeds_call(_statements_server(tmp_path), [
         {"agent": "A", "amount": "1 - mutant_A"},
-        {"name": "A", "agent": "A{mut:S151A}", "amount": "mutant_A"}])
+        {"name": "A", "agent": "A{mut:V600E}", "amount": "mutant_A"}])
     assert out["error_cause"] == "duplicate_seed"
     assert ('`seeds[1]` is named `A`, as `seeds[0]` is (a seed without `name` is named after '
             'its agent and form); each seed is `<name>_init`, so name the second apart: '
-            '`{"name": "A_S151A", "agent": "A{mut:S151A}", "amount": "mutant_A"}`') in out["error"]
+            '`{"name": "A_V600E", "agent": "A{mut:V600E}", "amount": "mutant_A"}`') in out["error"]
 
 
 def test_a_held_input_is_reported_at_its_condition_value(tmp_path, add_condition):

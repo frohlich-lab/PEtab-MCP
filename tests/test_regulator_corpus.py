@@ -1,5 +1,5 @@
 """The regulator corpus (``tests/data/regulator_corpus``): every repro from the reviews of
-PEtab-MCP#127 and #128, and every mechanism agents wrote in two NEMO runs, through the check of
+PEtab-MCP#127 and #128, and every mechanism agents wrote in a NEMO sweep, through the check of
 a row's regulators (:mod:`petab_mcp.regulation`).
 
 - ``rows.json``: rows as a model states them, with their bindings and the mechanisms they use,
@@ -7,7 +7,7 @@ a row's regulators (:mod:`petab_mcp.regulation`).
   ``times`` where it gives them, and signed again on its ``problem`` where it gives one (a
   parameter table, conditions, measurement times and the model's values: :func:`regulation.resign`
   as a commit does).
-- ``mechanisms.json``: mechanisms alone (perica_egf's, sweep_indra_55max's), each a reader of
+- ``mechanisms.json``: mechanisms alone (sweep_indra_55max's), each a reader of
   amounts other than its roles re-expressed as a regulator it states, built on a statement of
   agents named by role with every complex its rules start from present, as other rows would make
   them. An entry's ``companions`` (rows and their bindings, as ``rows.json`` gives them) are built

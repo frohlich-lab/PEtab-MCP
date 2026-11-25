@@ -236,7 +236,7 @@ def refuse_unstated(
 
 
 #: The size, in sympy operations, past which an expression is not expanded or factored to sign
-#: it: both grow without bound on a large rate (perica_egf's gexpr13 ran past 20 minutes), and every
+#: it: both grow without bound on a large rate (an agent's gexpr13 ran past 20 minutes), and every
 #: build reads every mechanism again. Past it a sign is read off the expression as it stands, and
 #: one that cannot be counts as not shown.
 SIGN_OPS = 300
