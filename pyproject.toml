@@ -97,6 +97,19 @@ dependencies = [
     # hierarchical scaling (`scale * h + c`, Alkan's readouts), which was scaled with it, silently.
     "pypesto[petab]>=0.8.0",
     "fides>=0.8.1",
+]
+
+[project.optional-dependencies]
+# Fits on a dask cluster: `create_server(cluster=...)`, petab_mcp.dask_engine and petab_mcp.pool,
+# the only importers. `distributed` below 2023.12.0 ignores a plugin's `idempotent` attribute, so
+# every server's `register_plugin` re-sends the workers' plugin to each worker of the pool.
+# dask-jobqueue builds `petab-mcp-pool`'s SLURM cluster; below 0.8.5 every `sbatch`/`scancel` it
+# runs blocked the event loop of the scheduler the pool hosts in its process (dask/dask-jobqueue#610).
+dask = ["distributed>=2023.12.0", "dask-jobqueue>=0.8.5"]
+# The `statements` route: a server given `--entity-map` (and `--constraints`), which builds models
+# from INDRA statements as PySB rules. Nothing else imports these, so the Antimony routes install
+# without them, and without the pysb that no release lets install beside AMICI.
+statements = [
     # INDRA supplies the Statement base class the mechanism vocabulary extends (`statements`),
     # Agent grounding, Preassembler deduplication, and the PySB assembler's monomer and site
     # construction (`mechanisms.assemble`). Pinned to one minor: `mechanisms` drives the
@@ -121,18 +134,10 @@ dependencies = [
     # (README, Install); pip cannot provide it.
     "bionetgen>=0.8.7",
 ]
-
-[project.optional-dependencies]
-# Fits on a dask cluster: `create_server(cluster=...)`, petab_mcp.dask_engine and petab_mcp.pool,
-# the only importers. `distributed` below 2023.12.0 ignores a plugin's `idempotent` attribute, so
-# every server's `register_plugin` re-sends the workers' plugin to each worker of the pool.
-# dask-jobqueue builds `petab-mcp-pool`'s SLURM cluster; below 0.8.5 every `sbatch`/`scancel` it
-# runs blocked the event loop of the scheduler the pool hosts in its process (dask/dask-jobqueue#610).
-dask = ["distributed>=2023.12.0", "dask-jobqueue>=0.8.5"]
 dev = [
-    # The dask extra, so CI runs tests/test_dask_engine.py and tests/test_pool.py (which submits
-    # nothing to SLURM) rather than skipping them.
-    "petab-mcp[dask]",
+    # The dask and statements extras, so CI runs tests/test_dask_engine.py, tests/test_pool.py
+    # (which submits nothing to SLURM) and the statements route rather than skipping them.
+    "petab-mcp[dask,statements]",
     "pytest>=7", "pytest-asyncio>=0.23", "pytest-xdist>=3",
     # The MCP Python client, whose 1 MiB SSE event limit tests/test_server.py holds `get_version`
     # under (PEtab-MCP#231); only transitively present via fastmcp otherwise. 2.3 is fastmcp 4.1's

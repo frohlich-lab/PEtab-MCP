@@ -38,14 +38,23 @@ benchmark examples and the run explorer — lives in
 ## Install
 
 ```bash
-pip install -e . --group pins   # installs AMICI + pyPESTO (a C++ toolchain is required)
+pip install petab-mcp   # installs AMICI + pyPESTO (a C++ toolchain is required)
 ```
 
-The `pins` group (pip >= 25.1) adds unreleased commits of pysb and petab, which PyPI refuses as
-dependencies. No released pysb installs beside AMICI, so an install from PyPI names its commit:
+The `statements` route (a server given `--entity-map`) builds models from INDRA statements as
+PySB rules and needs the `statements` extra. No released pysb installs beside AMICI, so name its
+commit:
 
 ```bash
-pip install petab-mcp "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3"
+pip install "petab-mcp[statements]" "pysb @ git+https://github.com/pysb/pysb.git@9fc6bcb118683ad851e0a4d5604abe646f77cae3"
+```
+
+From a checkout, the `pins` group (pip >= 25.1) adds the unreleased commits of pysb and petab,
+which PyPI refuses as dependencies. The petab commit imports a problem of thousands of
+experiments (Froehlich_CellSystems2018):
+
+```bash
+pip install -e '.[statements]' --group pins
 ```
 
 AMICI compiles generated C++ and needs a toolchain: a C++ compiler, CMake, Ninja, and the
