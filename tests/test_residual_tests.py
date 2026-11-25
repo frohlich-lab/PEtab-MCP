@@ -200,7 +200,7 @@ def test_replicate_lack_of_fit_flags_the_deviating_point():
 
 
 def test_replicate_lack_of_fit_ranks_by_the_miss_not_by_how_tight_a_point_s_replicates_are():
-    """#99 (perica_egf): against each point's own scatter, triplicates that agreed to 1% scored
+    """#99: against each point's own scatter, triplicates that agreed to 1% scored
     z = -161 on a modest miss and topped the flags, and the agent spent three model revisions on
     them. Against the scatter pooled over the sigma's points, only the large miss is flagged."""
     typical = [

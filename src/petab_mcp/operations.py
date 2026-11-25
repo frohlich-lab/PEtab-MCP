@@ -1126,7 +1126,7 @@ def seed_name(agent: dict[str, Any]) -> str:
     for, and after it a part per tag of its notation (:mod:`notation`), in the notation's order: a
     modification as written, a mutation without ``mut:``, an activity's type, a location, a
     partner's own name and form, each prefixed ``no`` where the form is not so (``-pY1068``,
-    ``kinase:off``, ``~B``). ``BRAF{mut:S151A}`` is ``BRAF_S151A``, ``EGFR{pY1068}`` is
+    ``kinase:off``, ``~B``). ``BRAF{mut:V600E}`` is ``BRAF_V600E``, ``EGFR{pY1068}`` is
     ``EGFR_pY1068``, ``A{~B, @nucleus}`` is ``A_nucleus_noB``; each an SBML id, as its
     ``<name>_init`` must be."""
     from indra.assemblers.pysb.assembler import _n

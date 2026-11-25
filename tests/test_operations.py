@@ -944,7 +944,7 @@ def test_a_seed_without_a_name_is_named_after_its_form():
 
     forms = {
         "BRAF": "BRAF",
-        "BRAF{mut:S151A}": "BRAF_S151A",
+        "BRAF{mut:V600E}": "BRAF_V600E",
         "EGFR{pY1068}": "EGFR_pY1068",
         "EGFR{-pY1068}": "EGFR_nopY1068",
         "A{~B, @nucleus}": "A_nucleus_noB",

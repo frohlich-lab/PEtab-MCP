@@ -218,7 +218,7 @@ def _cycle(allo="", basal="", stated="activated by SOS"):
 
 
 def test_a_cycle_back_to_its_substrate_is_checked_on_its_forward_step():
-    """perica_egf's RAS cycle (`ras_gef`, run 61230791_0) was refused as making nothing: its step
+    """An agent's RAS cycle (`ras_gef`) was refused as making nothing: its step
     back makes obj_from again, so obj_from read as an intermediate and nothing as a reactant. It is
     the conversion's input, which the statement says; with obj_to absent the step back is silent."""
     _cycle()
@@ -230,7 +230,7 @@ def test_a_cycle_back_to_its_substrate_is_checked_on_its_forward_step():
 
 
 def test_a_scheme_gated_on_a_state_other_rows_give_is_checked_on_the_real_row():
-    """Eight one-rule perica_egf schemes (`mek_act_braf`, `egfr_act2`, ...) write a site in one
+    """Eight one-rule agent schemes (`mek_act_braf`, `egfr_act2`, ...) write a site in one
     state (`enz(gtpbound='active')`) whose other states other rows give: a placeholder statement
     could not build them, the row as built does."""
     gef = ({"statement": {"type": "Gef", "gef": {"name": "SOS"}, "ras": {"name": "KRAS"}},

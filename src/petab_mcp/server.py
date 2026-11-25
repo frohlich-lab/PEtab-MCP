@@ -275,7 +275,7 @@ class SeedRow(BaseModel):
     name: str | None = Field(
         default=None,
         description="names its parameter `<name>_init`; defaults to the agent's name and form "
-        "('BRAF' for 'BRAF', 'BRAF_S151A' for 'BRAF{mut:S151A}', 'EGFR_pY1068' for "
+        "('BRAF' for 'BRAF', 'BRAF_V600E' for 'BRAF{mut:V600E}', 'EGFR_pY1068' for "
         "'EGFR{pY1068}'), and must differ from every other seed's.",
     )
 
@@ -2701,7 +2701,7 @@ def _register_validation_data_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> 
 # ------------------------------------------------------ provenance/version tools
 #: ``wait_for_fit``'s description. The tool blocks on the server, not a cheap status call to
 #: poll, because each poll is a model call that re-sends the agent's whole context (250k+ tokens on
-#: perica_egf, PEtab-MCP#172). It is async, so a wait holds none of the worker threads that the
+#: a large problem). It is async, so a wait holds none of the worker threads that the
 #: sync tools and the running fits share.
 _WAIT_FOR_FIT_DOC = (
     "Wait for the change being fitted on this session (a `make_changes` whose call timed out "
