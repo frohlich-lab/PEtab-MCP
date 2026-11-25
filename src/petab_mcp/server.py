@@ -777,6 +777,57 @@ def _fit_in_progress(began: float, progress: Any) -> str:
     )
 
 
+def _implicit_base(session: PetabSession, call: dict[str, Any]) -> str | None:
+    """The refusal of a ``make_changes`` without ``base_version`` that would apply to a HEAD that
+    is not the best version, or ``None`` to apply it.
+
+    Agents left ``base_version`` out after a regression and lost the fit of a change to the
+    rejected HEAD (75 min in one run, #330), and a warning on the result came only after it. So
+    the first such call is refused, before anything runs, and the same call (``call``, its
+    arguments bar ``justification`` and ``references``) sent again confirms it. A HEAD
+    ``restore_version`` moved to was chosen already, and is not asked about."""
+    head = session.provenance.current_version
+    best = session.best.version if session.best is not None else None
+    if best is None or head < 0 or head in (best, session.head_restored):
+        return None
+    key = (head, json.dumps(call, sort_keys=True, default=_plain))
+    if session.implicit_base_asked == key:
+        session.implicit_base_asked = None
+        return None
+    session.implicit_base_asked = key
+    return (
+        f"make_changes: no `base_version`, so this change would apply to the working model, "
+        f"v{head}, which is not the best version; v{best} is. NOTHING was applied. Send "
+        f"`base_version={best}` to change the best, or this same call again to change v{head}."
+    )
+
+
+def _plain(value: Any) -> Any:
+    """``value`` as JSON can write it: a pydantic model's fields, else its repr."""
+    return value.model_dump() if isinstance(value, BaseModel) else repr(value)
+
+
+def _labelled(
+    session: PetabSession, out: dict[str, Any], version: Any, unversioned: str
+) -> dict[str, Any]:
+    """A read's result ``out`` with ``version``, the version it shows (``None`` for none), and,
+    while a change is being fitted on ``session``, ``fit_running``, which says what the read
+    shows: that version, or ``unversioned``. Reads take no lock, so a read beside a fit sees that
+    change's working model and the last fit's records (#330). A failed read (``ok: false``) is
+    returned as it is."""
+    if out.get("ok") is False:
+        return out
+    shown = version if isinstance(version, int) and version >= 0 else None
+    out = {**out, "version": shown}
+    if session.change_began is not None:
+        out["fit_running"] = (
+            "a change is being fitted; this read shows "
+            + (f"v{shown}, the last version committed" if shown is not None else unversioned)
+            + ". The change becomes the next version when its fit ends."
+        )
+    return out
+
+
 class _Ctx:
     """One session's state + the error-wrapping helpers a tool resolves through ``route``.
 
@@ -1258,7 +1309,9 @@ something else. `messages` is everything the call had to say, in pipeline order,
 `level` and `source`.
 
 `message` names the version the change was applied to (the working model, or `base_version`'s)⦃ \
-and the best version. `improvement.is_new_best` marks the version that became the best, \
+and the best version. Without `base_version`, a change to a working model that is not the best \
+and that you did not restore is refused once, naming the best; the same call sent again applies \
+it. `improvement.is_new_best` marks the version that became the best, \
 `progress.best_version`: the lowest score so far (`improvement_vs_best_prior` > 0), unless \
 `new_best_declined` says why not. `progress` is `get_progress`'s moving part: a new best resets \
 `non_improving_streak` only once the best has gained {STREAK_RESET_MIN_SCORE_GAIN:g} since the \
@@ -1585,6 +1638,7 @@ def _register_model_tools(
     mcp: FastMCP,
     route: Callable[[], _Ctx],
     statements: bool = False,
+    progress_signals: bool = True,
 ) -> None:
     # `make_changes` takes an argument named `statements`; the route flag goes by this name in it.
     statements_route = statements
@@ -1680,11 +1734,14 @@ def _register_model_tools(
         """
         ctx = route()
         session = ctx.session
-        return ctx.run(
+        # The working model: HEAD's, or while a change is being fitted, that change's.
+        version = None if session.change_began is not None else session.provenance.current_version
+        out = ctx.run(
             "get_model_structure",
             lambda: model_mod.model_structure(session, reactions, initial_conditions),
             {"reactions": reactions, "initial_conditions": initial_conditions},
         )
+        return _labelled(session, out, version, "that change's model, not a version yet")
 
     def _make_changes(
         justification: str,
@@ -1837,6 +1894,24 @@ def _register_model_tools(
                 {},
                 cause=FIT_IN_PROGRESS,
             )
+        # With progress signals off the agent is not told which version is best, and a refusal
+        # here would tell it.
+        if progress_signals and base_version is None:
+            call = {
+                "antimony": antimony,
+                "model_edits": ops,
+                "parameters": parameters,
+                "n_starts": n_starts,
+                "statements": rows,
+                "bindings": bindings,
+                "mechanisms": mechanisms,
+                "seeds": seeds,
+                "readouts": readouts,
+                "amounts": amounts,
+                "statement_edits": edits,
+            }
+            if (refusal := _implicit_base(session, call)) is not None:
+                return ctx.reject_operation("make_changes", refusal, {}, cause="implicit_base")
         # One critical section for the change and its fit, so nothing can fit in between
         # (`session.lock` is an RLock, so the nested acquisitions inside each call are fine).
         with session.change():
@@ -2244,7 +2319,8 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         ctx = route()
         session = ctx.session
         engine = ctx.engine
-        return ctx.run("get_fit_summary", lambda: fitting_mod.fit_summary(session, engine))
+        out = ctx.run("get_fit_summary", lambda: fitting_mod.fit_summary(session, engine))
+        return _labelled(session, out, out.get("version"), "no committed fit")
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_run_timing() -> dict[str, Any]:
@@ -2392,9 +2468,12 @@ def _register_fit_tools(mcp: FastMCP, route: Callable[[], _Ctx]) -> None:
         # Log the query (truncated) alongside max_rows so a failed call is reproducible
         # from `get_errors`.
         logged_sql = sql[:1000] if isinstance(sql, str) else sql
-        return ctx.run(
+        out = ctx.run(
             "query_data", run, {"sql": logged_sql, "max_rows": max_rows, "offset": offset}
         )
+        # The version of the fit tables (`simulations`, `parameters`, the optimization's).
+        version = (session.simulation or {}).get("version")
+        return _labelled(session, out, version, "no committed fit")
 
     @mcp.tool(annotations=_READ_ONLY)
     def get_fit_diagnosis(
@@ -3169,7 +3248,7 @@ def create_server(
         return ctx
 
     _register_read_tools(mcp, route)
-    _register_model_tools(mcp, route, statements=statements)
+    _register_model_tools(mcp, route, statements=statements, progress_signals=progress_signals)
     _register_parameter_tools(mcp, route)
     _register_fit_tools(mcp, route)
     if ctx.held_out is not None:

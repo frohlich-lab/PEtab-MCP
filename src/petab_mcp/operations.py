@@ -2595,9 +2595,7 @@ def bundle_result(
     signal that survives a failure between the snapshot and the end of ``session.fit``.
 
     ``message`` opens with the version the change was applied to (the ``base_version`` fork's, else
-    ``head_before``) and the best version after it. Where the change was applied to a version that
-    is not the best, and the working model it leaves is not the best either, a ``make_changes``
-    warning says so and names the ``base_version`` that edits the best (PEtab-MCP#282).
+    ``head_before``) and the best version after it (PEtab-MCP#282).
     """
     committed = bool(fit_result.get("committed"))
     no_change = bool(fit_result.get("no_change"))
@@ -2643,25 +2641,12 @@ def bundle_result(
             "assuming the model is broken: it says whether to fix the change and send it again, "
             "or to stop re-sending this structure and make a genuinely different change instead."
         )
-    off_best = []
-    if best is not None and best not in (base, version):
-        off_best = [
-            M.warning(
-                M.SOURCE_TOOL,
-                signal(
-                    f"v{base}, which this change was applied to, is not the best version; v{best} "
-                    f"is. A change applies to the working model, now v{head_now}, unless "
-                    f"`base_version` names another: send `base_version={best}` to change the best."
-                ),
-            )
-        ]
-    # Pipeline order: the tool's, the edit's messages, then the fit's. `run_fit` /
+    # Pipeline order: the edit's messages, then the fit's. `run_fit` /
     # `edit_then_fit` already shape a rejected fit as error entries; a fit that RAN reports its
     # advisories as the flat `warnings` the de-dup produces, so both shapes are folded in here.
     messages = _unrepeated(
         session,
-        off_best
-        + list(edit_result.get("messages") or [])
+        list(edit_result.get("messages") or [])
         + list(fit_result.get("messages") or [])
         + M.warnings_from(M.SOURCE_FIT, fit_result.get("warnings")),
         version if committed else None,

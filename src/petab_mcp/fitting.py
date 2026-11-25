@@ -2727,7 +2727,8 @@ def _slim_fitted_parameters(session, out: dict) -> Any:
     (parameters.tsv), so only the push is slimmed — the pull is intact.
 
     Semantics: `fitted_parameters_changed` = entries NEW or moved >1% (relative, absolute floor
-    for zeros) vs the PREVIOUS version's stored fit, to 4 significant digits;
+    for zeros) vs the stored fit of the version this one was made from (a fork's base), to 4
+    significant digits;
     `n_parameters_unchanged` counts the rest.
     The FIRST fit keeps the full dict under the original key — nothing to diff against, and the
     first read is where the whole vector genuinely informs. Best-effort: any failure keeps the
@@ -2779,8 +2780,8 @@ def _slim_fitted_parameters(session, out: dict) -> Any:
             out["parameters_removed"] = removed
         out["n_parameters_unchanged"] = len(fitted) - len(changed)
         out["fitted_parameters_note"] = (
-            f"only parameters NEW, REMOVED or moved >1% vs version {base_v} (this fit's parent) "
-            f"are listed; {len(fitted) - len(changed)} unchanged."
+            f"only parameters NEW, REMOVED or moved >1% vs v{base_v}, which v{version} was made "
+            f"from, are listed; {len(fitted) - len(changed)} unchanged."
         )
         out["fitted_parameters"] = None
         # Scales for everything the payload still NAMES (changed + removed). Nulling them
@@ -2826,14 +2827,20 @@ def fit_summary(session, engine) -> dict[str, Any]:
             "version",
         )
     }
-    pdf = session.problem.parameter_df
+    problem = session.fit_problem()
+    pdf = problem.parameter_df
     out["parameter_scales"] = _parameter_scales_for(
         out.get("fitted_parameters"), out.get("parameter_scales"), pdf
     )
-    # Live counts, not the payload's: `ensure_simulation` guarantees the simulation matches the
-    # working model, and a restored legacy payload may predate either field.
-    out["n_estimated"] = int(session.problem.n_estimated)
-    out["hardcoded_constants"] = _literals.hardcoded_constants(session.model.sbml_model)
+    # The fit's own counts, which a fit and a restore both stamp on the payload: while a change
+    # is being fitted the working model is that change's, and its k beside this nll is no
+    # version's score (#330). Live only for a payload without them.
+    if sim.get("n_estimated") is not None:
+        out["n_estimated"] = int(sim["n_estimated"])
+        out["hardcoded_constants"] = list(sim.get("hardcoded_constants") or [])
+    else:
+        out["n_estimated"] = int(session.problem.n_estimated)
+        out["hardcoded_constants"] = _literals.hardcoded_constants(session.model.sbml_model)
     out["k"] = complexity_k(out)
     out.update(
         goodness_of_fit(
@@ -2848,7 +2855,7 @@ def fit_summary(session, engine) -> dict[str, Any]:
     if note := chi2_note(session.problem, sim, out):
         out["chi2_note"] = note
     out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
-    _report = noise_sigma_report(session.problem, out.get("fitted_parameters"))
+    _report = noise_sigma_report(problem, out.get("fitted_parameters"))
     out["noise_sigma_report"] = _report
     # Proactive plausibility verdict on EVERY read (not just at a plateau stop): a good BIC bought
     # with an inflated/collapsed estimated sigma is not real adequacy and will not be accepted as

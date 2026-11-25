@@ -416,6 +416,11 @@ class PetabSession:
         # the duration of such a call (see server.make_changes); everything else leaves it None
         # and the snapshot falls back to HEAD, which is correct for an edit of the working model.
         self.derived_from: int | None = None
+        # A `make_changes` without `base_version` on a HEAD that is not the best is refused once
+        # and applied when sent again (`server._implicit_base`): `implicit_base_asked` is the HEAD
+        # and arguments of the call refused, `head_restored` the HEAD `restore_version` chose.
+        self.implicit_base_asked: tuple[int, str] | None = None
+        self.head_restored: int | None = None
         # The `(old, new)` of each `rename` in the running `make_changes` call's `model_edits`
         # (:func:`model_edits.renames`), set by the server for the call like `derived_from`: the
         # reconcile carries each old id's row to its new id (`operations.set_model`), and the fit
@@ -978,6 +983,15 @@ class PetabSession:
             ),
             optimization=None,
         )
+
+    def fit_problem(self) -> Any:
+        """The problem :attr:`simulation` was fitted on, whose table reads pair with its records:
+        the working problem, except while a change is being fitted (:attr:`change_began`), when
+        the working table is that change's and the fit's is its version's stored one (#330)."""
+        version = (self.simulation or {}).get("version")
+        if self.change_began is None or not isinstance(version, int) or version < 0:
+            return self.problem
+        return self.problem.replace(parameter_df=self.provenance.get_parameter_df(version))
 
     def _snapshot_version(
         self,
@@ -2057,4 +2071,6 @@ class PetabSession:
                     "build one.",
                     cause="constraint_violated",
                 )
-        return self.rollback_to(version, justification)
+        out = self.rollback_to(version, justification)
+        self.head_restored = int(version)
+        return out

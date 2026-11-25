@@ -222,19 +222,19 @@ def _with_schema(df, columns):
     return df
 
 
-def _frames(session) -> dict[str, Any]:
+def _frames(session, problem: Any = None) -> dict[str, Any]:
     """Build the ``{table_name: DataFrame}`` mapping registered for a query.
 
-    Reads the *current* problem tables and the stored simulation dataframe
-    (``session.simulation``); the ``simulations`` frame is empty (but well-typed) when no
-    commit has produced records yet. Every frame is guaranteed at least one column (see
+    Reads ``problem``'s tables (the session's, when not given) and the stored simulation
+    dataframe (``session.simulation``); the ``simulations`` frame is empty (but well-typed) when
+    no commit has produced records yet. Every frame is guaranteed at least one column (see
     :func:`_with_schema`) so registering it into DuckDB cannot fail on an empty table.
     """
     import pandas as pd
 
     from .parameters import parameters_to_records
 
-    problem = session.problem
+    problem = session.problem if problem is None else problem
     frames: dict[str, Any] = {
         "measurements": _with_schema(_promote_index(problem.measurement_df), MEASUREMENT_COLUMNS),
         "conditions": _with_schema(_promote_index(problem.condition_df), CONDITION_COLUMNS),
@@ -490,7 +490,9 @@ def run_query(session, sql: str, max_rows: int = 1000, offset: int = 0) -> dict[
     """
     max_rows, offset = validate_query_args(sql, max_rows, offset)
     duckdb = _duckdb()
-    frames = _frames(session)
+    # The tables the fit was made on: while a change is being fitted, `parameters` would
+    # otherwise be that change's beside the last fit's records (#330).
+    frames = _frames(session, session.fit_problem())
     # Materialized ONLY when the query names it (see query_references for the trade-off):
     # assembling it parses every stored version's simulations.json on a cold cache, and the
     # overwhelmingly common HEAD-only queries must not pay that.
