@@ -12,7 +12,6 @@ would pay a multistart per operation and score intermediate states nobody meant 
 from __future__ import annotations
 
 import asyncio
-import re
 import shutil
 
 import pytest
@@ -76,75 +75,8 @@ def test_rename_covers_the_parameter_merge_case():
     appears in (priced by the agent at dBIC -2.668). A bucket-only API would force that back to
     wholesale re-authoring."""
     out, summary = me.apply_model_edits(SRC, [{"op": "rename", "old": "k2", "new": "k1"}])
-    assert summary == ["renamed k2 -> k1 (1 occurrences; k1 keeps its own declaration)"]
+    assert summary == ["renamed k2 -> k1 (2 occurrences)"]
     assert "rev: B => A; k1*B;" in out and "k2" not in out
-
-
-def test_a_merge_keeps_one_declaration_of_the_name_it_keeps():
-    """oliveira 57's stored source declared `beta_asy = 0.6; ... beta_asy = 0.45; ...
-    beta_asy = 0.13;` after three merges, and `get_model(version=18)` served it (PEtab-MCP#328).
-    The target keeps its own declarations; one only the merged name had becomes the target's."""
-    src = SRC.replace("k2 = 0.1;", "k2 = 0.1; k3 = 0.3;\n  const k1, k2, k3;").replace(
-        "k2*B;", "(k2 + k3 + k4)*B;\n  k4 = 0.4;"
-    )
-    out, _ = me.apply_model_edits(
-        src,
-        [
-            {"op": "rename", "old": "k2", "new": "k1"},
-            {"op": "rename", "old": "k3", "new": "k1"},
-            {"op": "rename", "old": "k4", "new": "k5"},
-        ],
-    )
-    assert "  k1 = 0.5;\n  const k1;\n" in out and out.count("k1 =") == 1
-    assert "(k1 + k1 + k5)*B;\n  k5 = 0.4;" in out
-
-
-_RENDER = """// Created by libAntimony
-model *demo()
-
-  // Compartments and Species:
-  compartment cell;
-  species A in cell, P in cell, $Q in cell,
-    B in cell;
-
-  // Reactions:
-  fwd: A => B; k1*A;
-
-  // Species initializations:
-  A = 1;
-  P = P_init;  // the P pool
-  Q = 3;
-  B = 0;
-
-  // Variable initializations:
-  P_init = 5; k1 = 0.5;
-  k_unused = 2;
-
-  // Other declarations:
-  const cell, P_init, k1, k_unused;
-
-  // Display Names:
-  P is "Pee";
-end
-"""
-
-
-def test_what_the_reconcile_pruned_leaves_the_source():
-    """fontaine 100's `G1`, `G2` and crauste 16's `P` were pruned again on every edit, each time
-    with "Removed species ...", since the stored source still declared them (PEtab-MCP#328). An
-    id goes with all of its declarations, its initial value's parameter once nothing reads it."""
-    out = me.strip_pruned(_RENDER, ["P_init", "P", "Q", "k_unused"])
-    for gone in ("P", "Q", "P_init", "k_unused"):
-        assert not re.search(rf"(?<![\w.]){gone}\b", me.mask_comments(out)), gone
-    assert "species A in cell,\n    B in cell;" in out and "  k1 = 0.5;\n" in out
-    assert "const cell, k1;" in out and "// the P pool" in out
-
-
-def test_a_pruned_name_something_still_names_stays_in_the_source():
-    """The text says what the model holds or nothing changes: a name left anywhere but in a
-    comment keeps every declaration of it."""
-    src = "model m\n  species P;\n  P = 0;\n  E1: at (P > 1): A = 2;\n  r: A => ; k*A;\nend\n"
-    assert me.strip_pruned(src, ["P"]) == src
 
 
 def test_set_initial_finds_a_symbol_sharing_a_line():
@@ -250,10 +182,12 @@ def test_one_call_one_fit_one_version_however_many_operations(tool_env):
     assert len(list((prov / "versions").glob("v*"))) == 1  # ONE version for two operations
 
 
-def test_operations_edit_the_source_not_the_render(tool_env):
-    """No anchor, so nothing to keep in sync with the server's re-render — and the stored source
-    is the caller's text plus its operations, which is what makes lineage checkable."""
+def test_operations_edit_the_text_get_model_shows(tool_env):
+    """No anchor, so nothing to keep in sync: the operations apply to the built model, the text
+    `get_model` shows, and the version records it plus this call's operations. Applied to the
+    caller's own last text, they kept what the reconcile had pruned (PEtab-MCP#328)."""
     mcp, prov = tool_env
+    shown = _call(mcp, "get_model", {})["result"]
     res = _call(
         mcp,
         "make_changes",
@@ -264,8 +198,7 @@ def test_operations_edit_the_source_not_the_render(tool_env):
     )
     src = (prov / "versions" / f"v{res['version']}" / "model_source.ant").read_text()
     assert "sink: B =>; k_sink*B;" in src
-    # the derived declaration the substring surface kept tripping over is simply not in play
-    assert "const" not in src or "sink" in src.split("const")[0]
+    assert [line for line in src.splitlines() if "sink" not in line] == shown.splitlines()
 
 
 def test_a_bad_id_costs_one_rejection_and_no_fit(tool_env):
@@ -301,7 +234,7 @@ def test_only_one_model_route_per_call(tool_env):
 
 def test_a_fork_applies_operations_to_that_versions_source(tool_env):
     """`base_version` + `model_edits`: fork and change in one call, with the operations applied
-    to the forked version's own source rather than to HEAD."""
+    to the forked version's built model rather than to HEAD's."""
     mcp, prov = tool_env
     v0 = _call(
         mcp,
@@ -549,20 +482,6 @@ def test_rename_will_not_rewrite_antimony_syntax():
     # a genuine rename still works
     out, _ = me.apply_model_edits(src, [{"op": "rename", "old": "k1", "new": "k_fwd"}])
     assert "const k_fwd, k2;" in out and "k_fwd*A" in out
-
-
-def test_set_initial_on_a_reconcile_minted_init_parameter_says_which_surface_owns_it():
-    """The reconcile mints `*_init` parameters that appear in get_parameters()/get_model() — the
-    RENDER — while these operations apply to the SOURCE. A caller reading `EGFR_init` off the
-    parameter table is not confused about its model; it is seeing a symbol the text really does
-    not contain, so the error has to say where that symbol lives."""
-    with pytest.raises(OperationError) as ei:
-        me.apply_model_edits(
-            "model m\n  r1: EGFR => pEGFR; k*EGFR;\nend\n",
-            [{"op": "set_initial", "id": "EGFR_init", "antimony": "5"}],
-        )
-    msg = str(ei.value)
-    assert "parameter table" in msg and "`parameters`" in msg
 
 
 def test_a_reaction_may_span_lines_or_omit_its_rate_law():

@@ -361,32 +361,13 @@ class PetabSession:
         # parameters WITHOUT worsening the nll — a comparison that CAN answer the question.
         self.invalid_comparison: str | None = None
 
-        # The Antimony the CALLER actually submitted for the next commit — the agent's own text,
-        # before the reconcile adds declarations and before libantimony re-renders it, less the
-        # declarations of what the reconcile pruned (``operations._commit_change``). Stored
-        # alongside the committed model as ``model_source.ant`` (see _snapshot_version).
-        #
-        # WHY IT IS WORTH A FILE. What every version stores today is the BUILD OUTPUT, and three
-        # separate investigations broke on that:
-        #   * LINEAGE cannot be recovered from it. A child's stored text is a re-render, so
-        #     "which version was this patched from" is not answerable by text distance —
-        #     measured, the attempt mis-assigned 43% of parents on sessions that could not even
-        #     fork. A SOURCE changes only by the agent's own patches, so `child.source ==
-        #     parent.source + patches` is checkable rather than inferable.
-        #   * ANALYSIS of what the agent did (which patches landed, whether an edit was additive)
-        #     has to reverse-engineer intent out of a rendered artifact.
-        #   * The render/source gap is itself a measured failure mode: 19% of failed patch
-        #     anchors matched the agent's own text but not the render.
-        # Nothing READS this yet — it is provenance, not behaviour. The agent still sees the
-        # committed model, because the reconcile's additions (measured: 19 symbols per session,
-        # 3 of them minted `*_init` parameters it is actually fitting) are real and must not
-        # vanish from what it reasons about.
+        # The Antimony the CALLER submitted for the next commit — the wholesale text, or this
+        # call's operations applied to the base model — stored beside the committed model as
+        # ``model_source.ant`` (see _snapshot_version): a record of what went in, which nothing
+        # reads back. Edits apply to the built model, the one text `get_model` shows; editing
+        # this text instead kept what the reconcile pruned and what a merge left (PEtab-MCP#328).
         self.submitted_source: str | None = None
 
-        # The CURRENT branch's model source: the text the caller last authored (`antimony=`) or
-        # last edited (`model_edits`), carried across calls so a structured edit never has to
-        # re-derive it from the render. Restored on rollback with the rest of the state.
-        self.model_source: str | None = None
         # The statements record (:func:`operations.statements_to_antimony`) of the model last built
         # from statements, beside its source: what `get_model(format='statements')` renders, what
         # a commit that submits no model text inherits, and restored with the version.
@@ -474,10 +455,6 @@ class PetabSession:
                     row["mechanism"] for row in record.get("rows", []) if "mechanism" in row
                 ]:
                     self.mechanisms.setdefault((d["statement_type"], d["policy"]), d)
-            # apply_version restores `model_source` too, so a durable resume keeps editing the
-            # SOURCE rather than silently adopting the render as its base — which would break
-            # `child.source == parent.source + ops` exactly at the resume boundary, with nothing
-            # in the payload marking where.
             # ...and seed the best-score checkpoint from the prior events, so the first commit after
             # a resume is judged against the session's real best rather than treated as a free new
             # best.
@@ -956,12 +933,7 @@ class PetabSession:
             self.problem.parameter_df = self.provenance.get_parameter_df(version)
             self.simulation = _with_fitted_values(snap.get("simulation"), self.problem.parameter_df)
             self.version_score = (self.problem_hash(), snap.get("neg_log_likelihood"))
-            # The branch source moves WITH the model. Without this, a structured edit after a
-            # rollback applies its operations to the abandoned branch's text and silently
-            # resurrects it. Falls back to the restored render for versions stored before
-            # sources existed, which is the correct base for them.
-            self.model_source = self.provenance.get_model_source(version) or snap["model_antimony"]
-            # ...and so do its rows.
+            # The rows move WITH the model.
             self.model_statements = self.provenance.get_statements(version)
             # Restore this version's fit artifacts too: the optimization traces/results are
             # persisted per version (``None`` for legacy/unfitted versions), so a rollback or
@@ -1066,15 +1038,9 @@ class PetabSession:
             # `fitting._slim_fitted_parameters` (diffs against the wrong predecessor), and any
             # later trajectory analysis.
             parent=self.derived_from,
-            # A commit that changed only BOUNDS still has a source — the one it inherited. Writing
-            # None there left the version with no `model_source.ant`, and the next resume or
-            # rollback onto it fell back to the reconciled RENDER as the branch base: operations
-            # then edit render text, `child.source == parent.source + ops` quietly stops holding,
-            # and nothing in the payload marks where it stopped. Carry the current source forward
-            # so every version after the first authoring has one.
-            model_source=self.submitted_source or self.model_source,
-            # The same for the rows: a commit that submits no model text (bounds only, a refit)
-            # keeps the model its rows built, so it keeps the rows. One that submits text without
+            model_source=self.submitted_source,
+            # A commit that submits no model text (bounds only, a refit) keeps the model its rows
+            # built, so it keeps the rows. One that submits text without
             # rows (`antimony`, `model_edits`) changed the model under them and records none.
             statements=(
                 self.submitted_statements if self.submitted_source else self.model_statements

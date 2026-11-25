@@ -1168,6 +1168,7 @@ def test_a_pruned_species_leaves_the_stored_source_and_is_reported_once(tmp_path
         m["message"].startswith("Removed species") and "`C`" in m["message"] for m in v0["messages"]
     ), v0["messages"]
     assert not re.search(r"\bC\b", _call(mcp, "get_model", {"version": 0})["result"])
+    # The next structured edit applies to that built model, which has nothing left to prune.
     edit = [{"op": "set_rate_law", "id": "r2", "antimony": "k2 * B * B"}]
     v1 = _call(mcp, "make_changes", {"model_edits": edit, "justification": "r2 is bimolecular"})
     assert v1["committed"] is True, v1
@@ -1176,14 +1177,15 @@ def test_a_pruned_species_leaves_the_stored_source_and_is_reported_once(tmp_path
 
 def test_a_rename_merge_leaves_one_declaration_in_what_get_model_serves(tmp_path):
     """oliveira 57: `get_model(version=18)` served `beta_asy` declared three times, one per
-    merge (PEtab-MCP#328)."""
+    merge (PEtab-MCP#328). It serves the built model now, which declares each name once."""
     mcp = _server(tmp_path)
     _call(mcp, "make_changes", {"antimony": _antimony(), "justification": "v0"})
     tie = [{"op": "rename", "old": "k2", "new": "k1"}]
     v1 = _call(mcp, "make_changes", {"model_edits": tie, "justification": "one rate"})
     assert v1["committed"] is True, v1
-    source = _call(mcp, "get_model", {"version": v1["version"]})["result"]
-    assert re.findall(r"(?<![\w.])k1\s*=(?![>=])[^;]*", source) == ["k1 = 0.5"], source
+    shown = _call(mcp, "get_model", {"version": v1["version"]})["result"]
+    assert len(re.findall(r"(?<![\w.])k1\s*=(?![>=])", shown)) == 1, shown
+    assert shown == _call(mcp, "get_version", {"version": v1["version"]})["model_antimony"]
 
 
 def test_a_fork_folds_against_its_base_not_the_last_commit(tmp_path):
