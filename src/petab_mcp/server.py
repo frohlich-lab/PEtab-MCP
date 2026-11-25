@@ -2725,7 +2725,7 @@ _REPLY_MAX_BYTES = 768 * 1024
 
 #: ``get_version``'s description. A part over :data:`_REPLY_MAX_BYTES` is summarised, not paged:
 #: ``simulations_history`` already pages a version's records in SQL, and a second pager over the
-#: same rows is the growing menu the README's design notes rule out.
+#: same rows is the growing menu docs/DESIGN.md rules out.
 _GET_VERSION_DOC = (
     "A prior version's record (every score, ⦃the new-best bookkeeping, ⦄the noise model's report, "
     "and `edit_warnings`: every warning its change and lint gave, in full, where its "
