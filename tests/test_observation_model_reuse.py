@@ -241,8 +241,7 @@ def test_sigma_gate_abstains_below_the_minimum_sample_size():
     on 0.999994, agreeing to six significant figures across four different observables, while the
     model-free Rice estimator puts them at 0.67-1.09.
 
-    Both verdict inputs must be withheld, not just one: `_entry_inflated` keys on
-    `upper_bound_cap` and `_entry_collapsed` on `fraction_of_data_std`.
+    The cap and the fraction are both withheld; a replicate floor needs more points than this.
     """
     from petab_mcp import fitting as F
     from petab_mcp.constants import NOISE_SIGMA_MIN_POINTS

@@ -94,14 +94,13 @@ _SIGMA_INFLATED_ADVICE = (
     "noise_sigma_advice names the sigma, its cap and what to change."
 )
 
-# The other tail: the best model's ESTIMATED noise sigma collapsed implausibly small, so the fit
-# is explaining nearly all the data's variability — overfitting the noise for a good-looking score.
+# The other tail: the best model's ESTIMATED noise sigma collapsed below its replicates' own
+# scatter (see fitting.noise_sigma_collapsed) — overfitting the noise for a good-looking score.
 _SIGMA_COLLAPSED_ADVICE = (
-    " NOTE: the best model's ESTIMATED noise sigma has collapsed far below the data's own "
-    "variability — the fit is absorbing nearly all the data into the mean, the fingerprint of "
-    "overfitting the noise, so its low score is not genuine adequacy. Prefer a simpler / more "
-    "parsimonious mechanism at a plausible sigma rather than a more flexible one that drives the "
-    "residuals to ~0."
+    " NOTE: the best model's ESTIMATED noise sigma has collapsed below the scatter between its "
+    "replicate measurements, the fingerprint of overfitting the noise, so its low score is not "
+    "genuine adequacy. Prefer a simpler / more parsimonious mechanism at a plausible sigma rather "
+    "than a more flexible one that drives the residuals to ~0."
 )
 
 # A fit's optimum only 0 to 2 fresh starts of a raised multistart reach (PEtab-MCP#287), for the
@@ -1478,7 +1477,7 @@ class PetabSession:
         residual flag (bachmann's round-3 run plateau-stopped "adequate" at ΔBIC +62,
         PEtab-MCP#196). Do not restore it as a ratio against the data-driven noise floor: #140's
         was deleted because no single threshold held across problems
-        (:func:`fitting._entry_inflated`), and the replicate lack-of-fit arm, its df-aware form,
+        (:func:`fitting._sigma_limits`), and the replicate lack-of-fit arm, its df-aware form,
         has power against a few large misses, not against a diffuse inflation like that run's.
         """
         with self.counters_lock:

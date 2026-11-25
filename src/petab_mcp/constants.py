@@ -136,19 +136,13 @@ MERGE_PRICE_UNRELIABLE_MOVE = 1.0
 # large fraction of the data's own variability isn't measurement noise anymore; it's covering
 # for the model.
 #
-# CALIBRATION (#118): both thresholds are measured in the coordinate where the noise is ADDITIVE
-# (see reconcile.sigma_noise_coordinate) — the only scale on which this ratio means anything. They
-# are deliberately WIDE, because published problems' own ground-truth sigmas span ~0.0004-0.59 of
-# their data std: a tight band rejects the true model. The band's job is to catch the pathological
-# tails (a sigma driven to ~0 to overfit the noise, or inflated many-fold to absorb misfit), NOT to
-# adjudicate a merely unusual-looking noise level.
+# CALIBRATION (#118): measured in the coordinate where the noise is ADDITIVE (see
+# reconcile.sigma_noise_coordinate) — the only scale on which this ratio means anything. It is
+# deliberately WIDE, because published problems' own ground-truth sigmas span ~0.0004-0.59 of
+# their data std: a tight band rejects the true model. Its job is to catch a sigma inflated many-fold
+# to absorb misfit, NOT to adjudicate a merely unusual-looking noise level. Where replicates exist
+# the cap is raised to NOISE_SIGMA_CAP_OF_REPLICATE x their pure error (below).
 NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD = 0.75
-
-# The other tail: a fitted noise sigma BELOW this fraction of its observable's own data std is
-# implausibly small — the model is explaining ~all of the data's variability, the fingerprint of
-# overfitting the noise. Shared by the plateau adequacy gate (session) and a client's success gate
-# so both agree on "collapsed".
-NOISE_SIGMA_COLLAPSE_FRACTION = 0.01
 
 #: Fewest measurements an observable group needs before its sigma is judged against the data
 #: SPREAD at all. Below this the ratio carries no information: `sigma_data_std` is a POPULATION
@@ -161,15 +155,26 @@ NOISE_SIGMA_COLLAPSE_FRACTION = 0.01
 #: `status: "unknown"` rather than a verdict it cannot support.
 NOISE_SIGMA_MIN_POINTS = 5
 
-# -- replicate (pure-error) noise floor (REPORTED, never gating) --------------
+# -- replicate (pure-error) noise floor ---------------------------------------
 # Where measurements REPEAT at the same (observable, condition, time), their scatter is pure noise —
 # an UNBIASED, model-free floor (reconcile.sigma_replicate_noise_estimate), reported per sigma as
-# data_noise_estimate / fitted_over_data_noise. Deliberately NO threshold on that ratio: #140 had one
-# (1.5x = inflated), since deleted — see fitting._entry_inflated.
+# data_noise_estimate / fitted_over_data_noise with data_noise_method "replicate".
 #
 # Minimum pooled replicate degrees of freedom to report the floor at all. Below this the estimate is
 # too noisy to show, and the report falls back to the (biased-upward) difference estimate.
 NOISE_SIGMA_REPLICATE_MIN_DOF = 6
+
+# The noise-sigma verdict against that floor (PEtab-MCP#320, fitting._sigma_limits): COLLAPSED below
+# NOISE_SIGMA_COLLAPSE_OF_REPLICATE x it, and the inflation cap never below
+# NOISE_SIGMA_CAP_OF_REPLICATE x it. Without replicates there is no collapse verdict (BIC's k*ln(n)
+# is the guard) and the data-std cap alone. A 1%-of-data-std collapse floor condemned rahman's
+# reference sigma (0.56% of a trend-dominated std), and the data-std cap sat below isensee's
+# replicate scatter, so every fit there read inflated. Replaying the judge over the 113 finished
+# runs of the 2026-11-09 sweep, this rule takes passes 101 -> 106 with none lost, and the outcome
+# holds for a collapse factor of 0.33-0.5 and a cap factor of 1.5-2.0. It is the paper's
+# `--sigma-rule proposed` (gemot_iclr_2026 slurm/sweep_panels.sigma_flags).
+NOISE_SIGMA_COLLAPSE_OF_REPLICATE = 0.5
+NOISE_SIGMA_CAP_OF_REPLICATE = 1.5
 
 # -- replicate lack-of-fit (the residual arm of the structure verdict) -------
 # The SAME repeated design points, used the other way round: instead of judging sigma against their

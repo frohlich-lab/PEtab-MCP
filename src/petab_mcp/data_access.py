@@ -1154,7 +1154,8 @@ def _absorbed_misfit(session, sims, flagged: bool) -> dict[str, Any]:
     ``p``, its ``worst_series`` and its ``fitted_over_data_noise``. Holm, where :func:`fit_diagnosis`
     ranks raw ``p``, because these ride on every fit: across bachmann's ~20 sigmas the passing fit's
     pEpoR (p = 0.006) would be named on every fit, the failing fit's (9e-5) is named either way. The
-    ratio rides only on a named sigma, as it has no threshold of its own (``fitting._entry_inflated``).
+    ratio rides only on a named sigma: what it decides, the noise report's verdict already says
+    (``fitting._sigma_limits``).
 
     ``structure_tests_caveat`` while no observable is ``flagged``: where one is, the caveat does
     not change how the verdict reads.

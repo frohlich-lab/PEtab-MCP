@@ -13,7 +13,10 @@ import pytest
 
 from petab_mcp import residual_tests as rt  # noqa: E402
 
-from petab_mcp.constants import NOISE_SIGMA_COLLAPSE_FRACTION  # noqa: E402
+from petab_mcp.constants import (  # noqa: E402
+    NOISE_SIGMA_CAP_OF_REPLICATE,
+    NOISE_SIGMA_COLLAPSE_OF_REPLICATE,
+)
 from petab_mcp.fitting import (  # noqa: E402
     _entry_collapsed,
     _entry_inflated,
@@ -88,6 +91,18 @@ def _inflated(**extra):
     return {**_entry(0.5, 0.1, 2.5), "effective_sigma": 0.5, "status": "inflated", **extra}
 
 
+def _collapsed(**extra):
+    """A collapsed entry: effective sd 0.1 below a floor of 0.5 x a replicate scatter of 0.5."""
+    return {
+        **_entry(0.1, 0.5, 0.1),
+        "effective_sigma": 0.1,
+        "data_noise_estimate": 0.5,
+        "data_noise_method": "replicate",
+        "status": "collapsed",
+        **extra,
+    }
+
+
 def test_inflated_advice():
     a = noise_sigma_advice({"s": _entry(0.5, 0.1, 2.5)})  # fitted above cap
     assert "`s` 0.5 against a cap of 0.1 (noise sd)" in a and "not accepted as finished" in a
@@ -108,15 +123,14 @@ def test_the_advice_states_this_fits_residual_verdict():
 def test_the_advice_names_every_flagged_sigma_in_its_own_units():
     """#333: the refusal named no sigma, value or cap, and gave blockers one at a time. Each is
     named at once, in the parameter's own units where the report converted its cap."""
-    lo = NOISE_SIGMA_COLLAPSE_FRACTION / 2
     report = {
         "s": _inflated(fitted=0.2, fitted_cap=0.04),
         "t": _inflated(),
-        "u": {**_entry(lo, 0.5, lo), "fitted_floor": 0.004},
+        "u": _collapsed(fitted=0.02, fitted_floor=0.05),
     }
     a = noise_sigma_advice(report)
     assert "`s` 0.2 against a cap of 0.04;" in a and "`t` 0.5 against a cap of 0.1 (noise sd)" in a
-    assert "0.75 x the data std" in a and f"`u` {lo:.3g} against a floor of 0.004" in a
+    assert "0.75 x the data std" in a and "`u` 0.02 against a floor of 0.05" in a
 
 
 def test_no_widening_advice_for_a_sigma_the_fit_solves(monkeypatch):
@@ -131,16 +145,18 @@ def test_no_widening_advice_for_a_sigma_the_fit_solves(monkeypatch):
     assert "Fix the mechanism" in a and "widening" not in a
 
 
-def test_a_cap_below_replicate_scatter_says_no_model_meets_it():
-    """#333 (#320): isensee's cap 0.0746 lies below its replicate pure error 0.092, so every honest
-    fit reads inflated. The advice says so, and stops telling the agent to fix the mechanism."""
-    a = noise_sigma_advice({"s": _inflated(data_noise_estimate=0.2, data_noise_method="replicate")})
-    assert "replicate scatter alone 0.2, above the cap, so no model brings" in a
-    assert "Fix the mechanism" not in a and "not accepted" not in a
-    a = noise_sigma_advice(
-        {"s": _inflated(data_noise_estimate=0.05, data_noise_method="replicate")}
-    )
-    assert "replicate scatter alone 0.05" in a and "no model" not in a and "Fix the mechanism" in a
+def test_replicate_scatter_raises_the_cap_above_it():
+    """#320: isensee's cap 0.0746 lay below its replicate pure error 0.092, so every honest fit read
+    inflated, the reference included (#354 could only say no model clears it). The cap is now
+    never below 1.5 x that scatter: run 63612605_21's fit at 0.086 passes, and a sigma above the
+    raised cap is told to fix the mechanism."""
+    isensee = {**_entry(0.086, 0.0746, 0.86), "effective_sigma": 0.086, "status": "ok"}
+    isensee.update(data_noise_estimate=0.092, data_noise_method="replicate")
+    assert not _entry_inflated(isensee) and noise_sigma_advice({"s": isensee}) is None
+    a = noise_sigma_advice({"s": {**isensee, "effective_sigma": 0.2, "status": "inflated"}})
+    cap = NOISE_SIGMA_CAP_OF_REPLICATE * 0.092
+    assert f"`s` 0.2 against a cap of {cap:.3g} (noise sd)" in a and "Fix the mechanism" in a
+    assert "not accepted" in a and "replicate scatter where that is larger" in a
 
 
 def _ratio_entry(ratio, method, fitted=0.5, cap=10.0):
@@ -150,6 +166,7 @@ def _ratio_entry(ratio, method, fitted=0.5, cap=10.0):
         "upper_bound_cap": cap,
         "data_std": 1.0,
         "fraction_of_data_std": 0.05,
+        "data_noise_estimate": fitted / ratio,
         "fitted_over_data_noise": ratio,
         "data_noise_method": method,
     }
@@ -158,7 +175,8 @@ def _ratio_entry(ratio, method, fitted=0.5, cap=10.0):
 @pytest.mark.parametrize("ratio", [0.98, 1.476, 2.4, 7.83, 100.0])
 def test_the_pure_error_ratio_never_gates_however_large(ratio):
     """No ratio against a noise FLOOR is an inflation verdict — not even against the unbiased
-    replicate (pure-error) one (the arm #140 added is gone; see fitting._entry_inflated).
+    replicate (pure-error) one, which only ever RAISES the cap (#320; the arm #140 added is gone,
+    see fitting._sigma_limits).
 
     The FORM is what is wrong, so this spans the measured range instead of bracketing a threshold:
     0.98 is a steady-state problem's TRUE model, 1.476 a decisively wrong fit of it (ΔBIC +194) that
@@ -283,31 +301,86 @@ def test_the_other_one_is_the_parsimony_gate_s_and_the_arm_says_so():
     assert data_access._merge_lof_verdicts([arm], {}, n_structural=6)["status"] == "flagged"
 
 
+# --- the paper's rule, on the entries it scored (#320) ---------------------------------------
+def _stored_verdicts():
+    """``tests/data/noise_sigma_verdicts.json``, each row with the verdict of the paper's
+    ``sigma_flags(report, "proposed")`` (gemot_iclr_2026 b89bb7b, ``slurm/sweep_panels.py``):
+
+    * ``versions``: stored noise_sigma_report entries of the 2026-11-09 sweep
+      (gemot_pools_20261107), out of 12,189 in its 95 finished reference runs with an estimated
+      sigma, per problem, sigma and verdict the two nearest a boundary and the largest sigma;
+    * ``references``: every example's entry at its reference's own fitted sigma, reported by the
+      sweep's petab-mcp (7ffb364).
+    """
+    import json
+    from pathlib import Path
+
+    data = json.loads((Path(__file__).parent / "data" / "noise_sigma_verdicts.json").read_text())
+    return data["versions"], data["references"]
+
+
+def test_the_verdict_is_the_papers_on_the_entries_it_scored():
+    """#320: the paper rescored its runs under this rule (`--sigma-rule proposed`), and gemot's
+    judge imports these predicates, so a disagreement makes the judged runs and the paper differ.
+    The stored caps are the old 0.75 x data std, so this also holds the raise to the floor."""
+    versions, references = _stored_verdicts()
+    rows = versions + [[p, pid, "reference", None, e, f] for p, pid, e, f in references]
+    for problem, pid, run, version, entry, flags in rows:
+        assert [_entry_inflated(entry), _entry_collapsed(entry)] == flags, (
+            problem,
+            pid,
+            run,
+            version,
+        )
+
+
+def test_no_reference_sigma_is_collapsed_and_no_cap_is_below_its_replicates():
+    """#320's acceptance. rahman's reference sigma read collapsed under the 1%-of-data-std floor, and
+    isensee's cap sat below its replicate scatter. A reference sigma still inflated is acceptable:
+    isensee's rho_pRII_Western carries misfit, at 1.7 x that scatter."""
+    from petab_mcp.fitting import _sigma_limits
+
+    versions, references = _stored_verdicts()
+    assert ("rahman", "sd_prevalence") in {(p, pid) for p, pid, *_ in references}
+    for problem, pid, entry, _ in references:
+        assert not _entry_collapsed(entry), (problem, pid)
+    for entry in [v[4] for v in versions] + [r[2] for r in references]:
+        if entry["data_noise_method"] == "replicate" and entry["status"] != "unknown":
+            assert _sigma_limits(entry)[1] >= entry["data_noise_estimate"]
+
+
 def test_data_std_cap_still_flags_independent_of_method():
-    # The pre-existing cap arm is untouched: fitted above its data-std cap is inflated whatever the
-    # noise-estimate method (or absence of a ratio).
+    # Fitted above its data-std cap is inflated with no replicates, and with replicates whose
+    # scatter is too small to raise the cap past the fit.
     assert _entry_inflated(_ratio_entry(1.0, "difference", fitted=20.0, cap=10.0)) is True
-    assert _entry_inflated(_ratio_entry(1.0, "replicate", fitted=20.0, cap=10.0)) is True
+    assert _entry_inflated(_ratio_entry(4.0, "replicate", fitted=20.0, cap=10.0)) is True
+    assert _entry_inflated(_ratio_entry(1.0, "replicate", fitted=20.0, cap=10.0)) is False
     assert _entry_inflated(_entry(0.5, 0.1, 2.5)) is True
 
 
 def test_collapsed_advice():
-    frac = NOISE_SIGMA_COLLAPSE_FRACTION / 2
-    a = noise_sigma_advice({"s": _entry(frac, 0.5, frac)})  # fraction below floor
-    assert f"`s` at {frac:.3g} x its data std" in a and "not accepted as finished" in a
+    a = noise_sigma_advice({"s": _collapsed()})
+    floor = NOISE_SIGMA_COLLAPSE_OF_REPLICATE * 0.5
+    assert f"`s` 0.1 against a floor of {floor:.3g} (noise sd)" in a
+    assert "x its replicate scatter" in a and "not accepted as finished" in a
 
 
 def test_shared_per_entry_predicates():
     """_entry_inflated/_entry_collapsed are the single source the top-level flags AND the report
-    status both derive from, so they can't drift. Unassessable (None cap/frac) is neither."""
+    status both derive from, so they can't drift. Unassessable (None cap/floor) is neither."""
     assert _entry_inflated(_entry(0.5, 0.1, 2.5)) and not _entry_collapsed(_entry(0.5, 0.1, 2.5))
-    lo = _entry(NOISE_SIGMA_COLLAPSE_FRACTION / 2, 0.5, NOISE_SIGMA_COLLAPSE_FRACTION / 2)
-    assert _entry_collapsed(lo) and not _entry_inflated(lo)
+    assert _entry_collapsed(_collapsed()) and not _entry_inflated(_collapsed())
     assert not _entry_inflated(_entry(0.08, 0.1, 0.4)) and not _entry_collapsed(
         _entry(0.08, 0.1, 0.4)
     )
     assert not _entry_inflated({"fitted": 0.5, "upper_bound_cap": None})  # cap unassessable
-    assert not _entry_collapsed({"fraction_of_data_std": None})  # frac unassessable
+    # #320: no collapse verdict without replicates. rahman's reference sigma is 0.56% of a
+    # trend-dominated data std, under the 1% floor this replaced.
+    rahman = {**_entry(0.0395, 5.27, 0.0056), "data_noise_estimate": 0.81}
+    assert not _entry_collapsed({**rahman, "data_noise_method": "difference"})
+    # An entry the report calls `unknown` carries no verdict, whatever its numbers.
+    assert not _entry_collapsed({**_collapsed(), "status": "unknown"})
+    assert not _entry_inflated({**_inflated(), "status": "unknown"})
 
 
 def test_report_status_per_entry_including_unknown(monkeypatch):
@@ -333,16 +406,17 @@ def test_report_status_per_entry_including_unknown(monkeypatch):
     monkeypatch.setattr(
         R, "sigma_difference_noise_estimate", lambda p, pid, fitted_values=None: None
     )
-    monkeypatch.setattr(
-        R, "sigma_replicate_noise_estimate", lambda p, pid, fitted_values=None: None
+    monkeypatch.setattr(  # replicates on `col` only
+        R,
+        "sigma_replicate_noise_estimate",
+        lambda p, pid, fitted_values=None: {"col": 1.0}.get(pid),
     )
     monkeypatch.setattr(R, "is_parameter_estimated", lambda p, pid: True)
     monkeypatch.setattr(R, "plausibility_sigma_ids", lambda problem: set(data_std))
-    rep = noise_sigma_report(
-        object(), {"inf": 0.5, "col": NOISE_SIGMA_COLLAPSE_FRACTION / 10, "fine": 0.05, "unk": 0.3}
-    )
+    rep = noise_sigma_report(object(), {"inf": 0.5, "col": 0.01, "fine": 0.05, "unk": 0.3})
     assert rep["inf"]["status"] == "inflated"  # 0.5 > cap 0.1
-    assert rep["col"]["status"] == "collapsed"  # well below the collapse floor
+    assert rep["col"]["status"] == "collapsed"  # well below half its replicate scatter
+    assert rep["col"]["upper_bound_cap"] == NOISE_SIGMA_CAP_OF_REPLICATE  # raised, and reported
     assert rep["fine"]["status"] == "ok"  # below cap, above floor
     assert rep["unk"]["status"] == "unknown"  # data_std None -> unassessable, not 'ok'
 
@@ -403,25 +477,29 @@ def test_a_flagged_sigma_states_its_limit_in_its_own_units():
         {"observableFormula": ["x"], "observableTransformation": ["log10"]},
         index=pd.Index(["o"], name="observableId"),
     ).assign(noiseFormula="noiseParameter1_o")
-    meas = [1e2, 1e3, 1e4, 1e5, 1e6]
+    # Duplicates a decade apart, 0.1 decades between the two of each pair: a replicate floor.
+    times = [t for t in range(7) for _ in range(2)]
     meas = pd.DataFrame(
         {
             "observableId": "o",
             "simulationConditionId": "c",
-            "time": range(len(meas)),
-            "measurement": meas,
+            "time": times,
+            "measurement": [
+                10 ** (2 + t + (0.05 if i % 2 else -0.05)) for i, t in enumerate(times)
+            ],
             "noiseParameters": "sd_o",
         }
     )
     p = _upgraded(observable_df=obs, measurement_df=meas)
-    for fitted, key, limit in (
-        (5.0, "fitted_cap", "upper_bound_cap"),
-        (1e-3, "fitted_floor", None),
-    ):
+    for fitted, key in ((5.0, "fitted_cap"), (1e-3, "fitted_floor")):
         entry = noise_sigma_report(p, {"sd_o": fitted})["sd_o"]
+        assert entry["data_noise_method"] == "replicate"
         at = entry[key]
         assert (at < fitted) is (key == "fitted_cap")
-        bound = entry[limit] if limit else NOISE_SIGMA_COLLAPSE_FRACTION * entry["data_std"]
+        if key == "fitted_cap":
+            bound = entry["upper_bound_cap"]
+        else:
+            bound = NOISE_SIGMA_COLLAPSE_OF_REPLICATE * entry["data_noise_estimate"]
         assert R.sigma_effective_value(p, "sd_o", at) == pytest.approx(bound)
     assert "fitted_cap" not in noise_sigma_report(p, {"sd_o": 0.1})["sd_o"]
 
