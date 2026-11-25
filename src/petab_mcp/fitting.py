@@ -43,6 +43,7 @@ from . import criteria
 from . import literals as _literals
 from . import reconcile as _reconcile
 from .constants import (
+    AT_BEST_NLL_TOL,
     NOISE_SIGMA_MIN_POINTS,
     NOISE_SIGMA_COLLAPSE_FRACTION,
     NOISE_SIGMA_MAX_FRACTION_OF_DATA_STD,
@@ -55,6 +56,7 @@ from .formatting import finite_float as _flt
 from .parameters import structure_fingerprint
 from .progress_signals import signal
 from .problem import (
+    LIN,
     LOG,
     LOG10,
     PARAMETER_SCALE,
@@ -1203,11 +1205,6 @@ def parent_starts(problem, guesses, optimization) -> frozenset[str]:
     return frozenset(str(j) for j, row in enumerate(guesses) if np.array_equal(row[shared], at))
 
 
-#: How close to the best start's objective a start must end to count as having reached it: 1 nll,
-#: 2 in BIC.
-AT_BEST_NLL_TOL = 1.0
-
-
 def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     """Estimate the free parameters with pyPESTO and write the best fit back.
 
@@ -1510,7 +1507,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # re-enter them as warm starts. See `previous_optima`.
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["n_starts_killed"] = len(killed)
-    optimization["n_starts_at_best"] = n_converged
+    optimization.update(_starts_at_best(result, nllh, len(guesses)))
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     return {
         "fitted": fitted,
@@ -1523,6 +1520,37 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
             session, problem, best, hierarchical=hierarchical, optimization=optimization
         ),
     }
+
+
+#: The counts :func:`_starts_at_best` puts on a fit's optimization record and its payload.
+_STARTS_AT_BEST_KEYS = (
+    "n_starts_at_best",
+    "n_warm_starts",
+    "n_warm_starts_at_best",
+    "n_starts_at_best_maxtime",
+)
+
+
+def _starts_at_best(result, nllh: float, n_warm: int) -> dict[str, int]:
+    """How many starts ended within :data:`AT_BEST_NLL_TOL` of ``nllh``, how many of those were
+    warm (pyPESTO numbers the ``n_warm`` seeded starts first, :func:`warm_start_guesses`), and how
+    many of those stopped at Fides' MAXTIME."""
+    at_best = [
+        s
+        for s in result.optimize_result.list
+        if (fval := _flt(s.get("fval"))) is not None and fval <= nllh + AT_BEST_NLL_TOL
+    ]
+    return dict(
+        zip(
+            _STARTS_AT_BEST_KEYS,
+            (
+                len(at_best),
+                n_warm,
+                sum(1 for s in at_best if str(s.get("id")).isdigit() and int(s["id"]) < n_warm),
+                sum(1 for s in at_best if str(s.get("exitflag")) == "ExitFlag.MAXTIME"),
+            ),
+        )
+    )
 
 
 #: Relative gap between the optimizer's objective and the re-simulated one above which the
@@ -2189,9 +2217,9 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             # ...and, the same way, how many starts were stopped past their cap (see
             # :mod:`multistart`): scored as failed, so the fit searched less than `n_starts` names.
             "n_starts_killed": (fit["optimization"] or {}).get("n_starts_killed") if fit else None,
-            "n_starts_at_best": (
-                (fit["optimization"] or {}).get("n_starts_at_best") if fit else None
-            ),
+            **{
+                k: (fit["optimization"] or {}).get(k) if fit else None for k in _STARTS_AT_BEST_KEYS
+            },
             "records": records,
             "state_trajectories": sim["state_trajectories"],
             "objective_before": fit["objective_before"] if fit else None,
@@ -2282,6 +2310,7 @@ def parameters_at_bound(
     fitted: dict[str, float] | None,
     parameter_df: Any,
     tol: float = PARAMETER_AT_BOUND_RELATIVE_TOL,
+    problem: Any = None,
 ) -> list[dict[str, Any]]:
     """Fitted parameters sitting within ``tol`` (fraction of the scaled bound span) of their
     lower or upper bound — the standard fit report's early-warning for "the optimum is
@@ -2290,6 +2319,11 @@ def parameters_at_bound(
     (or any parameter) that re-pins to whatever bound you set, widening after widening, is a
     sign the model is missing a mechanism — not that the box needs to move again.
 
+    Two are never listed, as neither bound can be widened. A linear-scale lower bound of 0: a
+    value there has its term switched off. And, given ``problem``, a noise sigma the fit solves
+    analytically (:func:`reconcile.classify_inner_parameters`): it is solved on [0, inf) whatever
+    its row says, and a bound on it is refused.
+
     Returns ``[]`` when there is nothing to flag (no fit yet, or every value sits mid-range).
     Each flagged entry is ``{parameter_id, side, value, bound_value}`` with ``side`` "lower" or
     "upper".
@@ -2297,8 +2331,9 @@ def parameters_at_bound(
     if not fitted or parameter_df is None:
         return []
     flags = []
+    inner = _inner_sigmas(problem)
     for pid, value in fitted.items():
-        if pid not in parameter_df.index:
+        if pid not in parameter_df.index or pid in inner:
             continue
         row = parameter_df.loc[pid]
         scale = str(row[PARAMETER_SCALE])
@@ -2311,11 +2346,22 @@ def parameters_at_bound(
         if span <= 0:
             continue
         frac = (v - lo) / span
-        if frac <= tol:
+        if frac <= tol and not (scale == LIN and lb == 0):
             flags.append({"parameter_id": pid, "side": "lower", "value": value, "bound_value": lb})
         elif frac >= 1 - tol:
             flags.append({"parameter_id": pid, "side": "upper", "value": value, "bound_value": ub})
     return flags
+
+
+def _inner_sigmas(problem: Any) -> set[str]:
+    """The noise sigmas a fit of ``problem`` solves analytically; none without a problem."""
+    if problem is None:
+        return set()
+    try:
+        inner = _reconcile.classify_inner_parameters(problem)
+    except Exception:  # noqa: BLE001 - a report aid: list them rather than fail the result
+        return set()
+    return {pid for pid, kind in inner.items() if kind == _reconcile.INNER_TYPE_SIGMA}
 
 
 def _entry_inflated(entry: "dict[str, Any]") -> bool:
@@ -2638,8 +2684,9 @@ def slim_fit_payload(session, out: dict, version: int | None = None) -> dict:
     leaving the 84-118-entry dict riding on every one of them. Only `get_fit_summary`, which
     happens to build `version` into its own out dict, was ever slimmed.
 
-    Past what it shares with `get_fit_summary`, a fit result names a scale, an at-bound pin and a
-    merge hint only where it is new since the parent (:func:`_since_parent`)."""
+    Past what it shares with `get_fit_summary`, a fit result names a scale and a merge hint only
+    where it is new since the parent, and splits its pins into new and held
+    (:func:`_since_parent`)."""
     own = {**out, "version": version} if version is not None and "version" not in out else out
     scales = own.get("parameter_scales")
     parent = _slim_fitted_parameters(session, own)
@@ -2659,13 +2706,13 @@ def _sig(value: Any, digits: int = 4) -> Any:
 
 
 def _since_parent(session, out: dict, parent_v: int, parent_df: Any) -> None:
-    """Cut a slimmed fit result's ``parameter_scales``, ``parameters_at_bound`` and
-    ``merge_hints`` to what is new since the parent version, in place.
+    """Cut a slimmed fit result's ``parameter_scales`` and ``merge_hints`` to what is new since
+    the parent version, and split its ``parameters_at_bound``, in place.
 
     A scale is listed where the parameter is newly estimated or re-scaled, whether or not its value
-    moved; an earlier result named every other one. A pin is listed unless the parent sat at the
-    same side and bound, so a re-pin after a
-    widening still shows; ``n_parameters_at_bound`` counts every pin when any is left out. A hint is
+    moved; an earlier result named every other one. A pin goes in ``parameters_newly_at_bound``
+    unless the parent sat at the same side and bound, so a re-pin after a widening shows there;
+    the ids of the others go in ``parameters_still_at_bound``, so no pin goes unnamed. A hint is
     listed unless the parent's fit hinted the same pair at the same price; a re-priced one is listed
     again, or the agent acts on the parent's price (PEtab-MCP#336). ``n_merge_hints`` counts every
     hint when any is left out, beside a possibly empty list. Best-effort, like the slimming before
@@ -2682,15 +2729,20 @@ def _since_parent(session, out: dict, parent_v: int, parent_df: Any) -> None:
         return
     scales = out.get("parameter_scales") or {}
     out["parameter_scales"] = {k: v for k, v in scales.items() if prior.get(k) != v}
-    pins = out.get("parameters_at_bound") or []
-    new = [
-        {**f, "value": _sig(f["value"])}
-        for f in pins
-        if not math.isclose(held.get((f["parameter_id"], f["side"]), math.nan), f["bound_value"])
-    ]
-    out["parameters_at_bound"] = new
-    if len(new) < len(pins):
-        out["n_parameters_at_bound"] = len(pins)
+    new, still = [], []
+    for f in out.get("parameters_at_bound") or []:
+        if math.isclose(held.get((f["parameter_id"], f["side"]), math.nan), f["bound_value"]):
+            still.append(f["parameter_id"])
+        else:
+            new.append({**f, "value": _sig(f["value"])})
+    # In the list's place, so the pair reads where the full list did.
+    items = list(out.items())
+    out.clear()
+    for key, value in items:
+        if key == "parameters_at_bound":
+            out.update(parameters_newly_at_bound=new, parameters_still_at_bound=still)
+        else:
+            out[key] = value
 
 
 def _new_merge_hints(session, out: dict, parent_v: int) -> None:
@@ -2853,7 +2905,9 @@ def fit_summary(session, engine) -> dict[str, Any]:
     )
     if note := chi2_note(session.problem, sim, out):
         out["chi2_note"] = note
-    out["parameters_at_bound"] = parameters_at_bound(out.get("fitted_parameters"), pdf)
+    out["parameters_at_bound"] = parameters_at_bound(
+        out.get("fitted_parameters"), pdf, problem=session.problem
+    )
     _report = noise_sigma_report(problem, out.get("fitted_parameters"))
     out["noise_sigma_report"] = _report
     # Proactive plausibility verdict on EVERY read (not just at a plateau stop): a good BIC bought
@@ -3103,6 +3157,24 @@ def _parameter_scales_for(fitted, stored, parameter_df) -> "dict[str, str] | Non
     return derived or None
 
 
+def _starts_at_best_text(fitsim: dict[str, Any]) -> str | None:
+    """How many starts reached the best objective, fresh and warm apart, out of how many ran, and
+    how many of those MAXTIME cut short; ``None`` without a fit. Warm starts begin at or around the
+    previous fit's optima, so only the fresh count says how often the optimum is found."""
+    at_best, n = fitsim.get("n_starts_at_best"), fitsim.get("n_starts")
+    if at_best is None:
+        return None
+    warm, warm_at_best = fitsim.get("n_warm_starts"), fitsim.get("n_warm_starts_at_best")
+    text = (
+        f"{at_best - warm_at_best}/{n - warm} fresh, {warm_at_best}/{warm} warm"
+        if warm and warm_at_best is not None and n is not None
+        else f"{at_best}/{n}"
+    ) + f" (within {AT_BEST_NLL_TOL:g} nll)"
+    if maxtime := fitsim.get("n_starts_at_best_maxtime"):
+        text += f"; {maxtime} of them stopped at MAXTIME, unconverged"
+    return text
+
+
 def fit_result_block(
     fitsim: dict[str, Any] | None,
     improvement: dict[str, Any] | None = None,
@@ -3148,7 +3220,6 @@ def fit_result_block(
         k = len(fitted)
     constants = fitsim.get("hardcoded_constants") or []
     killed = fitsim.get("n_starts_killed")
-    at_best = fitsim.get("n_starts_at_best")
     block = {
         "fit_status": fitsim.get("status"),
         # The multistart count the fit actually ran with (``None`` for a restored version, which
@@ -3158,12 +3229,7 @@ def fit_result_block(
         # How many of them were stopped past their cap and scored as failed, ABSENT when none was:
         # this block is re-sent in the caller's history every turn.
         **({"n_starts_killed": killed} if killed else {}),
-        # How many starts reached the best objective, out of how many ran (None without a fit).
-        "starts_at_best": (
-            f"{at_best}/{fitsim.get('n_starts')} (within {AT_BEST_NLL_TOL:g} nll)"
-            if at_best is not None
-            else None
-        ),
+        "starts_at_best": _starts_at_best_text(fitsim),
         # Per-start outcome histogram (e.g. {"ExitFlag.FTOL": 81, "ExitFlag.MAXTIME": 19}): how
         # many starts CONVERGED on their own criterion vs hit the per-start time cap.
         # A fit dominated by boundary exits is optimiser-budget-limited, not structure-limited --
@@ -3199,7 +3265,7 @@ def fit_result_block(
             if improvement
             else None
         ),
-        "parameters_at_bound": parameters_at_bound(fitted, parameter_df),
+        "parameters_at_bound": parameters_at_bound(fitted, parameter_df, problem=problem),
         # Prefer the report PetabSession.fit already computed and stashed, so the event, the
         # adequacy gate and this block cannot disagree; computed here for the paths that don't
         # stash one (a restore).
