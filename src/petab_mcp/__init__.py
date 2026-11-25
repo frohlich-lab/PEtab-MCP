@@ -10,7 +10,7 @@ dataframe on the new version for statistical analysis.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .errors import (
     MissingDependencyError,
