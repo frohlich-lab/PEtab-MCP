@@ -1064,15 +1064,13 @@ def tie_ops(keep: str, drop: str, text: str, sbml_model) -> list[dict[str, str]]
 
 
 def edit_surface(session) -> tuple[str, Any] | None:
-    """``(text, sbml_model)`` for :func:`merge_hints`' ``take``: the source a ``model_edits`` op
-    applies to (the one this call submitted, else the working one, else the render a shipped
-    problem's first edit applies to) and the model it reconciled to — ``None`` on a session whose
+    """``(text, sbml_model)`` for :func:`merge_hints`' ``take``: the text a ``model_edits`` op
+    applies to, the working model's render, and the model itself — ``None`` on a session whose
     ``make_changes`` offers no ``model_edits``."""
     if not session.text_route:
         return None
     try:
-        text = session.submitted_source or session.model_source
-        return text or session.model.to_antimony(), session.problem.model.sbml_model
+        return session.model.to_antimony(), session.problem.model.sbml_model
     except Exception:  # noqa: BLE001 - advisory; the hints stand without their ops
         return None
 

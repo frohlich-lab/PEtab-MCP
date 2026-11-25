@@ -3245,6 +3245,26 @@ def test_a_merge_hint_names_its_rename_and_taking_it_merges_the_pair(tmp_path):
     assert not any("dropped previously-estimated" in t for t in texts), texts
 
 
+def test_a_minted_pair_is_tied_by_a_rename_on_the_text_edits_apply_to(tmp_path):
+    """`model_edits` apply to the built model (PEtab-MCP#328), which writes a minted
+    `<species>_init`, so the hint ties two of them with a `rename` there, and it commits. The hint
+    read `session.model_source`, gone with #328, and lost its ops to the caught error."""
+    from petab.v2.models.sbml_model import SbmlModel
+
+    from petab_mcp.identifiability import tie_ops
+
+    mcp = _server(tmp_path)
+    pools = ("species C in compartment_;", "species D in compartment_;", "C = 2.0;", "D = 3.0;")
+    source = _antimony(*pools, "k3 = 0.2;", "r3: C => D; k3 * C;")
+    _call(mcp, "make_changes", {"antimony": source, "justification": "pools"})
+    text = _text(mcp, "get_model", {})
+    ops = tie_ops("C_init", "D_init", text, SbmlModel.from_antimony(text).sbml_model)
+    assert ops == [{"op": "rename", "old": "D_init", "new": "C_init"}]
+    res = _call(mcp, "make_changes", {"model_edits": ops, "justification": "one size"})
+    assert res["committed"] is True, res["message"]
+    assert re.search(r"\bD = C_init;", _text(mcp, "get_model", {}))
+
+
 def test_the_ops_that_tie_two_minted_initial_values_commit(tmp_path):
     """PEtab-MCP#336: boehm agents were offered a `rename` of a minted `<species>_init`, which
     fails ("does not occur in the model") and, written the other way, is refused (the reconcile
