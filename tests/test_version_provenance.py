@@ -8,10 +8,9 @@ Both exist because three separate investigations broke on their absence:
   than HEAD, and 30/30 version trees still looked perfectly linear. Everything that reasons
   parent-to-child then compares against a model the child never came from.
 * ``model.ant`` is the BUILD OUTPUT (reconciled, libantimony re-rendered), so lineage cannot be
-  recovered from it after the fact — inferring parents by text distance mis-assigned 43% on
-  sessions that could not even fork. ``model_source.ant`` is what the caller authored or edited
-  — and with structured `model_edits` it IS a source of truth: operations apply to it, so a
-  child's source is its parent's source plus that call's operations.
+  recovered from it by text distance — inferring parents that way mis-assigned 43% on sessions
+  that could not even fork. ``model_source.ant`` records what the caller submitted: its whole
+  text, or its parent's ``model.ant`` plus that call's operations.
 """
 
 from __future__ import annotations
@@ -134,7 +133,7 @@ def test_an_ordinary_commit_still_descends_from_head(served):
 
 def test_the_callers_own_text_is_stored_beside_the_built_model(served):
     """`model.ant` is the reconciled, re-rendered build output; `model_source.ant` is what the
-    caller submitted. Keeping both is what makes lineage checkable after the fact."""
+    caller submitted."""
     mcp, prov = served
     res = _call(
         mcp,
@@ -154,46 +153,9 @@ def test_the_callers_own_text_is_stored_beside_the_built_model(served):
     assert "const" in built
 
 
-def test_a_parameters_only_commit_INHERITS_the_source_it_did_not_change(served):
-    """A bounds-only commit submits no model text, but the version still HAS a model, so it still
-    has a source: the one it inherited.
-
-    This used to store nothing, on the reasoning that there was nothing to record. The hole that
-    left: a resume or rollback landing on such a version found no `model_source.ant` and fell back
-    to the reconciled RENDER as the branch base, so the next batch of operations edited render
-    text, `child.source == parent.source + ops` quietly stopped holding, and nothing in the
-    payload marked where. The original worry — an EMPTY file reading as "the agent authored an
-    empty model" — is still guarded, because an inherited source is never empty.
-    """
-    mcp, prov = served
-    base = _call(
-        mcp,
-        "make_changes",
-        {
-            "justification": "seed",
-            "model_edits": [{"op": "set_rate_law", "id": "r1", "antimony": "(k1*1.0)*A"}],
-        },
-    )
-    res = _call(
-        mcp,
-        "make_changes",
-        {
-            "justification": "bounds only",
-            "parameters": [{"parameter_id": "k1", "lower_bound": 1e-4, "upper_bound": 1e4}],
-        },
-    )
-    assert res["applied"] is True
-    base_src = (prov / "versions" / f"v{base['version']}" / "model_source.ant").read_text()
-    kept = prov / "versions" / f"v{res['version']}" / "model_source.ant"
-    assert kept.is_file(), "a version with a model must have a source to roll back onto"
-    assert kept.read_text().strip(), "never an empty file — that reads as 'authored nothing'"
-    assert kept.read_text() == base_src, "the text did not change, so neither should the source"
-
-
 def test_a_fork_patches_its_BASE_not_head(served):
-    """With `base_version=0`, the stored source is v0's source plus THIS call's operations — so
-    v1's change is absent from it. Under structured edits this is the strong property: the
-    operations apply to the source, so `child.source == parent.source + ops` holds exactly.
+    """With `base_version=0`, the submitted text is v0's built model plus THIS call's operations,
+    so v1's change is absent from it.
 
     (Matching is on symbols, never on exact formatting: libantimony re-renders `(k1*3)*A` as
     `k1*3*A`, so asserting the literal trips over the very render gap the production failures

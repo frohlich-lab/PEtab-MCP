@@ -24,10 +24,10 @@ reaction plus a rate law change on the reaction it feeds — and paying a fit pe
 cost more than the whole surface saves. Operations apply IN ORDER to an in-memory copy and the
 batch is ALL-OR-NOTHING: any failure names the failing index and nothing is applied.
 
-The edits apply to the model SOURCE — the text the caller last authored or last edited (or, on a
-shipped problem, the model it was given to repair) — not to the reconciled re-render. That is
-what makes a version's lineage checkable: a child's source is its parent's source plus this
-call's operations.
+The edits apply to the BUILT model's Antimony (``model.ant``, the text ``get_model`` shows), so a
+child's submitted text is its parent's ``model.ant`` plus this call's operations. They once
+applied to the caller's own last text, which kept what the reconcile pruned and what a rename
+merge left, so both came back on every later edit (PEtab-MCP#328).
 
 PARSING. Everything below works on STATEMENTS found in a comment-masked copy of the whole source,
 never on lines. Each earlier line-based iteration produced its own silent corruption class, and
@@ -38,11 +38,6 @@ reported unknown and listed as known in the same sentence; and comments stripped
 but not the fourth, so `set_initial` would rewrite a value inside a comment and report success.
 Masking comments once (preserving offsets, so spans still index the original text) and scanning
 statements across newlines removes the class rather than the instance.
-
-Why not parse with libantimony, which is already a dependency: round-tripping through it returns
-a RE-RENDER, and the difference between the caller's source and the render is the thing this
-module exists to preserve. Reading a model through libantimony to VALIDATE ids is a fair future
-addition; replacing the source with its output is not.
 """
 
 from __future__ import annotations
@@ -840,21 +835,9 @@ def _op_set_initial(text, op, where):
     known = assigned_symbols(text)
     close = closest_symbols(sid, known)
     hint = f" Did you mean {' or '.join(repr(c) for c in close)}?" if close else ""
-    # The `*_init` case is worth naming explicitly: the reconcile MINTS an initial-value parameter
-    # for every species that needs one, and those show up in get_model()/get_parameters() — the
-    # render — while these operations apply to the SOURCE. A caller reading `X1_init` off a
-    # parameter table is not confused about its model; it is seeing a symbol this text genuinely
-    # does not contain, so say which surface owns it.
-    minted = (
-        ""
-        if not sid.endswith("_init")
-        else f" Note {sid!r} looks like an initial-value parameter the reconcile mints from the "
-        "model: those live in the parameter table, not in the model text — set its bounds "
-        "with `parameters`, or set the species' value here using the species' own name."
-    )
     raise OperationError(
         f"{where}: nothing named {sid!r} is assigned in the model, so there is no initial value "
-        f"to set.{hint} Assigned symbols: {_fmt_ids(known)}.{minted} To introduce a new quantity, "
+        f"to set.{hint} Assigned symbols: {_fmt_ids(known)}. To introduce a new quantity, "
         "add the reaction that uses it — the reconcile mints its parameter row. "
         "NOTHING was applied.",
         cause="unknown_symbol",
@@ -1142,7 +1125,7 @@ def apply_model_edits(
     where: str = "make_changes",
     fixed: "dict[str, str] | None" = None,
 ) -> tuple[str, list[str]]:
-    """Apply a batch of structured operations to the model SOURCE.
+    """Apply a batch of structured operations to a model's Antimony, ``source``.
 
     Returns ``(new_source, summary)`` — the summary is one line per operation, which is also the
     pre-classified diff (add / remove / rate law / initial / rename) that an analysis would

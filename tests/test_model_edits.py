@@ -182,10 +182,12 @@ def test_one_call_one_fit_one_version_however_many_operations(tool_env):
     assert len(list((prov / "versions").glob("v*"))) == 1  # ONE version for two operations
 
 
-def test_operations_edit_the_source_not_the_render(tool_env):
-    """No anchor, so nothing to keep in sync with the server's re-render — and the stored source
-    is the caller's text plus its operations, which is what makes lineage checkable."""
+def test_operations_edit_the_text_get_model_shows(tool_env):
+    """No anchor, so nothing to keep in sync: the operations apply to the built model, the text
+    `get_model` shows, and the version records it plus this call's operations. Applied to the
+    caller's own last text, they kept what the reconcile had pruned (PEtab-MCP#328)."""
     mcp, prov = tool_env
+    shown = _call(mcp, "get_model", {})["result"]
     res = _call(
         mcp,
         "make_changes",
@@ -196,8 +198,7 @@ def test_operations_edit_the_source_not_the_render(tool_env):
     )
     src = (prov / "versions" / f"v{res['version']}" / "model_source.ant").read_text()
     assert "sink: B =>; k_sink*B;" in src
-    # the derived declaration the substring surface kept tripping over is simply not in play
-    assert "const" not in src or "sink" in src.split("const")[0]
+    assert [line for line in src.splitlines() if "sink" not in line] == shown.splitlines()
 
 
 def test_a_bad_id_costs_one_rejection_and_no_fit(tool_env):
@@ -233,7 +234,7 @@ def test_only_one_model_route_per_call(tool_env):
 
 def test_a_fork_applies_operations_to_that_versions_source(tool_env):
     """`base_version` + `model_edits`: fork and change in one call, with the operations applied
-    to the forked version's own source rather than to HEAD."""
+    to the forked version's built model rather than to HEAD's."""
     mcp, prov = tool_env
     v0 = _call(
         mcp,
@@ -481,20 +482,6 @@ def test_rename_will_not_rewrite_antimony_syntax():
     # a genuine rename still works
     out, _ = me.apply_model_edits(src, [{"op": "rename", "old": "k1", "new": "k_fwd"}])
     assert "const k_fwd, k2;" in out and "k_fwd*A" in out
-
-
-def test_set_initial_on_a_reconcile_minted_init_parameter_says_which_surface_owns_it():
-    """The reconcile mints `*_init` parameters that appear in get_parameters()/get_model() — the
-    RENDER — while these operations apply to the SOURCE. A caller reading `EGFR_init` off the
-    parameter table is not confused about its model; it is seeing a symbol the text really does
-    not contain, so the error has to say where that symbol lives."""
-    with pytest.raises(OperationError) as ei:
-        me.apply_model_edits(
-            "model m\n  r1: EGFR => pEGFR; k*EGFR;\nend\n",
-            [{"op": "set_initial", "id": "EGFR_init", "antimony": "5"}],
-        )
-    msg = str(ei.value)
-    assert "parameter table" in msg and "`parameters`" in msg
 
 
 def test_a_reaction_may_span_lines_or_omit_its_rate_law():
