@@ -19,10 +19,10 @@ description: >-
   With estimated sigmas chi2 sits near `n_data_points` by construction.
 ⦄- Fitted values are LINEAR whatever the estimation scale; `parameter_scales` gives each scale.
 - A change's result lists only what is new since the parent version in
-  `fitted_parameters_changed`, `parameter_scales`, `parameters_at_bound` and `merge_hints`, only
-  flagged sigmas in `noise_sigma_report`, and three flagged observables in `residual_structure`,
-  with `n_parameters_at_bound`, `n_merge_hints` and `n_flagged_observables` the full counts. A fit
-  summary has every pin, tie, sigma and flagged observable.
+  `fitted_parameters_changed`, `parameter_scales` and `merge_hints`, only flagged sigmas in
+  `noise_sigma_report`, and three flagged observables in `residual_structure`, with
+  `n_merge_hints` and `n_flagged_observables` the full counts; its pins split into
+  `parameters_newly_at_bound` and `parameters_still_at_bound`. A fit summary has them all.
 ⦃- `is_new_best`: this version became the best model, `progress.best_version`, the lowest score
   so far. A lower score that did not carries `new_best_declined`, saying why.
 ⦄
@@ -43,7 +43,7 @@ description: >-
 - `residual_structure`: the verdict over the residual tests, with a replicate lack-of-fit arm
   where the design has replicates. A flag marks where the fit is off, not proof of a better form,
   and stops nothing. Its `sigma_heterogeneity` names the sigmas whose `p` (below) survives Holm.
-- `merge_hints`: the cheapest few priced ties (below).
+- `merge_hints`: the cheapest few ties (below).
 
 ## Diagnosis: residuals
 
@@ -71,10 +71,10 @@ different structure is in the working state.
   wanders across near-optimal starts, a model-free check); `correlations` and
   `partial_correlations`; `flat_directions`, the parameter combinations the data cannot pin;
   `candidates` ranks the parameters to cut. The FIM is local: read it with the multistart spread.
-- `merge_candidates` prices giving a pair one shared value: `dnll`, `dscore` (negative when the
-  merge lowers the score), `move_scaled` (how far the tie moves a parameter; cheap but many decades
-  rarely survives a refit). Only pairs the model's math reads, of one role and scale, neither at a
-  bound, are priced: an absent pair may be one that was skipped, not a dear one.
+- `merge_candidates` estimates tying a pair to one value: `dnll`, `dscore` (negative when the
+  merge lowers the score), `move_scaled` (how far the tie moves a parameter; a hint moving a decade
+  or more is `price_unreliable`), valid at its `priced_at_version` only. Only pairs the model's
+  math reads, of one role and scale, neither at a bound, are priced: absent is not dear.
 
 ## SQL: one row per group
 
@@ -91,10 +91,10 @@ INSIDE the aggregate's parentheses (`first(measurement ORDER BY time)`), `FILTER
 | spread | `stddev_samp`, `var_samp` (there is no `var`) |
 
 ```sql
-SELECT observableId, experimentId, count(*) AS n,
+SELECT observable_id, experiment_id, count(*) AS n,
        arg_min(measurement, time) AS y_at_t0, max(measurement) AS y_peak,
        arg_max(time, measurement) AS t_peak, regr_slope(measurement, time) AS slope
-FROM measurements GROUP BY observableId, experimentId
+FROM measurements GROUP BY observable_id, experiment_id
 
 SELECT observable_id, count(*) AS n, sum(residual_weighted * residual_weighted) AS chi2
 FROM simulations WHERE residual_weighted IS NOT NULL

@@ -76,12 +76,10 @@ def test_commit_change_refuses_a_no_op_edit(session):
 
 
 def test_references_optional_for_model_ops(session):
-    # references are optional for model ops now (justification still required). This edit
-    # adds species D, which appears in no observable -> a parsimony warning.
+    # references are optional for model ops now (justification still required).
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B is degraded to D")
     assert res["applied"] is True
     assert res["references"] == []
-    assert any("unobserved species" in w for w in res["warnings"])
 
 
 def test_no_parsimony_warning_when_reusing_species(session):
@@ -102,12 +100,41 @@ def test_no_parsimony_warning_when_new_species_feeds_observable(session):
     assert not any("unobserved species" in w for w in res["warnings"])
 
 
-def test_parsimony_warning_still_fires_for_disconnected_sink(session):
-    # D is a pure downstream sink of the observed species B (B -> D): it feeds no observable and
-    # no input sets it, so it stays flagged as a genuinely disconnected hidden state.
+def test_no_parsimony_warning_for_a_parameter_free_sink(session):
+    # D is a pure downstream sink of the observed species B (B -> D), starting empty: read by
+    # nothing and carrying no parameter, it fits as `B ->` does (bruno, PEtab-MCP#341).
     res = _set_model(session, ["J: B => D; k3 * B;"], justification="B drains to D")
     assert res["applied"] is True
-    assert any("unobserved species" in w for w in res["warnings"])
+    assert not any("unobserved species" in w for w in res["warnings"])
+
+
+@pytest.mark.parametrize(
+    "own", [["K: D => ; k4 * D;"], ["D = D_init;", "D_init = 0.5;"]], ids=["decay", "initial"]
+)
+def test_parsimony_warning_fires_for_a_sink_with_a_parameter_of_its_own(session, own):
+    # D's own decay rate, or its estimated initial value, is a parameter no data constrains.
+    res = _set_model(session, ["J: B => D; k3 * B;", *own], justification="B drains to D")
+    assert res["applied"] is True
+    assert any("unobserved species ['D']" in w for w in res["warnings"])
+
+
+def test_the_placeholder_species_is_neither_warned_about_nor_counted(session):
+    # A closed-form model (a rule, no species) gets the server's placeholder species, which no
+    # warning, structure or count names (PEtab-MCP#331).
+    from petab_mcp import reconcile as R
+    from petab_mcp.model import model_structure
+
+    res = O.set_model(session, "model m\n  k1 = 0.5;\n  B := k1;\nend\n", justification="closed")
+    assert res["applied"] is True
+    assert _species(session) == {R.PLACEHOLDER_SPECIES}
+    assert not any(R.PLACEHOLDER_SPECIES in w for w in res["warnings"])
+    structure = model_structure(session, initial_conditions="")
+    assert structure["species"] == [] and structure["initial_conditions"] == []
+    assert session.describe()["n_species"] == 0
+    # Copied back into a model with real species, it is pruned without a word.
+    res = _set_model(session, [f"species {R.PLACEHOLDER_SPECIES} in compartment_;"])
+    assert R.PLACEHOLDER_SPECIES not in _species(session)
+    assert not any(R.PLACEHOLDER_SPECIES in w for w in res["warnings"])
 
 
 def _blinded_session(tmp_path):
@@ -127,12 +154,16 @@ def _blinded_session(tmp_path):
 def test_a_readout_rule_carries_what_it_reads_into_the_observed_set(tmp_path):
     # On a blinded problem the formula names only `readout_B`, never a species. Read off the
     # formula alone, every added species was reported as feeding no observable — all ten, in one
-    # model. C feeds B, which the readout reads; the sink D is still flagged.
+    # model. C feeds B, which the readout reads; the sink D, with a decay of its own, is flagged.
     session = _blinded_session(tmp_path)
     res = _set_model(session, ["readout_B := B;", "J: C => B; k3 * C;"], justification="C feeds B")
     assert res["applied"] is True
     assert not any("unobserved species" in w for w in res["warnings"])
-    res = _set_model(session, ["readout_B := B;", "J: B => D; k3 * B;"], justification="B to D")
+    res = _set_model(
+        session,
+        ["readout_B := B;", "J: B => D; k3 * B;", "K: D => ; k4 * D;"],
+        justification="B to D",
+    )
     assert any("unobserved species ['D']" in w for w in res["warnings"])
 
 
@@ -371,6 +402,21 @@ def test_a_bound_on_an_inner_solved_sigma_is_refused(session):
         )
     assert exc.value.cause == "inner_solved_bound"
     assert session.problem.parameter_df.loc[["k1", "sigma_B"], "upperBound"].tolist() == [100, 100]
+
+
+def test_no_pin_where_the_bound_cannot_be_widened(session):
+    """#341: the fit report listed an inner-solved sigma at its bound, whose bounds are refused
+    above (isensee 63612603_69), and a value at a linear lower bound of 0, where its term is off
+    (lucarelli 63782292_0/3; 0.9 of [0, 100] was within the 1% too). The same pins on a log10 or an
+    upper bound are still listed, and without the problem the sigma is too."""
+    from petab_mcp import fitting
+
+    df = session.problem.parameter_df
+    df.loc["sigma_B", "estimate"] = True
+    fitted = {"A_init": 0.9, "B_init": 100.0, "sigma_B": 1e-4, "k1": 1e-4}
+    pins = fitting.parameters_at_bound(fitted, df, problem=session.problem)
+    assert [(p["parameter_id"], p["side"]) for p in pins] == [("B_init", "upper"), ("k1", "lower")]
+    assert "sigma_B" in {p["parameter_id"] for p in fitting.parameters_at_bound(fitted, df)}
 
 
 def test_change_parameters_batch_applies_bounds_and_scale_atomically(session):
@@ -975,56 +1021,69 @@ def _commit(session):
     )
 
 
-def _orphaned(result):
-    return [m["message"] for m in result["messages"] if "defined nowhere" in m["message"]]
+def _orphaned(session, extra) -> list[str]:
+    """The issues of the refusal of re-authoring the base model with ``extra``."""
+    from petab_mcp.errors import ValidationError
+
+    with pytest.raises(ValidationError, match="defined nowhere") as exc:
+        _set_model(session, extra)
+    return exc.value.issues
 
 
-def test_a_name_the_parent_defined_is_named_when_an_edit_mints_it(session):
+def test_a_name_the_parent_defined_is_refused_when_an_edit_mints_it(session):
     """fontaine 5 v7: `gli_on` was changed to make `GliF` while a rate law still read `GliS`, and
     `GliS` became an estimated constant (fitted to 53.5, 140 nll worse) with no warning
-    (PEtab-MCP#264). `k_new`, a new name a rate law reads, is a new rate constant: not named."""
+    (PEtab-MCP#264); named in a warning, such names were fitted anyway (PEtab-MCP#324). `k_new`, a
+    new name a rate law reads, is a new rate constant: not named."""
     _set_model(session, _GLI)
     v = _commit(session)
-    result = _set_model(
-        session,
-        [
-            "gli_on: B => GliF; k3*B;",
-            "gli_read: A => B; k4*GliS*A;",
-            "gli_off: GliF => ; k_new*GliF;",
-        ],
-    )
-    assert {"GliS", "k_new"} <= set(result["parameter_diff"]["added"])
-    assert _orphaned(result) == [
-        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
-        f"{v} had it as a species: define it again, or read the name that replaced it."
+    gli_off = "gli_off: GliF => ; k_new*GliF;"
+    assert _orphaned(
+        session, ["gli_on: B => GliF; k3*B;", "gli_read: A => B; k4*GliS*A;", gli_off]
+    ) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        "`gli_read`: define it again, or read the name that replaced it."
+    ]
+    result = _set_model(session, ["gli_on: B => GliF; k3*B;", gli_off])
+    assert "k_new" in result["parameter_diff"]["added"]
+
+
+def test_a_rule_another_version_had_is_refused_with_its_math(session):
+    """63612603_106: `RSK_un`, an assignment rule of version 6, was minted and fitted, 1735.61 nll
+    worse, beside a warning saying so (PEtab-MCP#324)."""
+    _set_model(session, ["f := k2*A;", "r3: B => ; f*B;"])
+    v = _commit(session)
+    assert _orphaned(session, ["r3: B => ; f*B;"]) == [
+        f"`f` is used but defined nowhere. Version {v} had it as the assignment rule "
+        "`f := k2 * A`: define it again, or read the name that replaced it."
     ]
 
 
 def test_a_fork_is_checked_against_the_version_it_forks(session):
     """A `base_version` fork changes that version, not HEAD: `GliS` is a species of the forked
-    version only, and `k4`, a parameter there, is no definition this warning names (#264)."""
+    version only, and `k4`, a parameter there, is no definition this refusal names (#264)."""
     _set_model(session, _GLI)
     v = _commit(session)
     _set_model(session)
     _commit(session)
     session.derived_from = v
-    result = _set_model(session, ["gli_read: A => B; k4*GliS*A;"])
-    assert _orphaned(result) == [
-        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
-        f"{v} had it as a species: define it again, or read the name that replaced it."
+    assert _orphaned(session, ["gli_read: A => B; k4*GliS*A;"]) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        "`gli_read`: define it again, or read the name that replaced it."
     ]
 
 
 def test_a_species_new_against_the_forked_version_is_warned_about(session):
     """PEtab-MCP#282, perelson 0: a `base_version` fork took "the species before this edit" from
     HEAD, so a species new against the base but present in HEAD (a phantom `Ie2`) went unwarned."""
+    sink = ["J: B => D; k3 * B;", "K: D => ; k4 * D;"]
     base = _commit(session)
-    _set_model(session, ["J: B => D; k3 * B;"])
+    _set_model(session, sink)
     _commit(session)
-    again = _set_model(session, ["J: B => D; k3 * B;"])  # on HEAD, `D` is not new
+    again = _set_model(session, sink)  # on HEAD, `D` is not new
     assert not any("unobserved species" in w for w in again["warnings"])
     session.derived_from = base
-    forked = _set_model(session, ["J: B => D; k3 * B;"])
+    forked = _set_model(session, sink)
     assert any("unobserved species ['D']" in w for w in forked["warnings"])
 
 
@@ -1037,12 +1096,45 @@ def test_a_name_another_version_defined_is_named(session):
     _set_model(session, _GLI)
     v = _commit(session)
     session.derived_from = base
-    result = _set_model(session, ["gli_read: A => B; k4*GliS*A;"])
-    assert _orphaned(result) == [
-        "`GliS` is used but defined nowhere; it was created as an estimated parameter. Version "
-        f"{v} had it as a species, and version {base}, which this edit changes, does not: define "
-        "it here too, or read the name that replaced it."
+    assert _orphaned(session, ["gli_read: A => B; k4*GliS*A;"]) == [
+        f"`GliS` is used but defined nowhere. Version {v} had it as a species in `gli_on`, "
+        f"`gli_read`, and version {base}, which this edit changes, does not: define it here too, "
+        "or read the name that replaced it."
     ]
+
+
+_E = ["species E in compartment_;", "E = 1;", "r4: E => ; k1*E;"]
+
+
+def _said_of(result, check):
+    return [m["message"] for m in result["messages"] if check in m["message"]]
+
+
+@pytest.mark.parametrize(
+    ("edited", "dropped"),
+    [
+        ("r3: A => B; k2*A;", True),
+        ("r3: A => B; k2*E*A;", False),
+        ("r3: A => B; k2*f; f := E*A;", False),  # read through a rule
+        ("r3: A => B; k2*E;", False),  # `A` is consumed: the reactant warning names it
+    ],
+)
+def test_a_rate_that_no_longer_reads_a_species_its_parent_read_is_named(session, edited, dropped):
+    """`set_rate_law` swaps the rate alone, and a law that lost what the old one read committed
+    with no word (PEtab-MCP#324)."""
+    _set_model(session, [*_E, "r3: A => B; k2*E*A;"])
+    v = _commit(session)
+    result = _set_model(session, [*_E, edited])
+    assert _said_of(result, "no longer reads") == (
+        [
+            f"the rate of reaction `r3` no longer reads `E`, which it read in version {v}, so it "
+            "no longer changes with it. If it still acts on this reaction, read it in its rate "
+            "again."
+        ]
+        if dropped
+        else []
+    )
+    assert len(_said_of(result, "consumes `A`")) == (edited == "r3: A => B; k2*E;")
 
 
 def _said(result, start):

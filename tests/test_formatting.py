@@ -96,7 +96,7 @@ def test_a_wide_condition_table_comes_back_one_row_per_target_under_the_cap():
     assert len(text.encode()) <= CONDITIONS_MAX_BYTES
     head, *table = text.splitlines()
     assert head.startswith("9169 conditions set 146 targets")
-    assert "WHERE conditionId = 'line0'" in head
+    assert "WHERE condition_id = 'line0'" in head
     summary = pd.read_csv(io.StringIO("\n".join(table)), sep="\t", index_col="targetId")
     assert list(summary.index) == [f"gene{t}" for t in range(145)] + ["dose"]
     assert summary.loc["gene1", ["n_conditions", "n_values", "min", "max"]].tolist() == [
@@ -116,7 +116,7 @@ def test_a_summary_counts_the_targets_past_the_cap():
     listed = len(text.splitlines()) - 3
     assert (
         last
-        == f"(+{900 - listed} more targets: query_data `SELECT DISTINCT targetId FROM conditions`)"
+        == f"(+{900 - listed} more targets: query_data `SELECT DISTINCT target_id FROM conditions`)"
     )
 
 
@@ -158,7 +158,7 @@ def test_a_froehlich_sized_experiment_table_comes_back_one_row_per_layout_under_
     assert len(text.encode()) <= EXPERIMENTS_MAX_BYTES
     head, *table = text.splitlines()
     assert head.startswith("9170 experiments, too large a table for one reply")
-    assert f"WHERE experimentId = 'experiment____{ids[0]}'" in head
+    assert f"WHERE experiment_id = 'experiment____{ids[0]}'" in head
     assert table == [
         "n_experiments\tn_periods\ttimes\tn_conditions\texample",
         f"9169\t1\t0\t1\texperiment____{ids[0]}",

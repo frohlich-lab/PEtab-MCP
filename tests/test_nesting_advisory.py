@@ -167,15 +167,78 @@ def test_no_advisory_when_the_added_parameter_actually_helps():
 
 
 def test_no_advisory_when_k_did_not_rise():
-    # A SIMPLER model fitting worse is ordinary and expected — the invariant only binds one way.
+    # A SIMPLER model fitting worse is ordinary and expected — the invariant only binds one way,
+    # and without the objective at the parent's optimum there is nothing to add.
     simpler = _parent(n_estimated=2, estimated_ids=["kact", "kon"], neg_log_likelihood=-45.0)
     assert nesting_advisory(_parent(), simpler) is None
     assert valid_added_parameter_experiment(_parent(), simpler) is False
 
 
-def test_no_advisory_for_a_noise_floor_worsening():
-    # k rose but the nll is worse by 1e-9 — the same optimum re-reported, not a violation.
-    assert nesting_advisory(_parent(), _child(neg_log_likelihood=-50.0 + 1e-9)) is None
+def test_no_advisory_for_a_gap_within_one_nll():
+    # luna alkan 39 (#334): 0.0017 worse sent the agent to a 300-start refit. Within 1 nll, the
+    # yardstick a start reaches the best by, the child has reached its parent.
+    for gap in (1e-9, 0.0017, 0.99):
+        child = _child(neg_log_likelihood=-50.0 + gap)
+        assert nesting_advisory(_parent(), child) is None
+        assert valid_added_parameter_experiment(_parent(), child) is True
+
+
+def test_a_new_parameter_at_a_bound_is_named_instead_of_a_refit():
+    # luna alkan 39 (#334): the new rate sat at its positive lower bound, so its term could not
+    # switch off and the child could not reproduce v12; the line advised more starts.
+    pin = {"parameter_id": "kint", "side": "lower", "value": 1e-3, "bound_value": 1e-3}
+    line, invalid = nesting_advisory(_parent(), _child(at_bound=[pin]))
+    assert invalid is False
+    on = render(line, True)
+    assert on.startswith(
+        "vs v12: k rose 3->4 and neg_log_likelihood got worse by 5 with kint, new since v12, at "
+        "its lower bound 0.001: inside its bounds its term cannot switch off"
+    )
+    assert "more starts will not change it" in on and "INVALID" not in on
+    off = render(line, False)
+    assert off.startswith("kint, new since v12, sits at its lower bound 0.001: inside its bounds")
+    assert "worse by" not in off
+
+
+def test_a_parent_parameter_at_a_bound_leaves_the_comparison_invalid():
+    pin = {"parameter_id": "kon", "side": "upper", "value": 1000.0, "bound_value": 1000.0}
+    assert nesting_advisory(_parent(), _child(at_bound=[pin]))[1] is True
+
+
+# A deletion: the additive model is the parent, the one without R_int its child.
+_DELETION = {
+    "model": _PARENT_MODEL,
+    "estimated_ids": _PARENT_IDS,
+    "n_estimated": len(_PARENT_IDS),
+    "objective_before": -30.0,
+}
+
+
+def _additive_parent(**over):
+    return _parent(
+        model=_ADDITIVE_MODEL, estimated_ids=_CHILD_IDS, n_estimated=len(_CHILD_IDS), **over
+    )
+
+
+def test_a_deletion_that_fits_worse_reports_the_objective_at_the_parents_optimum():
+    # fontaine 100 (#334): a deletion fit worse, and the agent read it as a missed basin and spent
+    # a 300-start refit. The objective at the parent's optimum shows what the removal cost there.
+    line, invalid = nesting_advisory(_additive_parent(), _child(**_DELETION))
+    assert invalid is False
+    assert render(line, True) == (
+        "vs v12: k fell 4->3 and neg_log_likelihood rose by 5. At v12's optimum this model scores "
+        "-30 (+20 on v12), and its fit took it to -45. A model nested in v12 cannot fit better "
+        "than it, so the rise is what the removed structure was worth, not a sign of a missed "
+        "basin."
+    )
+    assert render(line, False) == ""
+
+
+def test_no_deletion_line_for_a_rewrite_or_without_the_parents_objective():
+    rewritten = {**_DELETION, "model": _PARENT_MODEL.replace("kon*R*L;", "kon*R*L/(1 + Act);")}
+    assert nesting_advisory(_additive_parent(), _child(**rewritten)) is None
+    unknown = {**_DELETION, "objective_before": None}
+    assert nesting_advisory(_additive_parent(), _child(**unknown)) is None
 
 
 def test_no_advisory_when_the_parent_was_never_fitted():
@@ -341,6 +404,36 @@ def test_the_outstanding_flag_survives_a_durable_resume(session, tmp_path):
         resolver=StubReferenceResolver(),
     )
     assert again.invalid_comparison is None
+
+
+def test_session_names_a_new_parameter_at_its_bound_unless_that_bound_switches_it_off(session):
+    """The commit path pins the child with `fitting.parameters_at_bound` (#334). At a linear
+    lower bound of 0 the parameter is off, not pinned (#341), so the child can reproduce its
+    parent there and a worse fit is under-converged."""
+    from petab.v2.C import ESTIMATE
+
+    _snapshot_parent(session, -100.0)
+    session.problem.parameter_df.loc["A_init", ESTIMATE] = True  # lin [0, 100]; k: 2 -> 3
+    fitsim = {"neg_log_likelihood": -98.0, "fitted_parameters": {"A_init": 100.0}}
+    advisory = session._check_nesting_vs_parent(fitsim, session.model.to_antimony())
+    assert "A_init, new since v0, at its upper bound 100: " in render(advisory, True)
+    assert session.invalid_comparison is None
+
+    fitsim["fitted_parameters"]["A_init"] = 0.0
+    advisory = session._check_nesting_vs_parent(fitsim, session.model.to_antimony())
+    assert render(advisory, True).startswith("INVALID COMPARISON vs v0")
+    assert session.invalid_comparison == advisory
+
+
+def test_session_reports_a_deletion_at_the_parents_optimum(session):
+    from petab.v2.C import ESTIMATE
+
+    _snapshot_parent(session, -100.0)
+    session.problem.parameter_df.loc["k2", ESTIMATE] = False  # k: 2 -> 1
+    fitsim = {"neg_log_likelihood": -90.0, "objective_before": -80.0}
+    advisory = session._check_nesting_vs_parent(fitsim, session.model.to_antimony())
+    assert "At v0's optimum this model scores -80 (+20 on v0)" in render(advisory, True)
+    assert session.invalid_comparison is None
 
 
 def test_session_leaves_the_flag_unset_on_a_not_nested_commit(session):

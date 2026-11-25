@@ -108,6 +108,17 @@ def test_fisher_combine():
     assert rt.fisher_combine([0.04, 0.04]) < 0.04
 
 
+def test_min_p_is_the_smallest_p_a_series_can_give():
+    """#329: a one-point series always gives p = 1, so the structure verdict combines only the
+    series whose ``min_p`` can reach its level."""
+    assert rt.sign_test([1.0])["min_p"] == 1.0
+    assert rt.sign_test([1.0, -1.0] * 3)["min_p"] == pytest.approx(2**-5)
+    assert rt.sign_test([1.0] * 6)["min_p"] == pytest.approx(rt.sign_test([1.0] * 6)["p"])
+    assert rt.runs_test([1.0, -1.0])["min_p"] == 1.0
+    alternating = rt.runs_test([1.0, -1.0] * 5)
+    assert alternating["min_p"] == pytest.approx(alternating["p"]) and alternating["min_p"] < 0.05
+
+
 # -- replicate lack-of-fit: the statistic ---------------------------------------------------------
 def _point(label, n, ybar, s, prediction):
     return {"label": label, "n": n, "ybar": ybar, "s": s, "prediction": prediction}

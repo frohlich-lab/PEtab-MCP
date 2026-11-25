@@ -238,9 +238,11 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
     ties = I.identifiability(sess)["merge_candidates"]["ties"]
     fields = ("parameters", "dnll", "dscore", "move_scaled")
     assert {k: ties[0][k] for k in fields} == {k: hint[k] for k in fields}
-    # ~110 B on every fit, and the rename that takes it on a text-route server (#283)
-    assert set(hint) == {*fields, "take"}
-    assert hint["take"] == {"op": "rename", "old": "k2", "new": "k1"}
+    # ~130 B on every fit: the version that priced it (#336) and the rename that takes it on a
+    # text-route server (#283)
+    assert set(hint) == {*fields, "priced_at_version", "take"}
+    assert hint["priced_at_version"] == res["version"]
+    assert hint["take"] == [{"op": "rename", "old": "k2", "new": "k1"}]
     # ...and the SCORE read carries the same one, so a caller that did not run the fit (another
     # agent, a client's finish gate, a final scoring) sees the tie the agent was shown.
     from petab_mcp import fitting
@@ -249,8 +251,9 @@ def test_a_near_free_tie_reaches_the_fit_result_as_a_merge_hint_row(fit_session,
 
 
 def test_a_change_lists_the_ties_new_since_its_parent_and_counts_the_rest(fit_session, monkeypatch):
-    """PEtab-MCP#208: a tie the parent's own fit result already carried is counted in
-    `n_merge_hints`, not repeated, however it was re-priced; the score read keeps every one."""
+    """PEtab-MCP#208: a tie the parent's own fit result already carried at the same price is counted
+    in `n_merge_hints`, not repeated; the score read keeps every one. PEtab-MCP#336: a tie RE-PRICED
+    is listed again, or the agent acts on the parent's price (bruno, gemot_pools_20261107)."""
     from petab_mcp import fitting
     from petab_mcp import operations as O
 
@@ -273,6 +276,11 @@ def test_a_change_lists_the_ties_new_since_its_parent_and_counts_the_rest(fit_se
     again = widened_fit(1e4)
     assert again["merge_hints"] == [] and again["n_merge_hints"] == 1
     assert fitting.fit_summary(sess, sess.engine)["merge_hints"][0]["parameters"] == ["k1", "k2"]
+    _stub_fim(monkeypatch, 1e-5)
+    repriced = widened_fit(1e5)
+    (hint,) = repriced["merge_hints"]
+    assert hint["parameters"] == ["k1", "k2"] and hint["dnll"] != new["merge_hints"][0]["dnll"]
+    assert hint["priced_at_version"] == repriced["version"] and "n_merge_hints" not in repriced
 
 
 def test_no_hints_when_no_tie_beats_the_parameter_charge(fit_session, monkeypatch):
@@ -440,7 +448,7 @@ def test_a_restore_diagnoses_the_version_it_restored_not_the_last_fit(fit_sessio
     diagnosis = I.identifiability(sess)
     assert diagnosis["available"] is True and "stale" not in diagnosis
     assert (
-        I.merge_hints(diagnosis, rename=True)
+        I.merge_hints(diagnosis, version=first["version"], model=I.edit_surface(sess))
         == fitting.fit_summary(sess, sess.engine)["merge_hints"]
     )
 
@@ -800,10 +808,23 @@ def test_an_unscored_fit_under_a_source_that_breaks_a_total_names_it(dosed_sessi
     nllh, note = fitting._reconcile_objective(dosed_session, {"neg_log_likelihood": 10.0}, sim)
     assert nllh is None
     if sink:
-        assert "fault in how the server evaluates" in note
+        assert "Neither value judges the structure" in note and "server" not in note
     else:
         assert "pre-equilibration has no steady state to reach: `r3` (`-> B; kb * A`)" in note
         assert "server" not in note
+
+
+def _without_steady_state(session, build_root) -> None:
+    """``session`` holds ``_SOURCED`` without a sink, fitting 2 starts, with only ``kb`` free. Its
+    total then grows at no less than ``kb * k2 / (k1 + k2)`` >= 1.7e-4 from every start, which
+    no pre-equilibration converges on; with ``k1`` and ``k2`` free, a start at ``k2`` ~ 1e-4 and
+    ``k1`` ~ 80 grew slowly enough for one to (CI on PEtab-MCP#358)."""
+    from petab_mcp.engine import AmiciEngine
+
+    O.set_model(session, _SOURCED.format(sink=""), justification="basal flux")
+    session.problem.parameter_df.loc[["k1", "k2"], "estimate"] = False
+    session.engine = AmiciEngine(session, build_root=str(build_root))
+    session.auto_fit_starts = 2
 
 
 def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
@@ -811,13 +832,33 @@ def test_a_fit_with_no_steady_state_to_pre_equilibrate_to_names_the_source(
 ):
     """#285: the same source fails every start where no pre-equilibration converges, which the
     refusal read as an ODE that will not integrate or an undefined readout."""
-    from petab_mcp.engine import AmiciEngine
-
-    O.set_model(dosed_session, _SOURCED.format(sink=""), justification="basal flux")
-    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
-    dosed_session.auto_fit_starts = 2
+    _without_steady_state(dosed_session, amici_build_root)
     with pytest.raises(ModelUpdateError, match="no steady state to reach: `r3` "):
         dosed_session.fit()
+
+
+@pytest.mark.parametrize(
+    ("sink", "named"),
+    [
+        ("kd * dose * B", "`r3` (`-> B; kb * A`, where condition `pre` stops `r4`)"),
+        ("kd * (1 + dose) * B", None),
+    ],
+)
+def test_a_sink_a_pre_equilibration_condition_stops_leaves_no_steady_state(
+    dosed_session, sink, named
+):
+    """#335: raimundez 86's receptor had a sink, but a pre-equilibration condition switched it
+    off, so its source grew there with no steady state. The static check saw the sink; this one
+    reads each pre-equilibration's conditions (`pre` sets `dose` to 0)."""
+    from petab_mcp import fitting
+
+    model = _SOURCED.format(sink=f"  kd = 0.1;\n  r4: B => ; {sink};\n")
+    O.set_model(dosed_session, model, justification="gated sink")
+    assert fitting._sources_breaking_totals(dosed_session.problem) == ([named] if named else [])
+    if named:
+        sim = {"neg_log_likelihood": 12.0, "n_missing_simulations": 0, "n_expected_points": 6}
+        _, note = fitting._reconcile_objective(dosed_session, {"neg_log_likelihood": 10.0}, sim)
+        assert f"no steady state to reach: {named} makes a species from nothing" in note
 
 
 def test_a_power_of_a_state_to_an_estimated_exponent_is_named(dosed_session):
@@ -1012,11 +1053,8 @@ def test_every_failed_start_is_re_simulated_and_its_amici_status_named(
     of them. Without the source check (see the test above), the refusal reaches its general form,
     which now carries AMICI's status where the starts began and names the one cause it shows."""
     from petab_mcp import fitting
-    from petab_mcp.engine import AmiciEngine
 
-    O.set_model(dosed_session, _SOURCED.format(sink=""), justification="basal flux")
-    dosed_session.engine = AmiciEngine(dosed_session, build_root=str(amici_build_root))
-    dosed_session.auto_fit_starts = 2
+    _without_steady_state(dosed_session, amici_build_root)
     monkeypatch.setattr(fitting, "_sources_breaking_totals", lambda problem: [])
     with pytest.raises(ModelUpdateError) as refused:
         dosed_session.fit()
@@ -1041,3 +1079,28 @@ def test_a_readout_at_0_under_log_noise_at_the_nominal_values_is_named(fit_sessi
     assert "`obs_B` (down to 0, at t=0)" in text, text
     assert "A readout of 0 at t=0 reads a species that starts at 0." in text
     assert "Re-simulated" not in text  # the nominal values' check, before any start's
+
+
+def test_a_gap_a_tighter_resimulation_closes_is_scored(fit_session, monkeypatch):
+    """#335: a fit whose optimum the first re-simulation does not reproduce is re-simulated once
+    more at tighter tolerances, and scored on that one where it does."""
+    from petab_mcp import fitting
+    from petab_mcp.engine import AmiciEngine
+
+    residuals, atols = AmiciEngine.residuals, []
+
+    def off_once(self, solve_inner=True, gradient=False):
+        sim = residuals(self, solve_inner=solve_inner, gradient=gradient)
+        solver = fitting.estimation_problem(self.session, self)[0].objective.amici_solver
+        atols.append(solver.get_absolute_tolerance())
+        if len(atols) == 1:
+            return {**sim, "neg_log_likelihood": sim["neg_log_likelihood"] + 50.0}
+        return sim
+
+    monkeypatch.setattr(AmiciEngine, "residuals", off_once)
+    out = fit_session.fit()
+    assert atols[:2] == [pytest.approx(1e-10), pytest.approx(1e-13)]
+    assert out["neg_log_likelihood"] is not None
+    assert not any("not scored" in w for w in out.get("warnings", []))
+    solver = fitting.estimation_problem(fit_session, fit_session.engine)[0].objective.amici_solver
+    assert solver.get_absolute_tolerance() == pytest.approx(1e-10)

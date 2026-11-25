@@ -554,9 +554,9 @@ def test_query_data_static_tables(tmp_path):
 
     async def go():
         out = _structured(
-            await mcp.call_tool("query_data", {"sql": "SELECT parameterId FROM parameters"})
+            await mcp.call_tool("query_data", {"sql": "SELECT parameter_id FROM parameters"})
         )
-        ids = {r["parameterId"] for r in out["rows"]}
+        ids = {r["parameter_id"] for r in out["rows"]}
         assert ids == {"k1", "k2", "sigma_B", "A_init", "B_init"}
         assert out["truncated"] is False
 
@@ -1066,9 +1066,9 @@ def test_fit_tools(tmp_path):
         # left out (#190).
         assert set(res["residual_structure"]) == {"flagged_observables", "low_power", "summary"}
         assert "per_observable" not in res and "worst_points" not in res
-        # `parameters_at_bound` stays HERE, on every fit result: it is the at-bound signal the agent
-        # acts on (get_parameters carries none), and it costs ~25 bytes when empty.
-        assert "parameters_at_bound" in res
+        # The pins stay HERE, on every fit result: they are the at-bound signal the agent acts on
+        # (get_parameters carries none), split into new since the parent and still held (#334).
+        assert "parameters_newly_at_bound" in res and "parameters_still_at_bound" in res
         # ...and the tool returns the detail, in two sections, WITHOUT a second copy of the verdict.
         # The DEFAULT is the cheap residual half — the parameter half costs several kB plus a FIM,
         # and every payload asked for is re-sent in the agent's history on every later turn.
@@ -1106,6 +1106,8 @@ def test_fit_tools(tmp_path):
                 "antimony": _ONE_REACTION_ANTIMONY,
                 "justification": "a second scored version",
                 "n_starts": 2,
+                # HEAD, named: v1 may not be the best, and then a call without it is asked about.
+                "base_version": 1,
             },
         )
         # The two versions this block actually cares about — the bounds change and the structure

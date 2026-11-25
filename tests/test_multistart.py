@@ -462,28 +462,71 @@ def test_a_fit_whose_starts_mostly_run_out_of_time_says_more_starts_will_not_hel
     assert any(
         "3 of 3 starts ran out of the 0s" in w and "More starts" in w for w in out["warnings"]
     )
+    assert not any("t=inf" in w for w in out["warnings"])
+
+
+def test_an_endpoint_only_fit_out_of_time_points_to_closed_form_steady_states(fit_session):
+    """froehlich measures only at t=inf, and its ODE fits ran up to every start to the cap: the
+    MAXTIME warning there says a closed-form steady state leaves nothing to integrate. The fit's
+    wall time rides on the result and the version (PEtab-MCP#331)."""
+    from petab.v2.C import TIME
+
+    problem = fit_session.problem
+    fit_session.problem = problem.replace(
+        measurement_df=problem.measurement_df.assign(**{TIME: math.inf})
+    )
+    fit_session.fit_per_start_timeout = 1e-9
+    out = fit_session.fit(n_starts=3)
+
+    assert any("Every measurement here is at t=inf" in w for w in out["warnings"])
+    assert isinstance(out["wall_seconds"], int) and out["wall_seconds"] >= 0
+    assert fit_session.provenance.get_meta(out["version"])["wall_seconds"] == out["wall_seconds"]
+
+
+def test_a_model_with_nothing_to_integrate_is_not_pointed_to_closed_form(session):
+    """No reaction and no rate rule: the model already IS closed form."""
+    from petab.v2.C import TIME
+
+    from petab_mcp import operations
+    from petab_mcp.session import _integrates_to_steady_state_only
+
+    problem = session.problem
+    session.problem = problem.replace(
+        measurement_df=problem.measurement_df.assign(**{TIME: math.inf})
+    )
+    assert _integrates_to_steady_state_only(session.problem)
+    operations.set_model(session, "model m\n  k1 = 0.5;\n  B := k1;\nend\n", justification="x")
+    assert not _integrates_to_steady_state_only(session.problem)
 
 
 def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
     fit_session, monkeypatch
 ):
     """dessauges raised `n_starts` step by step to 8000, each fit with 1 start at the best
-    (PEtab-MCP#287): a raised fit that still leaves 1 or 2 there says the optimum is a needle. One
-    at the default does not, since there a raise is still the advice, and neither does one where
-    those are half the starts or more."""
-    real, at_best = fitting.fit_and_simulate, {"n": 1}
+    (PEtab-MCP#287): a raised fit that still leaves 0 to 2 FRESH starts there says the optimum is a
+    needle. Warm starts begin at the previous optimum and do not count: 401 of a refit's 408 at the
+    best were warm (PEtab-MCP#334). One at the default does not, since there a raise is still the
+    advice, and neither does one where those are half the fresh starts or more."""
+    real, forced = fitting.fit_and_simulate, {}
 
     def forced_at_best(*args, **kwargs):
         out = real(*args, **kwargs)
-        out["n_starts_at_best"] = at_best["n"]
+        out.update(forced)
         return out
 
+    def needle(n_starts=None, **counts):
+        forced.update(counts)
+        warnings = fit_session.fit(n_starts=n_starts)["warnings"]
+        return next((w for w in warnings if "needle" in w), None)
+
     monkeypatch.setattr(fitting, "fit_and_simulate", forced_at_best)
-    assert not any("needle" in w for w in fit_session.fit()["warnings"])
-    raised = fit_session.fit(n_starts=3)
-    assert any("1 of 3 starts reached" in w and "needle" in w for w in raised["warnings"])
-    at_best["n"] = 2
-    assert not any("needle" in w for w in fit_session.fit(n_starts=4)["warnings"])
+    one_fresh = {"n_starts_at_best": 1, "n_warm_starts": 0, "n_warm_starts_at_best": 0}
+    assert needle(**one_fresh) is None
+    assert "1 of 3 fresh starts reached" in needle(3, **one_fresh)
+    warm = {"n_warm_starts": 2, "n_warm_starts_at_best": 2}
+    assert "1 of 3 fresh starts reached" in needle(5, n_starts_at_best=3, **warm)
+    assert "0 of 4 fresh starts reached" in needle(6, n_starts_at_best=2, **warm)
+    assert needle(7, n_starts_at_best=5, n_warm_starts=3, n_warm_starts_at_best=3) is None
 
 
 def test_a_refit_at_the_cap_is_not_offered_more_starts(fit_session):

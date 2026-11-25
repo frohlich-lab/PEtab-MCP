@@ -11,7 +11,11 @@ from petab_mcp.problem import WorkingProblem, later_changes
 from petab_mcp.validation import (
     INPUT_UNREAD,
     _constant_noise_species_issues,
+    _constant_readout_issues,
+    _dead_rule_parameter_issues,
     _fixed_constant_role_issues,
+    _power_issues,
+    _unread_reactant_issues,
     frozen_parametric_stoichiometry_issues,
     validate_problem,
 )
@@ -379,5 +383,230 @@ def test_a_noise_that_reads_a_species_no_reaction_changes_is_refused(reaction, r
             "fit would fail. Put `B` in a reaction that produces or consumes it."
         ]
         if refused
+        else []
+    )
+
+
+_HILL = """model hill
+  species A = 1, B = 0, C = 1
+  X := (A + B)/K
+  r1: A => B; k*{rate}
+  K = 1; k = 1; h = 2
+end
+"""
+
+
+@pytest.mark.parametrize(
+    ("rate", "estimated", "fix"),
+    [
+        ("A^h/(K^h + A^h)", "h", "max(A, 0)^h"),  # a Hill term, its power named once
+        ("X^h", "h", "max(X, 0)^h"),  # through an assignment rule
+        ("pow(A + B, h + 1)", "h", "max(A + B, 0)^(h + 1)"),
+        ("max(A, 0)^h", "h", None),
+        ("abs(A)^h", "h", None),
+        ("A^h", "", None),  # a fixed exponent
+        ("A^2.5", "h", None),
+        ("C^h*A", "h", None),  # C is in no reaction
+    ],
+)
+def test_a_state_raised_to_an_estimated_power_is_warned_with_its_guard(rate, estimated, fix):
+    """#323: fujita's delivered models raised states to estimated powers (`PIP3^h_p`). A state that
+    dipped below 0 after a held-out pulse made the power NaN, and 11 of 25 runs scored no held-out
+    data, with no warning at training time."""
+    import types
+
+    import pandas as pd
+
+    model = SbmlModel.from_antimony(_HILL.format(rate=rate))
+    ids = ["h", "k", "K"]
+    pdf = pd.DataFrame(
+        {"estimate": [i == estimated for i in ids]}, index=pd.Index(ids, name="parameterId")
+    )
+    issues = _power_issues(types.SimpleNamespace(model=model, parameter_df=pdf))
+    said = [i["message"] for i in issues]
+    assert len(said) == (fix is not None), said
+    if fix is not None:
+        assert said[0].startswith("reaction `r1` raises a state to an estimated power, `")
+        assert said[0].endswith(f"Write `{fix}`."), said[0]
+
+
+def test_a_power_of_a_state_reaches_the_edits_messages(session):
+    """The lint runs on every edit, beside the other advisories, and says what to write instead."""
+    antimony = _TOY_BASE.replace("k1 * A;", "k1 * A^h; h = 2;")
+    said = [
+        m
+        for m in O.set_model(session, antimony, justification="cooperative")["messages"]
+        if "estimated power" in m["message"]
+    ]
+    assert said == [
+        {
+            "level": "warning",
+            "source": "validation",
+            "message": "reaction `r1` raises a state to an estimated power, `A^h`: the integrator "
+            "can take a state just below 0, as after a pulse, where a non-integer power is NaN "
+            "and the simulation fails. Write `max(A, 0)^h`.",
+        }
+    ]
+
+
+_ZERO = """model zero
+  species P = 0, Q = 0
+  r1: -> P; k
+  r2: -> Q; k*{rate}
+  B := c*exp(s)
+  k = 1; h = 2; s = 0.3; c = 1
+end
+"""
+
+
+@pytest.mark.parametrize(
+    ("rate", "lower", "when"),
+    [
+        ("B^h", 0.5, "is 0 in condition `ctrl`"),  # an input the condition switches off
+        ("P^h", 0.5, "starts at 0"),
+        ("max(P, 0)^h", 0.5, "starts at 0"),  # the guard against a dip below 0 does not help
+        ("B^h", 1.0, None),
+        ("(B + 1)^h", 0.5, None),
+    ],
+)
+def test_a_base_at_zero_raised_to_an_exponent_that_may_go_below_one_is_warned(rate, lower, when):
+    """#341 (lun 63612603_109): `M2d^hM2`, its base an input the non-MAP2K2 conditions set to 0,
+    fitted hM2 to 0.998 and left the gradient NaN at that optimum. Below 1 the power's slope at 0 is
+    infinite: in AMICI 1.2 a readout's sensitivities there are NaN, and a rate reading `P^h` with
+    P(0) = 0 fails to simulate (AMICI_FIRST_SRHSFUNC_ERR), with or without `max`/`abs` on the base;
+    h = 1.5 runs clean."""
+    import types
+
+    import pandas as pd
+
+    model = SbmlModel.from_antimony(_ZERO.format(rate=rate))
+    pdf = pd.DataFrame(
+        {"estimate": [True, True], "lowerBound": [lower, 1e-3]},
+        index=pd.Index(["h", "k"], name="parameterId"),
+    )
+    cdf = pd.DataFrame(
+        {"conditionId": ["ctrl", "treat"], "targetId": ["c", "c"], "targetValue": [0.0, 1.0]}
+    )
+    problem = types.SimpleNamespace(model=model, parameter_df=pdf, condition_df=cdf)
+    said = [i["message"] for i in _power_issues(problem) if i["check"] == "power_of_zero"]
+    assert len(said) == (when is not None), said
+    if rate == "B^h" and when:
+        assert said == [
+            "reaction `r2` raises `B`, which is 0 in condition `ctrl`, to `h`, whose lower bound "
+            "is below 1, where the power's slope at 0 is infinite: the fit's gradient there is "
+            "NaN. Give `h` a lower bound of 1."
+        ]
+    elif when:
+        assert f"which {when}, to `h`" in said[0], said[0]
+
+
+def _problem(body: str, formula: str = "B", estimated=(), targets=()):
+    """A problem over the Antimony ``body``, observing ``formula`` as ``obs_B`` at one time point,
+    with ``estimated`` the parameter rows the fit estimates and ``targets`` the condition inputs."""
+    import types
+
+    import pandas as pd
+
+    observables = pd.DataFrame(
+        {"observableFormula": [formula], "noiseFormula": ["sigma_B"]},
+        index=pd.Index(["obs_B"], name="observableId"),
+    )
+    measurements = pd.DataFrame({"observableId": ["obs_B"], "time": [1.0], "measurement": [0.5]})
+    conditions = pd.DataFrame({"targetId": list(targets), "targetValue": [1.0] * len(targets)})
+    parameters = pd.DataFrame(
+        {"estimate": [True] * len(estimated)}, index=pd.Index(list(estimated), name="parameterId")
+    )
+    return types.SimpleNamespace(
+        model=SbmlModel.from_antimony(f"model m\n{body}\nend\n"),
+        observable_df=observables,
+        measurement_df=measurements,
+        condition_df=conditions,
+        parameter_df=parameters,
+    )
+
+
+_SPECIES = "species A, B, E; A = 1; B = 0; E = 1; k = 1; K = 1;"
+
+
+@pytest.mark.parametrize(
+    ("reaction", "warned"),
+    [
+        ("r1: A => B; k*E", True),  # brannmark 40: reads another species
+        ("r1: A => ; k", True),  # a zero-order drain
+        ("r1: A => B; k*A", False),
+        ("r1: A => B; k*f; f := A/(A + K)", False),  # read through a rule
+        ("r1: A + E => B + E; k*A", False),  # E is not consumed
+        ("r1: $A => B; k", False),  # a boundary species is not consumed
+    ],
+)
+def test_a_reaction_consuming_a_species_its_rate_never_reads_is_named(reaction, warned):
+    """brannmark 40's `ir_autophos: IRi -> IRP; k_act*f_occ*IR` made IRP from an empty IRi pool,
+    committed with no word and stayed the best version for about 15 edits (PEtab-MCP#324)."""
+    issues = _unread_reactant_issues(_problem(f"{_SPECIES}\n{reaction}"))
+    assert [(i["check"], i["level"]) for i in issues] == (
+        [("reactant_unread", "warning")] if warned else []
+    )
+    if reaction == "r1: A => B; k*E":
+        assert issues[0]["message"] == (
+            "reaction `r1` consumes `A`, but its rate `k * E` never reads it, so it runs on once "
+            "`A` is gone and `A` goes negative. Read `A` in the rate (`k*A`; a constant drain that "
+            "stops at 0 is `piecewise(v, A > 0, 0)`), or, if the reaction is a source, take `A` "
+            "off its reactants."
+        )
+
+
+_REACTION = "species A, B; A = 1; B = 0; k = 1; s = 1; k_B = 1;\nr1: A => B; k*A"
+
+
+@pytest.mark.parametrize(
+    ("readout", "warned"),
+    [
+        ("readout_B := 0", True),  # crauste 19
+        ("readout_B := k_B", True),  # a free constant, fitted to the data's mean
+        ("readout_B := s*B", False),
+        ("readout_B := s*g; g := B/(B + k)", False),  # read through a rule
+        ("readout_B := piecewise(s, time > 2, 0)", False),
+        ("readout_B := s*dose; dose = 1", False),  # a condition input
+    ],
+)
+def test_a_measured_readout_that_reads_no_state_is_named(readout, warned):
+    """crauste 19's `readout_Naive` set to 0 passed with no word (PEtab-MCP#324)."""
+    problem = _problem(f"{_REACTION}\n{readout}", formula="readout_B", targets=["dose"])
+    issues = _constant_readout_issues(problem)
+    assert [i["message"] for i in issues] == (
+        [
+            "observable(s) `obs_B` have measurements but read no species, state, condition input "
+            "or time, even through the rules they read, so each predicts one value at every time "
+            "point and condition. Write each readout over the species it measures."
+        ]
+        if warned
+        else []
+    )
+    problem.measurement_df["observableId"] = "obs_other"
+    assert _constant_readout_issues(problem) == []  # an unmeasured observable is not named
+
+
+@pytest.mark.parametrize(
+    ("body", "estimated", "warned"),
+    [
+        ("f := k_dead*A", ["k", "k_dead"], True),
+        ("f := g*A; g := k_dead", ["k", "k_dead"], True),  # a dead rule read by a dead rule
+        ("f := k_dead*A", ["k"], False),  # fixed: charged nothing
+        ("f := k_dead*A; r2: B => ; f*B", ["k", "k_dead"], False),
+        ("f := k*A", ["k"], False),  # `k` is read by `r1` too
+    ],
+)
+def test_an_estimated_parameter_only_dead_rules_read_is_named(body, estimated, warned):
+    """Estimated parameters read only by rules nothing reads were fitted, flat, and charged in k
+    (PEtab-MCP#324)."""
+    issues = _dead_rule_parameter_issues(_problem(f"{_REACTION}\n{body}", estimated=estimated))
+    rule = "g" if "g :=" in body else "f"
+    assert [i["message"] for i in issues] == (
+        [
+            f"estimated parameter(s) `k_dead` are read only by the rule(s) for `{rule}`, which "
+            "reach no rate, initial amount, event or observable, so the fit cannot move them and "
+            "each is still charged in k. Read those rules where they should act, or remove them."
+        ]
+        if warned
         else []
     )
