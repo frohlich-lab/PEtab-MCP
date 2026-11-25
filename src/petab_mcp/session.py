@@ -115,15 +115,24 @@ _NEEDLE_ADVICE = (
     "`get_fit_diagnosis(sections='parameters')`)"
 )
 
-#: The share of completed starts at or below which a fit at the default count or below is
-#: warned that the optimizer may have missed this structure's optimum, so a raise comes before an
-#: edit. A share, not a count: 2 of 5 at the best is a fair search, 2 of 100 is not.
+#: The share of completed starts at or below which a fit is warned that the optimizer may have
+#: missed this structure's optimum, so a raise comes before an edit. A share, not a count: 2 of 5
+#: at the best is a fair search, 2 of 100 is not. At any number of starts: a raised fit whose
+#: starts mostly miss the best has the same problem, short of the needle case above.
 _LOW_CONVERGENCE_FRACTION = 0.2
-_LOW_CONVERGENCE_ADVICE = (
+_LOW_CONVERGENCE = (
     "{pct:.0%} of those that completed, so the optimizer may not have found this structure's "
-    "optimum and its score may understate the model. Refit it before changing the model: "
-    "`make_changes` with `n_starts` above the default {default} and no model route. If the "
-    "raised fit still leaves 1 or 2 at the best, the optimum is a needle"
+    "optimum and its score may understate the model"
+)
+_LOW_CONVERGENCE_RAISE = (
+    "Refit it before changing the model: `make_changes` with `n_starts` above this fit's "
+    "{starts} (at most {cap}) and no model route. If the raised fit still leaves 1 or 2 at the "
+    "best, the optimum is a needle"
+)
+_LOW_CONVERGENCE_AT_CAP = (
+    "This fit already ran the most starts a fit may ({cap}), so a raise is not open: narrow the "
+    "bounds or reformulate where the starts disagree "
+    "(`get_fit_diagnosis(sections='parameters')`) before judging the structure on this score"
 )
 
 #: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
@@ -1701,19 +1710,21 @@ class PetabSession:
                     f"{at_best} of {starts} starts reached the best value, though this fit ran "
                     f"more than the default {self.auto_fit_starts}: {_NEEDLE_ADVICE}.",
                 ]
-            # At the default or below, few of the completed starts at the best: the score may
-            # understate the structure, so a raise comes before an edit.
+            # Few of the completed starts at the best, at any number of starts: the score may
+            # understate the structure, so a raise comes before an edit, while one is open.
             elif (
-                starts <= self.auto_fit_starts
-                and (at_best := fitsim.get("n_starts_at_best"))
-                and at_best <= _LOW_CONVERGENCE_FRACTION * completed
-            ):
-                advice = _LOW_CONVERGENCE_ADVICE.format(
-                    pct=at_best / completed, default=self.auto_fit_starts
+                at_best := fitsim.get("n_starts_at_best")
+            ) and at_best <= _LOW_CONVERGENCE_FRACTION * completed:
+                cap = self.max_fit_starts
+                next_step = (
+                    _LOW_CONVERGENCE_RAISE.format(starts=starts, cap=cap)
+                    if starts < cap
+                    else _LOW_CONVERGENCE_AT_CAP.format(cap=cap)
                 )
                 warnings = [
                     *warnings,
-                    f"{at_best} of {starts} starts reached the best value, {advice}.",
+                    f"{at_best} of {starts} starts reached the best value, "
+                    f"{_LOW_CONVERGENCE.format(pct=at_best / completed)}. {next_step}.",
                 ]
             # Most starts stopped on a value that is not a number (PEtab-MCP#285).
             not_finite = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.NOT_FINITE", 0)
