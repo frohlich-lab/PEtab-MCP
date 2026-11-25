@@ -82,7 +82,7 @@ MODE_FIXED = "fixed"
 MODE_TRANSFER = "transfer"
 
 #: The solver settings a held-out simulation is retried at where the fit's leave it non-finite: the
-#: Figure 3 audit's (gemot_iclr_2026 ``slurm/_fujita_audit.py``, ``stricter``). A state raised to
+#: Figure 3 audit's. A state raised to
 #: an estimated non-integer power dips below 0 in a held-out pulse at the fit's atol of 1e-10 and
 #: goes NaN; the audit integrated 9 of 11 such fujita models (PEtab-MCP#323). Each score records
 #: the settings of every attempt in order as ``tolerances`` (:func:`_solver_at`).
