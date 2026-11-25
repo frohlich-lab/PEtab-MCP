@@ -3,6 +3,13 @@
 [![CI](https://github.com/frohlich-lab/PEtab-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/frohlich-lab/PEtab-MCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+## Disclaimer
+
+Research software under active, rapid and heavy development: **use it at your own risk**. Tool
+names, schemas and agent-facing behaviour change without notice. Its behaviour has been tuned and
+checked on benchmark problems only, and it is not for clinical or regulatory use. It comes
+without warranty of any kind; see the [LICENSE](https://github.com/frohlich-lab/PEtab-MCP/blob/main/LICENSE).
+
 ## Overview
 
 A local [MCP](https://modelcontextprotocol.io) server that wraps a single

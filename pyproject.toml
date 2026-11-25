@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "petab-mcp"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A local MCP server for interactively editing a PEtab (v2) model/parameters and scoring against fixed data."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -158,6 +158,10 @@ Repository = "https://github.com/frohlich-lab/PEtab-MCP"
 # The pysb pin above is a git commit, which hatchling refuses without this.
 [tool.hatch.metadata]
 allow-direct-references = true
+
+# The one place the version is set: `__version__` in the package.
+[tool.hatch.version]
+path = "src/petab_mcp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/petab_mcp"]
