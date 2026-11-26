@@ -420,14 +420,21 @@ class MultistartTab:
             pn.pane.Markdown(summary(meta, opt, starts)),
             # Side by side where there is room, one above the other where there is not.
             pn.FlexBox(
+                # A flex basis each: stretch_width alone claims the whole row, so they always
+                # wrapped, wide window or not.
                 pn.pane.HoloViews(
-                    fall, linked_axes=False, sizing_mode="stretch_width", min_width=420
+                    fall,
+                    linked_axes=False,
+                    sizing_mode="stretch_width",
+                    min_width=420,
+                    styles={"flex": "1 1 420px"},
                 ),
                 pn.Column(
                     self.axis,
                     pn.pane.HoloViews(trace_map, linked_axes=False, sizing_mode="stretch_width"),
                     sizing_mode="stretch_width",
                     min_width=420,
+                    styles={"flex": "1 1 420px"},
                 ),
                 flex_wrap="wrap",
                 sizing_mode="stretch_width",

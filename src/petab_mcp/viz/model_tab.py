@@ -322,6 +322,7 @@ class ModelTab:
             width=420,
             scroll=True,
             max_height=720,
+            styles={"flex": "0 0 420px"},
         )
         parts = [
             self.level,
@@ -340,7 +341,12 @@ class ModelTab:
             # a narrow window they ran off the page's edge.
             pn.FlexBox(
                 pn.pane.HoloViews(
-                    graph, linked_axes=False, sizing_mode="stretch_width", min_width=420, height=640
+                    graph,
+                    linked_axes=False,
+                    sizing_mode="stretch_width",
+                    min_width=420,
+                    height=640,
+                    styles={"flex": "1 1 480px"},
                 ),
                 side,
                 flex_wrap="wrap",
