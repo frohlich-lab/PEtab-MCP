@@ -192,11 +192,32 @@ def legend(levels: dict[str, MM.Graph]) -> str:
         f"<span style='color:{style.EDGES[k][0]}'>━ {'consumes / produces' if k == 'consumes' else k}</span>"
         for k in kinds
     )
+    kinds_present = {k for graph in levels.values() for k in graph.nodes["kind"]}
+    shapes = {
+        "agent": "● agent",
+        "species": "● species",
+        "row": "■ statement",
+        "reaction": "▪ reaction",
+        "observable": "◆ observable",
+    }
+    nodes = " ".join(
+        f"<span style='color:{style.NODES[k][1]}'>{label}</span>"
+        for k, label in shapes.items()
+        if k in kinds_present
+    )
     return (
-        f"{spans} &nbsp;·&nbsp; <span style='color:{style.ADDED}'>◯ new</span> "
+        f"{nodes} &nbsp;·&nbsp; {spans} &nbsp;·&nbsp; "
+        f"<span style='color:{style.ADDED}'>◯ new</span> "
         f"<span style='color:{style.PALETTE[1]}'>◯ changed</span> "
         f"<span style='color:{style.REMOVED}'>● only in the compared version</span>"
     )
+
+
+#: How to drive the graph, above it.
+HINT = (
+    "Scroll to zoom: the graph shows more detail the further in you go ({levels}); the buttons "
+    "fix one level. Click a node for its equations."
+)
 
 
 class ModelTab:
@@ -306,6 +327,12 @@ class ModelTab:
         )
         parts = [
             self.level,
+            pn.pane.Markdown(
+                HINT.format(levels=" → ".join(available)),
+                sizing_mode="stretch_width",
+                styles={"color": style.MUTED, "font-size": "12px"},
+                margin=(0, 10),
+            ),
             pn.pane.HTML(
                 legend(levels),
                 sizing_mode="stretch_width",

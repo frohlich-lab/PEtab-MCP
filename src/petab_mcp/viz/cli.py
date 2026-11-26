@@ -30,16 +30,26 @@ def main(argv: list[str] | None = None) -> None:
         from .app import build
     except ImportError as exc:
         sys.exit(f"petab-mcp-viz needs the viz extra (pip install 'petab-mcp[viz]'): {exc}")
+    from ..errors import PetabMcpError
     from ..session import store_root
+    from .app import problem_name
+    from .store import Store
 
-    root = store_root(args.petab_yaml, args.provenance_dir)
     yaml = Path(args.petab_yaml)
+    root = store_root(yaml, args.provenance_dir)
+    if not yaml.is_file():
+        sys.exit(f"petab-mcp-viz: no problem at {yaml}")
+    try:
+        Store(root)
+    except PetabMcpError as exc:
+        hint = "" if args.provenance_dir else " (pass --provenance-dir if the server was given one)"
+        sys.exit(f"petab-mcp-viz: {exc}{hint}")
     pn.serve(
         {"/": lambda: build(root, yaml, args.poll)},
         port=args.port,
         address=args.address,
         show=not args.no_show,
-        title=f"PEtab-MCP · {yaml.stem}",
+        title=f"PEtab-MCP · {problem_name(yaml)}",
     )
 
 

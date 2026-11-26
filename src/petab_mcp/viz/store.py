@@ -192,25 +192,31 @@ class Store:
 
     def _ended(self, version: int) -> dict[str, dict[str, Any]]:
         """Each start's ``exitflag``, ``message`` and ``x0`` by id, from ``pypesto_result.hdf5``;
-        empty where the version has none."""
+        empty where the version has none. Read with h5py, in the layout pyPESTO's storage writes
+        (``optimization/results/<n>``, its fields as attributes, ``x0`` a dataset), rather than
+        through pyPESTO, whose import loads AMICI: the viewer never simulates, and loads nothing
+        that could."""
 
         def read(path: Path) -> dict[str, dict[str, Any]]:
             if not path.exists():
                 return {}
-            from pypesto.store import OptimizationResultHDF5Reader
+            import h5py
 
+            out = {}
             try:
-                result = OptimizationResultHDF5Reader(str(path)).read()
-            except Exception:  # noqa: BLE001 - an archive's or an older pyPESTO's file
+                with h5py.File(path, "r") as fh:
+                    for group in fh["optimization/results"].values():
+                        attrs = group.attrs
+                        flag = attrs.get("exitflag")
+                        message = attrs.get("message")
+                        out[str(attrs.get("id"))] = {
+                            "exitflag": None if flag is None else int(flag),
+                            "message": message.decode() if isinstance(message, bytes) else message,
+                            "x0": [float(v) for v in group["x0"][()]] if "x0" in group else None,
+                        }
+            except (OSError, KeyError):  # an archive's or another pyPESTO's file
                 return {}
-            return {
-                str(r.id): {
-                    "exitflag": None if r.exitflag is None else int(r.exitflag),
-                    "message": r.message,
-                    "x0": None if r.x0 is None else [float(v) for v in r.x0],
-                }
-                for r in result.optimize_result.list
-            }
+            return out
 
         return self._version_file(version, "pypesto_result.hdf5", read)
 

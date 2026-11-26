@@ -77,3 +77,11 @@ def test_a_file_read_before_the_server_wrote_it_is_read_again(viz_store):
     assert store.simulations(1) is None
     sim.write_text(held)
     assert store.simulations(1) is not None
+
+
+def test_how_each_start_ended_is_read_from_the_pypesto_result_file(viz_store):
+    store = Store(viz_store[0])
+    starts = store.starts(0)
+    assert list(starts["exitflag"]) == [1, 3, -1]
+    assert starts["message"].iloc[2].startswith("stopped by the server")
+    assert starts["x0"].iloc[0] == [-0.5, -1.5, 0.1, 1.0, 0.0]

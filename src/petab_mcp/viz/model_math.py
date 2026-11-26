@@ -693,6 +693,10 @@ def _amount(label: str) -> str:
     return rf"[{_text(label)}]"
 
 
+#: LaTeX characters past which an equation is split a term per line.
+LINE = 70
+
+
 def equations(
     math_: ModelMath,
     species: list[str] | None = None,
@@ -709,7 +713,35 @@ def equations(
     names = {sympy.Symbol(sid): _amount(sp.label) for sid, sp in math_.species.items()}
 
     def tex(expr: sympy.Expr) -> str:
-        return sympy.latex(expr.subs(subs), symbol_names=names)
+        expr = expr.subs(subs)
+        # sympy reads every underscore as a subscript, so `reaction_9_k1` would print as
+        # reaction with a subscript 9k1: a name with more than one is printed as written.
+        verbatim = {
+            s: _text(s.name)
+            for s in expr.free_symbols
+            if isinstance(s, sympy.Symbol) and s.name.count("_") > 1 and s not in names
+        }
+        return sympy.latex(expr, symbol_names={**names, **verbatim})
+
+    def rhs(left: str, expr: sympy.Expr, relation: str = "=") -> list[str]:
+        """``left relation expr``, a long one a term per aligned line, so an ODE reads down the
+        pane rather than off its edge. A factor outside a sum (``Cell*(a - b)``, a compartment
+        times a reversible rate) is multiplied in first, one level deep, so its terms split too."""
+        whole = tex(expr)
+        terms = [
+            t
+            for term in sympy.Add.make_args(expr)
+            for t in sympy.Add.make_args(sympy.expand_mul(term, deep=False))
+        ]
+        if len(terms) < 2 or len(whole) <= LINE:
+            return [rf"{left} &{relation} {whole}"]
+        out = []
+        for i, term in enumerate(terms):
+            negative = term.could_extract_minus_sign()
+            body = tex(-term if negative else term)
+            sign = "- " if negative else ("+ " if i else "")
+            out.append((rf"{left} &{relation} " if i == 0 else r"&\quad ") + sign + body)
+        return out
 
     def name(sid: str) -> str:
         return _amount(math_.species[sid].label) if sid in math_.species else _latex_name(sid)
@@ -717,9 +749,9 @@ def equations(
     lines = []
     for sid in list(math_.odes) if everything else species or []:
         if sid in math_.odes:
-            lines.append(rf"\frac{{d\,{name(sid)}}}{{dt}} &= {tex(math_.odes[sid])}")
+            lines += rhs(rf"\frac{{d\,{name(sid)}}}{{dt}}", math_.odes[sid])
         elif sid in math_.assignments:
-            lines.append(rf"{name(sid)} &:= {tex(math_.assignments[sid])}")
+            lines += rhs(name(sid), math_.assignments[sid], ":=")
         elif sid in math_.species:
             lines.append(rf"{name(sid)} &\ \text{{held}}")
         if sid in math_.initial and not everything:

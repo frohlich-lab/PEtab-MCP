@@ -154,12 +154,16 @@ def period_strip(df: pd.DataFrame, colors: dict[str, str]) -> hv.Overlay:
         show_legend=False,
         title="",
     )
-    wide = df[(df["end"] - df["start"]) > 0]
+    # A segment says what it changes where it has room, its condition where it has a little, and
+    # nothing where it has none; the hover has it all.
+    share = (df["end"] - df["start"]) / max(float(df["end"].max() - df["start"].min()), 1e-12)
+    text = [
+        (f"{c}: {ch}" if ch != "nothing" else c)[:60] if w > 0.25 else c if w > 0.08 else ""
+        for c, ch, w in zip(df["condition"], df["changed"], share)
+    ]
     labels = hv.Labels(
-        wide.assign(x=(wide["start"] + wide["end"]) / 2, y=0.5),
-        ["x", "y"],
-        "condition",
-    ).opts(text_font_size="8pt", text_color="white")
+        df.assign(x=(df["start"] + df["end"]) / 2, y=0.5, text=text), ["x", "y"], "text"
+    ).opts(text_font_size="9pt", text_color="white")
     return rects * labels
 
 
@@ -356,9 +360,16 @@ class FitTab:
         if sim is None:
             self.observables.options, self.experiments.options = [], []
             return
-        exps = list(chi2(sim, "experiment_id").index)
+        totals = chi2(sim, "experiment_id")
+        exps = list(totals.index)
         obs = sorted(sim["observable_id"].unique())
-        labels = {e or "(no experiment)": e for e in exps}
+        inputs = distinguishing_inputs(self.app.problem)
+        labels = {
+            " · ".join(
+                filter(None, [e or "(no experiment)", inputs.get(e), f"χ² {totals[e]:.3g}"])
+            ): e
+            for e in exps
+        }
         keep = [v for v in self.experiments.value if v in labels.values()]
         self.experiments.options = labels
         self.experiments.value = keep or exps[:PAGE]

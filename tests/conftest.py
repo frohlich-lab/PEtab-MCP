@@ -311,12 +311,27 @@ def _viz_optimization(fvals: list[float]) -> dict:
     }
 
 
+def _viz_hdf5(path: Path, fvals: list[float]) -> None:
+    """A pypesto_result.hdf5 in the layout pyPESTO's storage writes: FTOL, GTOL, then a start the
+    server stopped past its cap (exit flag -1, as Fides' MAXITER)."""
+    import h5py
+
+    ended = [(1, "Converged according to fval difference"), (3, "Converged according to gradient"),
+             (-1, "stopped by the server: still running past its 180s cap")]
+    with h5py.File(path, "w") as fh:
+        for i, (f, (flag, message)) in enumerate(zip(fvals, ended)):
+            group = fh.create_group(f"optimization/results/{i}")
+            group.attrs.update({"id": str(i), "fval": f, "exitflag": flag, "message": message})
+            group["x0"] = [-0.5, -1.5, 0.1, 1.0, 0.0]
+
+
 @pytest.fixture
 def viz_store(tmp_path) -> tuple[Path, Path]:
     """A store as the server writes it, two fitted versions of the toy (the second without its
     back reaction), for the viewer (``petab_mcp.viz``); its problem has a two-period experiment
-    and a pre-equilibrated one. v1's ``optimization.json`` is gzipped and neither has a pyPESTO
-    result file, as in a run gemot archived. Returns the store's root and the problem's YAML."""
+    and a pre-equilibrated one. v1's ``optimization.json`` is gzipped and it has no pyPESTO
+    result file, as in a run gemot archived; v0 has one. Returns the store's root and the problem's
+    YAML."""
     import gzip
     import json
 
@@ -353,6 +368,8 @@ def viz_store(tmp_path) -> tuple[Path, Path]:
         (vdir / "simulations.json").write_text(json.dumps(
             {"status": "fit", "records": _viz_records(scale)}))
         blob = json.dumps(_viz_optimization(fvals))
+        if v == 0:
+            _viz_hdf5(vdir / "pypesto_result.hdf5", fvals)
         if v == 1:
             with gzip.open(vdir / "optimization.json.gz", "wt") as fh:
                 fh.write(blob)

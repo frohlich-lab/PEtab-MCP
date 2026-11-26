@@ -87,3 +87,55 @@ def test_a_starts_exit_is_named_as_fides_names_it():
     assert _exit(-5, None) == "DELTA_TOO_SMALL"
     assert _exit(-1, "stopped by the server: still running past its 180s cap") == STOPPED
     assert _exit(None, None) == "unknown"
+
+
+def test_the_viewer_never_simulates(viz_store):
+    """The viewer shows what the fits stored and must never simulate the model (user, 2026-11-26):
+    building every tab of every version, the pyPESTO result file included, loads neither AMICI nor
+    pyPESTO, so nothing it does can simulate or compile. Run in a fresh interpreter, which no other
+    test has imported either into."""
+    import subprocess
+    import sys
+
+    root, yaml = viz_store
+    script = f"""
+import sys
+import holoviews as hv, panel as pn
+from bokeh.document import Document
+from petab_mcp.problem import WorkingProblem
+from petab_mcp.viz.app import VizApp
+from petab_mcp.viz.store import Store
+hv.extension("bokeh")
+app = VizApp(Store({str(root)!r}), WorkingProblem.from_yaml({str(yaml)!r}), poll_seconds=0)
+for version in app.store.versions():
+    app.version_pick.value = version
+    for tab in (app.multistart, app.model, app.fit):
+        pn.panel(tab.view()).get_root(Document())
+assert app.store.starts(0)["exitflag"].notna().all()
+print(sorted({{m.split(".")[0] for m in sys.modules}} & {{"amici", "pypesto"}}))
+"""
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    assert out.stdout.strip().splitlines()[-1] == "[]", out.stderr[-2000:]
+
+
+def test_picking_an_older_version_stops_following_head(app):
+    """Following HEAD, a pick of an older version was undone by the next fit's version."""
+    app.version_pick.value = 0
+    assert app.follow.value is False
+
+
+def test_the_cli_says_what_is_missing_instead_of_serving_a_traceback(tmp_path, viz_store):
+    from petab_mcp.viz.cli import main
+
+    with pytest.raises(SystemExit, match="no problem at"):
+        main(["--petab-yaml", str(tmp_path / "nope.yaml"), "--no-show"])
+    with pytest.raises(SystemExit, match="not a version store.*--provenance-dir"):
+        main(["--petab-yaml", str(viz_store[1]), "--no-show"])
+
+
+def test_a_problem_yaml_is_named_after_its_example():
+    from petab_mcp.viz.app import problem_name
+
+    assert problem_name("examples/fujita/problem/problem.yaml") == "fujita"
+    assert problem_name("examples/fujita/work/problem.yaml") == "fujita"
+    assert problem_name("Fujita_SciSignal2010/Fujita_SciSignal2010.yaml") == "Fujita_SciSignal2010"
