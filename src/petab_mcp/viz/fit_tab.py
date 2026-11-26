@@ -68,16 +68,27 @@ plots under the data show what it sets over time, and the card's last line what 
 """
 
 CHI2_OBSERVABLE = """
-How badly each measured quantity is fitted, over all its measurements: each adds the square of its
-distance from the model's prediction, in units of its noise σ. A quantity measured n times fits as
-well as its noise allows at about χ² = n (hover a bar for its n). A bar far longer than its n is a
-quantity the model misses.
+How well each measured quantity is fitted, against what measurement noise alone would give. A
+quantity's χ² adds up the squared distances of its n measurements from the model's prediction, in
+units of their noise σ. Pure noise gives a χ² of about n, with a known spread, so each χ² is shown
+as a z-score of that spread: 0 is a typical fit for noise alone, beyond ±2 is rare for it.
+
+The bars are how the quantities fall; the dashed curve is where they would fall if the model and
+its noise were right (the fitted parameters absorb a little of the noise, so a right model sits a
+little to the left). The furthest out on either side are named; hover a mark for its χ² and n.
+
+Far right: a quantity the model misses. Far left: one fitted closer than its noise allows, so its
+σ is likely too large, or the model bends to fit the noise.
 """
 
 CHI2_EXPERIMENT = """
-The same per experiment, for the 25 worst-fitted. Pick an experiment in the list above to see its
-data and the model's prediction side by side.
+The same per experiment, all its measurements counted together. Far right: an experiment the model
+misses; pick it in the list above to see its data and the prediction side by side.
 """
+
+#: How many of the χ² furthest out on either side a distribution names; where there are fewer than
+#: ten, how many.
+NAMED, NAMED_FEW = 3, 2
 
 RESIDUAL_TIME = """
 Each dot is one measurement's distance from the model's prediction in units of its noise σ (a
@@ -394,6 +405,68 @@ def observable_plot(
     )
 
 
+def chi2_z(chi2, n) -> np.ndarray:
+    """Each χ² as a z-score of the χ² distribution with ``n`` degrees of freedom (Wilson and
+    Hilferty's cube-root approximation): about standard normal where the model and its noise are
+    right, whatever ``n``. ``n`` is the number of measurements, the fitted parameters not taken
+    off: no observable or experiment owns one alone."""
+    chi2, n = np.asarray(chi2, dtype=float), np.asarray(n, dtype=float)
+    c = 2 / (9 * n)
+    return ((chi2 / n) ** (1 / 3) - (1 - c)) / np.sqrt(c)
+
+
+def chi2_distribution(frame: pd.DataFrame, name: str, color: str) -> hv.Overlay:
+    """``frame``'s χ² (columns ``name``, ``chi2`` and ``n``) as z-scores (:func:`chi2_z`): their
+    histogram, the standard normal they would follow, a mark for each, and the furthest out on
+    either side named."""
+    from scipy.stats import norm
+
+    df = frame.assign(z=chi2_z(frame["chi2"], frame["n"])).sort_values("z")
+    low, high = min(float(df["z"].min()), -3.5), max(float(df["z"].max()), 3.5)
+    edges = np.linspace(low, high, int(np.clip(2 * np.sqrt(len(df)), 8, 40)) + 1)
+    density, _ = np.histogram(df["z"], bins=edges, density=True)
+    xs = np.linspace(low, high, 300)
+    top = max(float(density.max()), float(norm.pdf(0)))
+    k = NAMED if len(df) >= 10 else NAMED_FEW
+    named = df if len(df) <= 2 * k else pd.concat([df.head(k), df.tail(k)])
+    # Stacked above the plot, each a level of its own on its side, so long names do not overlap.
+    level = named.groupby(named["z"] >= 0).cumcount().to_numpy()
+    named = named.assign(y=top * (1.12 + 0.16 * level), y0=0.0, z1=named["z"])
+    z = hv.Dimension("z", label="χ² as a z-score (0: what noise alone gives)")
+    layers = [
+        hv.Histogram((edges, density), kdims=[z], vdims=["density"]).opts(
+            color=color, alpha=0.45, line_color=None
+        ),
+        hv.Curve((xs, norm.pdf(xs)), z, "density").opts(
+            color=style.MUTED, line_dash="dashed", line_width=2
+        ),
+        hv.Segments(named, [z, "y0", "z1", "y"]).opts(
+            color=style.MUTED, line_dash="dotted", line_width=1
+        ),
+        hv.Scatter(df.assign(mark=-0.04 * top), z, ["mark", name, "chi2", "n"]).opts(
+            color=color, marker="square", size=7, tools=["hover"]
+        ),
+    ]
+    for right in (False, True):
+        side = named[(named["z"] >= 0) == right]
+        layers.append(
+            hv.Labels(side, [z, "y"], name).opts(
+                text_font_size="8pt",
+                text_align="right" if right else "left",
+                text_color=style.MUTED,
+            )
+        )
+    return hv.Overlay(layers).opts(
+        hv.opts.Histogram(
+            responsive=True,
+            height=300,
+            ylim=(-0.08 * top, top * (1.3 + 0.16 * k)),
+            xlim=(low - 0.3, high + 0.3),
+            ylabel="density",
+        )
+    )
+
+
 def residual_views(sim: pd.DataFrame, chosen: list[str]) -> pn.viewable.Viewable:
     def per(by: str) -> pd.DataFrame:
         out = chi2(sim, by).reset_index().rename(columns={"residual_weighted": "chi2"})
@@ -401,25 +474,6 @@ def residual_views(sim: pd.DataFrame, chosen: list[str]) -> pn.viewable.Viewable
 
     by_obs, by_exp = per("observable_id"), per("experiment_id")
     by_exp["experiment_id"] = by_exp["experiment_id"].replace("", "(no experiment)")
-    bars_obs = hv.Bars(by_obs.iloc[::-1], "observable_id", ["chi2", "n"]).opts(
-        invert_axes=True,
-        responsive=True,
-        height=max(180, 26 * len(by_obs) + 80),
-        color=style.PALETTE[0],
-        tools=["hover"],
-        xlabel="",
-        ylabel="χ²",
-    )
-    worst = by_exp.head(25).iloc[::-1]
-    bars_exp = hv.Bars(worst, "experiment_id", ["chi2", "n"]).opts(
-        invert_axes=True,
-        responsive=True,
-        height=max(180, 22 * len(worst) + 80),
-        color=style.PALETTE[1],
-        tools=["hover"],
-        xlabel="",
-        ylabel="χ²",
-    )
     shown = sim[sim["experiment_id"].isin(chosen)] if chosen else sim
     colors = style.categorical(sorted(sim["observable_id"].unique()))
     scatter = hv.Scatter(
@@ -463,11 +517,34 @@ def residual_views(sim: pd.DataFrame, chosen: list[str]) -> pn.viewable.Viewable
             sizing_mode="stretch_width",
         )
 
+    def expected(what: str, colour: int) -> list[dict]:
+        return [
+            K.entry(
+                what,
+                f"How the {what}' χ² fall: one mark each under the axis, bars for how many.",
+                style.PALETTE[colour],
+                "■",
+            ),
+            K.entry(
+                "if the model were right",
+                "The standard normal: where the z-scores would fall if the model and its noise "
+                "were right.",
+                style.MUTED,
+                "╍",
+            ),
+        ]
+
     observables = [K.entry(o, color=c) for o, c in colors.items()]
     return pn.Column(
         pn.Row(
-            keyed(K.key("χ² per observable", CHI2_OBSERVABLE), bars_obs),
-            keyed(K.key("χ² per experiment (the worst 25)", CHI2_EXPERIMENT), bars_exp),
+            keyed(
+                K.key("χ² per observable", CHI2_OBSERVABLE, expected("observables", 0)),
+                chi2_distribution(by_obs, "observable_id", style.PALETTE[0]),
+            ),
+            keyed(
+                K.key("χ² per experiment", CHI2_EXPERIMENT, expected("experiments", 1)),
+                chi2_distribution(by_exp, "experiment_id", style.PALETTE[1]),
+            ),
             sizing_mode="stretch_width",
         ),
         pn.Row(
@@ -574,11 +651,6 @@ class FitTab:
         )
         self.show_periods = pn.widgets.Checkbox(name="what each experiment sets", value=True)
         self.error_bars = pn.widgets.Checkbox(name="noise σ as error bars", value=True)
-        self.view_kind = pn.widgets.RadioButtonGroup(
-            options=["Data and simulation", "Residuals"],
-            value="Data and simulation",
-            button_type="light",
-        )
         self._version_seen: int | None = None
         self.app.param.watch(self._reset, "version")
         self._reset()
@@ -607,37 +679,53 @@ class FitTab:
         self.observables.value = [o for o in self.observables.value if o in obs] or obs
 
     def view(self) -> pn.viewable.Viewable:
-        controls = pn.Row(
-            pn.Column(self.experiments, self.observables, sizing_mode="stretch_width"),
-            pn.Column(self.view_kind, self.show_periods, self.error_bars, width=260),
-            sizing_mode="stretch_width",
-        )
-        body = pn.bind(
-            self._body,
+        simulations = pn.bind(
+            self._simulations,
             self.app.param.version,
             self.app.param.compare,
             self.experiments,
             self.observables,
             self.show_periods,
             self.error_bars,
-            self.view_kind,
         )
-        # lazy: built when the tab is first shown, not with the page (see app.VizApp.view).
+        residuals = pn.bind(self._residuals, self.app.param.version, self.experiments)
+        # lazy: built when the tab is first shown, not with the page (see app.VizApp.view); the
+        # sub-tab not shown is not built either.
         return pn.Column(
-            controls,
-            pn.panel(body, lazy=True, sizing_mode="stretch_width"),
+            pn.Column(self.experiments, self.observables, sizing_mode="stretch_width"),
+            pn.Tabs(
+                (
+                    "Simulations",
+                    pn.Column(
+                        pn.Row(self.show_periods, self.error_bars),
+                        pn.panel(simulations, lazy=True, sizing_mode="stretch_width"),
+                        sizing_mode="stretch_width",
+                    ),
+                ),
+                ("Residuals", pn.panel(residuals, lazy=True, sizing_mode="stretch_width")),
+                dynamic=True,
+                sizing_mode="stretch_width",
+            ),
             sizing_mode="stretch_width",
         )
 
-    def _body(self, version, compare, experiments, observables, show_periods, error_bars, kind):
-        store, problem = self.app.store, self.app.problem
-        sim = store.simulations(version) if version is not None else None
+    def _stored(self, version) -> pd.DataFrame | pn.pane.Markdown:
+        sim = self.app.store.simulations(version) if version is not None else None
         if sim is None:
             return pn.pane.Markdown(
                 f"v{version} stored no simulation: its fit failed or it was never fitted."
             )
-        if kind == "Residuals":
-            return residual_views(sim, experiments)
+        return sim
+
+    def _residuals(self, version, experiments):
+        sim = self._stored(version)
+        return residual_views(sim, experiments) if isinstance(sim, pd.DataFrame) else sim
+
+    def _simulations(self, version, compare, experiments, observables, show_periods, error_bars):
+        store, problem = self.app.store, self.app.problem
+        sim = self._stored(version)
+        if not isinstance(sim, pd.DataFrame):
+            return sim
         other = store.simulations(compare) if compare is not None else None
         compare_label = f"v{compare}" if compare is not None else None
         ends = sim.groupby("experiment_id")["time"].max().to_dict()

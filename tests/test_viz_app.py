@@ -31,13 +31,9 @@ def app(viz_store):
 def test_every_tab_of_every_version_renders(app):
     for version in app.store.versions():
         app.version_pick.value = version
-        for tab in (app.versions, app.multistart, app.model, app.fit):
+        for tab in (app.versions, app.multistart, app.fit):
             pn.panel(tab.view()).get_root(Document())
-    app.fit.view_kind.value = "Residuals"
-    pn.panel(app.fit.view()).get_root(Document())
-    for level in app.model.level.options:
-        app.model.level.value = level
-        pn.panel(app.model.view()).get_root(Document())
+        pn.panel(app.fit._residuals(version, app.fit.experiments.value)).get_root(Document())
     app.view().server_doc(Document())
 
 
@@ -112,7 +108,7 @@ hv.extension("bokeh")
 app = VizApp(Store({str(root)!r}), WorkingProblem.from_yaml({str(yaml)!r}), poll_seconds=0)
 for version in app.store.versions():
     app.version_pick.value = version
-    for tab in (app.multistart, app.model, app.fit):
+    for tab in (app.multistart, app.fit):
         pn.panel(tab.view()).get_root(Document())
 assert app.store.starts(0)["exitflag"].notna().all()
 print(sorted({{m.split(".")[0] for m in sys.modules}} & {{"amici", "pypesto"}}))
@@ -166,7 +162,7 @@ def test_a_store_before_its_first_version_shows_its_first_fit(tmp_path, viz_stor
     )
     app = VizApp(Store(root), WorkingProblem.from_yaml(viz_store[1]), poll_seconds=0)
     assert app.version is None
-    for tab in (app.multistart, app.model, app.fit):
+    for tab in (app.multistart, app.fit):
         pn.panel(tab.view()).get_root(Document())
     app.view().server_doc(Document())
     shutil.copytree(viz_store[0] / "versions" / "v0", root / "versions" / "v0")

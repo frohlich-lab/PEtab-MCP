@@ -27,6 +27,7 @@ import warnings
 
 import holoviews as hv
 import numpy as np
+from bokeh.models import CustomJS, HoverTool
 import pandas as pd
 import panel as pn
 
@@ -178,7 +179,8 @@ best start's final fit, plus 1.
 
 Each line shows only the steps the optimiser kept, each better than the last; "rejected steps" adds
 the trial steps it computed and threw away, which jump up. "Median per colour" draws, instead of
-each start, the median of the starts of one colour, and a band where the middle half of them lie.
+each start, the median of the starts of one colour, a band where the middle half of them lie, and
+a fainter band from the lowest of them to the highest.
 "Log axes" puts both axes on a log scale, so the big early gains and the small late ones both show.
 
 A line that flattens out converged. One still falling at its right end was cut off before it
@@ -361,6 +363,39 @@ def y_range(df: pd.DataFrame, tf: pd.DataFrame | None) -> tuple[float, float]:
     return OFFSET / 2, 3 * max(high, 3 * OFFSET)
 
 
+#: The waterfall's hover.
+WATERFALL_HOVER = [
+    ("start", "@{id}"),
+    ("objective", "@{fval}{0.[000]}"),
+    ("ended", "@{ended}"),
+    ("cluster", "@{cluster}"),
+    ("time (s)", "@{time}{0.0}"),
+    ("evaluations", "@{n_fval}"),
+]
+
+#: Where dots overlap the hover lists each of them; this puts a line between one and the next.
+#: Bokeh drops a ``<style>`` from a tooltip template, and the tooltip is a shadow DOM of its own
+#: that the page's styles do not reach, so the hover adds the rule to it as it shows.
+SEPARATE = """
+for (const host of document.querySelectorAll(".bk-Tooltip")) {
+  const root = host.shadowRoot;
+  if (root && !root.querySelector("style[data-separate]")) {
+    const style = document.createElement("style");
+    style.dataset.separate = "";
+    style.textContent = ".bk-tooltip-content > div > div:not(:first-child)" +
+      " { border-top: 1px solid #999; margin-top: 4px; padding-top: 4px; }";
+    root.append(style);
+  }
+}
+"""
+
+
+def _separate(plot, _element) -> None:
+    for tool in plot.state.tools:
+        if isinstance(tool, HoverTool):
+            tool.callback = CustomJS(code=SEPARATE)
+
+
 def waterfall_points(
     df: pd.DataFrame, by: str = BY_EXIT, hidden=(), ylim: tuple | None = None
 ) -> hv.Points:
@@ -377,7 +412,8 @@ def waterfall_points(
         line_color="white",
         logy=True,
         tools=["hover", "box_select", "tap"],
-        hover_tooltips=["id", "fval", "ended", "cluster", "time", "n_fval"],
+        hover_tooltips=WATERFALL_HOVER,
+        hooks=[_separate],
         active_tools=["box_select"],
         nonselection_alpha=0.3,
         xlabel="start rank (best first)",
@@ -430,8 +466,9 @@ def trace_frame(trace: pd.DataFrame | None, df: pd.DataFrame) -> pd.DataFrame | 
 
 
 def medians(t: pd.DataFrame, color: dict[int, str], log: bool) -> list:
-    """For each colour, the median over its starts of their best so far at each ``_x``, and a band
-    where the middle half of them lie: grey first, then the worst colour to the best."""
+    """For each colour, the median over its starts of their best so far at each ``_x``, a band
+    where the middle half of them lie, and a fainter one from the lowest to the highest: grey
+    first, then the worst colour to the best."""
     xs = t["_x"].to_numpy()
     high = float(np.nanmax(xs))
     low = float(np.nanmin(xs[xs > 0])) if (xs > 0).any() else high / 1e3
@@ -447,12 +484,16 @@ def medians(t: pd.DataFrame, color: dict[int, str], log: bool) -> list:
             rows.append(np.where(at >= 0, s["_y"].to_numpy()[np.clip(at, 0, None)], np.nan))
         with warnings.catch_warnings():  # a grid point no start of the colour has reached
             warnings.simplefilter("ignore", RuntimeWarning)
-            q25, q50, q75 = np.nanpercentile(np.vstack(rows), [25, 50, 75], axis=0)
+            q0, q25, q50, q75, q100 = np.nanpercentile(
+                np.vstack(rows), [0, 25, 50, 75, 100], axis=0
+            )
         ok = ~np.isnan(q50)
         layers += [
-            hv.Area((grid[ok], q25[ok], q75[ok]), "x0", [ABOVE, "above_best_high"]).opts(
-                color=c, alpha=0.2, line_alpha=0
-            ),
+            hv.Area((grid[ok], bottom[ok], top[ok]), "x0", [ABOVE, "above_best_high"]).opts(
+                color=c, alpha=alpha, line_alpha=0
+            )
+            for bottom, top, alpha in ((q0, q100, 0.08), (q25, q75, 0.2))
+        ] + [
             hv.Curve((grid[ok], q50[ok]), "x0", ABOVE).opts(color=c, line_width=2.5),
         ]
     return layers

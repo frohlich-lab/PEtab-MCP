@@ -82,3 +82,13 @@ def test_an_input_that_ramps_within_a_period_is_drawn_from_its_formula():
 def test_the_settings_line_puts_what_sets_an_experiment_apart_first():
     proto = F.Protocol(constant={"init_S2": "S2tot", "EGF_0": "10"})
     assert F.settings_line(proto, "EGF_0=10") == "Set throughout: **EGF_0 = 10**, init_S2 = S2tot"
+
+
+def test_a_chi2_of_pure_noise_is_a_standard_normal_z_whatever_its_n():
+    """The residuals view sets each observable's and experiment's χ² against a standard normal,
+    whatever its number of measurements."""
+    rng = np.random.default_rng(0)
+    n = rng.integers(2, 80, 4000)
+    chi2 = np.array([(rng.standard_normal(k) ** 2).sum() for k in n])
+    z = F.chi2_z(chi2, n)
+    assert abs(z.mean()) < 0.05 and abs(z.std() - 1) < 0.05

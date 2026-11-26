@@ -19,7 +19,7 @@ from typing import Any
 import pandas as pd
 
 from ..errors import ValidationError
-from ..provenance import FIT_PROGRESS, STORE_FORMAT, statements_record
+from ..provenance import FIT_PROGRESS, STORE_FORMAT
 
 #: The version directories, ``versions/v<N>``.
 _VERSION_DIR = re.compile(r"v(\d+)")
@@ -145,12 +145,6 @@ class Store:
     def meta(self, version: int) -> dict[str, Any]:
         return self._version_file(version, "meta.json", _read_json) or {}
 
-    def antimony(self, version: int) -> str | None:
-        def read(path: Path) -> str | None:
-            return path.read_text(encoding="utf-8") if path.exists() else None
-
-        return self._version_file(version, "model.ant", read)
-
     def parameters(self, version: int) -> pd.DataFrame | None:
         def read(path: Path) -> pd.DataFrame | None:
             if not path.exists():
@@ -158,9 +152,6 @@ class Store:
             return pd.read_csv(path, sep="\t", dtype={"parameterId": str}).set_index("parameterId")
 
         return self._version_file(version, "parameters.tsv", read)
-
-    def statements(self, version: int) -> dict[str, Any] | None:
-        return statements_record(self._version_file(version, "statements.json", _read_json))
 
     def simulations(self, version: int) -> pd.DataFrame | None:
         """The version's per-point records: measurement, simulation and residuals."""

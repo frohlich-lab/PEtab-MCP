@@ -1,13 +1,10 @@
 """A read-only web viewer of one session's version store, for the humans watching or auditing a run.
 
-``petab-mcp-viz --petab-yaml problem.yaml`` serves a HoloViews/Panel app with three tabs over
+``petab-mcp-viz --petab-yaml problem.yaml`` serves a HoloViews/Panel app with tabs over
 the store a server writes (:mod:`petab_mcp.provenance`), live or archived:
 
 * **Multistart** (:mod:`.multistart_tab`): how a version's fit went, start by start, and the
   running fit's starts as they finish (:data:`petab_mcp.provenance.FIT_PROGRESS`);
-* **Model** (:mod:`.model_tab`): the model as a graph that changes granularity as it is zoomed,
-  from agents and their signed influences down to reactions, with the equations of whatever is
-  selected (:mod:`.model_math`);
 * **Fit** (:mod:`.fit_tab`): the data against the simulation, experiment by experiment with its
   periods, and the residuals.
 

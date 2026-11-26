@@ -1,8 +1,8 @@
-"""The app: a sidebar to pick a version and what to compare it with, and the three tabs.
+"""The app: a sidebar to pick a version and what to compare it with, and the tabs.
 
 The sidebar's timeline plots each version's criterion value, the best ringed and HEAD marked, each
 joined to its parent; clicking one picks it. *Compare with* defaults to the version's parent and
-feeds the Model tab's diff and the Fit tab's dashed line. *Follow HEAD* moves the pick to each new
+feeds the Fit tab's dashed line. *Follow HEAD* moves the pick to each new
 version as the server writes it.
 
 Each browser session gets its own :class:`VizApp`, which polls the store (:meth:`Store.signature`)
@@ -12,8 +12,8 @@ A harness adds what it alone knows as ``extra_tabs`` (gemot, the agents' convers
 title and a function of the app, whose ``version`` and ``tick`` its view can follow.
 
 Only the tab shown is computed: the others are ``lazy`` panes, built when first opened. Built with
-the page, as ``pn.Tabs(dynamic=True)`` alone leaves them, Fujita's Model and Fit tabs added 0.7 s to
-a page that showed neither, and a harness's conversation tab a Phoenix fetch.
+the page, as ``pn.Tabs(dynamic=True)`` alone leaves them, Fujita's Fit tab and a since removed
+model tab added 0.7 s to a page that showed neither.
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ from ..problem import WorkingProblem
 from . import key as K
 from . import style
 from .fit_tab import FitTab
-from .model_tab import ModelTab
 from .multistart_tab import MultistartTab
 from .store import Store
 from .versions_tab import VersionsTab
@@ -75,7 +74,7 @@ class VizApp(param.Parameterized):
         self.compare_pick.param.watch(self._compare_picked, "value")
         self._refresh_choices(move=True)
         self.versions = VersionsTab(self)
-        self.multistart, self.model, self.fit = MultistartTab(self), ModelTab(self), FitTab(self)
+        self.multistart, self.fit = MultistartTab(self), FitTab(self)
 
     # -- choices -------------------------------------------------------------------------------
     def _label(self, row) -> str:
@@ -240,12 +239,11 @@ class VizApp(param.Parameterized):
 
     # -- page ----------------------------------------------------------------------------------
     def view(self) -> pn.template.FastListTemplate:
-        # A spinner over whatever is recomputing: a large model's first layout takes seconds.
+        # A spinner over whatever is recomputing.
         pn.config.loading_indicator = True
         tabs = pn.Tabs(
             ("Versions", self.versions.view()),
             ("Multistart", self.multistart.view()),
-            ("Model", self.model.view()),
             ("Fit", self.fit.view()),
             *[(name, view(self)) for name, view in self.extra_tabs],
             dynamic=True,

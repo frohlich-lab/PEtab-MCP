@@ -139,10 +139,9 @@ statements = [
     "bionetgen>=0.8.7",
 ]
 # The viewer (`petab-mcp-viz`, petab_mcp.viz), the only importer; the server never imports it.
-# The floors are the releases it was written and tested against (holoviews 1.23.2, panel 1.11.1,
-# networkx 3.7); nothing older was tried. networkx lays out the model graph (kamada_kawai_layout,
-# which runs on the scipy the core already pins).
-viz = ["holoviews>=1.23", "panel>=1.11", "networkx>=3.7"]
+# The floors are the releases it was written and tested against (holoviews 1.23.2, panel 1.11.1);
+# nothing older was tried.
+viz = ["holoviews>=1.23", "panel>=1.11"]
 dev = [
     # The dask, statements and viz extras, so CI runs tests/test_dask_engine.py, tests/test_pool.py
     # (which submits nothing to SLURM), the statements route and the viewer's tests rather than

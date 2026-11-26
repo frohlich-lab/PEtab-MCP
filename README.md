@@ -95,18 +95,17 @@ petab-mcp-viz --petab-yaml path/to/problem.yaml   # --provenance-dir DIR  --port
 ```
 
 Pick a version in the sidebar, which also picks the version to compare it with (its parent by
-default). The three tabs show that version:
+default). The tabs show that version, and every plot explains on hover how to read it:
 
+- **Versions:** the session's versions as a tree, each joined to the one it was made from, over a
+  table of the reason given for each change.
 - **Multistart:** the fit start by start. A waterfall shows each start's objective above the best,
-  coloured by how it ended. Beside it is each start's objective over its run, and below, where each
-  start ended within each estimated parameter's bounds. A running fit's starts appear as they
-  finish.
-- **Model:** a graph whose detail follows the zoom, from signed influences between agents (or
-  species), through statements, down to reactions. Clicking a node shows its equations. A diff
-  marks what changed since the compared version.
-- **Fit:** data against simulation, one card per experiment, worst-fitted first. A strip on the
-  same time axis shows the experiment's periods, and its hover says what each condition changes.
-  A Residuals view sits beside it.
+  coloured by how it ended or by waterfall cluster. Beside it is each start's objective over its
+  run, and below, where each start ended within each estimated parameter's bounds. A running fit's
+  starts appear as they finish.
+- **Fit:** data against simulation, one card per experiment, worst-fitted first, with what the
+  experiment sets over time plotted under its data on the same time axis. A Residuals sub-tab sits
+  beside it.
 
 The page never writes to the store and never compiles or simulates a model: it shows what the fits
 stored. A running fit reaches it through `fit_progress.json`, which the server keeps in the store
