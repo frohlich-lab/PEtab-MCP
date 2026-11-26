@@ -2,6 +2,8 @@
 
 The categorical palette is Okabe and Ito's, which stays apart under the common colour-vision
 deficiencies; an influence's sign is therefore blue against vermillion, never green against red.
+Every grey here is a middle one, which keeps its contrast on the template's dark theme as on its
+light one: the darker greys first chosen vanished on dark.
 """
 
 from __future__ import annotations
@@ -18,13 +20,13 @@ EDGES: dict[str, tuple[str, str]] = {
     "activates": ("#0072B2", "solid"),
     "inhibits": ("#D55E00", "solid"),
     "modulates": ("#8c8c8c", "dashed"),
-    "modifies": ("#4d4d4d", "solid"),
+    "modifies": ("#888888", "solid"),
     "converts": ("#009E73", "solid"),
     "binds": ("#CC79A7", "solid"),
-    "role": ("#666666", "solid"),
-    "reads": ("#b3b3b3", "dotted"),
-    "consumes": ("#666666", "solid"),
-    "produces": ("#666666", "solid"),
+    "role": ("#888888", "solid"),
+    "reads": ("#a6a6a6", "dotted"),
+    "consumes": ("#888888", "solid"),
+    "produces": ("#888888", "solid"),
 }
 
 #: A node kind's marker, colour and size.
@@ -32,7 +34,7 @@ NODES: dict[str, tuple[str, str, int]] = {
     "agent": ("circle", "#56B4E9", 22),
     "species": ("circle", "#56B4E9", 14),
     "row": ("square", "#E69F00", 14),
-    "reaction": ("square", "#4d4d4d", 7),
+    "reaction": ("square", "#888888", 7),
     "observable": ("diamond", "#CC79A7", 14),
 }
 
