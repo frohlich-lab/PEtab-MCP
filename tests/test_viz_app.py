@@ -139,3 +139,35 @@ def test_a_problem_yaml_is_named_after_its_example():
     assert problem_name("examples/fujita/problem/problem.yaml") == "fujita"
     assert problem_name("examples/fujita/work/problem.yaml") == "fujita"
     assert problem_name("Fujita_SciSignal2010/Fujita_SciSignal2010.yaml") == "Fujita_SciSignal2010"
+
+
+def test_a_store_before_its_first_version_shows_its_first_fit(tmp_path, viz_store):
+    """The viewer is opened as a session starts, before anything is stored: every tab says so, and
+    the first fit's starts show as they finish; its first version is then followed to."""
+    root = tmp_path / "fresh"
+    (root / "versions").mkdir(parents=True)
+    (root / FIT_PROGRESS).write_text(
+        json.dumps(
+            {
+                "phase": "running",
+                "since": 0,
+                "began": 0,
+                "waited": 0,
+                "total": 4,
+                "done": 1,
+                "queued": 0,
+                "best": 3.0,
+                "fvals": [3.0],
+            }
+        )
+    )
+    app = VizApp(Store(root), WorkingProblem.from_yaml(viz_store[1]), poll_seconds=0)
+    assert app.version is None
+    for tab in (app.multistart, app.model, app.fit):
+        pn.panel(tab.view()).get_root(Document())
+    app.view().server_doc(Document())
+    shutil.copytree(viz_store[0] / "versions" / "v0", root / "versions" / "v0")
+    (root / "HEAD").write_text("0")
+    (root / FIT_PROGRESS).unlink()
+    app.poll()
+    assert app.version == 0
