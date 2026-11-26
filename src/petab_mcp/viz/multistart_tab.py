@@ -58,6 +58,11 @@ EXIT_COLORS = {
 #: The offset the waterfall adds before its log axis, so the best start (zero above itself) shows.
 OFFSET = 1.0
 
+#: The y axis the waterfall and the objective plot share: Panel gives the plots of two panes that
+#: allow it (``linked_axes``) one range for a dimension of one name, so a zoom in either is a zoom
+#: in both. No other pane on the page allows it.
+ABOVE = hv.Dimension("above_best", label=f"objective − best + {OFFSET:g}")
+
 
 #: Fides' ``ExitFlag`` names by value, written out: importing fides to look them up cost half a
 #: second of the page's first load (it imports scipy). A test holds the table to fides' own enum.
@@ -347,13 +352,24 @@ def legend(df: pd.DataFrame, starts: pd.DataFrame, by: str, chosen: list[int]) -
 HIDDEN = "#e3e3e3"
 
 
-def waterfall_points(df: pd.DataFrame, by: str = BY_EXIT, hidden=()) -> hv.Points:
+def y_range(df: pd.DataFrame, tf: pd.DataFrame | None) -> tuple[float, float]:
+    """The range of :data:`ABOVE`, the same in both plots that share it: every start's final
+    objective and every evaluation of the trace, a rejected trial's too."""
+    high = float(df["above_best"].max())
+    if tf is not None and not tf.empty:
+        high = max(high, float((tf["fval"] - df["fval"].min() + OFFSET).max()))
+    return OFFSET / 2, 3 * max(high, 3 * OFFSET)
+
+
+def waterfall_points(
+    df: pd.DataFrame, by: str = BY_EXIT, hidden=(), ylim: tuple | None = None
+) -> hv.Points:
     """The waterfall's points, which a selection stream reads; a ``hidden`` group's grey."""
     shown = colors(df, by, hidden)
     df = df.assign(color=[shown.get(r, HIDDEN) for r in df["rank"]])
     return hv.Points(
         df,
-        ["rank", "above_best"],
+        ["rank", ABOVE],
         ["id", "fval", "ended", "cluster", "time", "n_fval", "color"],
     ).opts(
         color=hv.dim("color"),
@@ -365,16 +381,16 @@ def waterfall_points(df: pd.DataFrame, by: str = BY_EXIT, hidden=()) -> hv.Point
         active_tools=["box_select"],
         nonselection_alpha=0.3,
         xlabel="start rank (best first)",
-        ylabel=f"objective − best + {OFFSET:g}",
+        ylabel=ABOVE.label,
         responsive=True,
         height=370,
-        ylim=(OFFSET / 2, 3 * max(float(df["above_best"].max()), 3 * OFFSET)),
+        ylim=ylim or y_range(df, None),
     )
 
 
 def waterfall_marks(df: pd.DataFrame) -> hv.Overlay:
     """The waterfall's dashed line at the best and its rings round the warm starts."""
-    warm = hv.Points(df[df["warm"]], ["rank", "above_best"]).opts(
+    warm = hv.Points(df[df["warm"]], ["rank", ABOVE]).opts(
         marker="circle",
         fill_alpha=0,
         line_color="black",
@@ -434,10 +450,10 @@ def medians(t: pd.DataFrame, color: dict[int, str], log: bool) -> list:
             q25, q50, q75 = np.nanpercentile(np.vstack(rows), [25, 50, 75], axis=0)
         ok = ~np.isnan(q50)
         layers += [
-            hv.Area((grid[ok], q25[ok], q75[ok]), "x0", ["y0", "y1"]).opts(
+            hv.Area((grid[ok], q25[ok], q75[ok]), "x0", [ABOVE, "above_best_high"]).opts(
                 color=c, alpha=0.2, line_alpha=0
             ),
-            hv.Curve((grid[ok], q50[ok]), "x0", "y0").opts(color=c, line_width=2.5),
+            hv.Curve((grid[ok], q50[ok]), "x0", ABOVE).opts(color=c, line_width=2.5),
         ]
     return layers
 
@@ -451,12 +467,14 @@ def traces(
     rejected: bool = False,
     median: bool = False,
     log: bool = True,
+    ylim: tuple | None = None,
 ):
     """Each start's objective above the best over ``x`` (``iteration``, counted from 1, or
     ``time``): the starts ``color`` holds, the ``chosen`` ones only where there are any, in their
     colour. Only the steps the optimiser kept unless ``rejected``; with ``median``, each colour's
-    median and middle half (:func:`medians`) instead of its starts. Every start's trace is rows of
-    one segments table: a path per start made HoloViews build a dataset for each, 7.8 s of
+    median and middle half (:func:`medians`) instead of its starts. On log axes, its y axis is
+    :data:`ABOVE` over ``ylim``, the waterfall's. Every start's trace is rows of one segments
+    table: a path per start made HoloViews build a dataset for each, 7.8 s of
     Fujita's 300 starts."""
     if tf is None:
         return hv.Curve([]).opts(responsive=True, height=300)
@@ -468,22 +486,27 @@ def traces(
     ys = t["fval"].to_numpy(dtype=float) - best + OFFSET
     t = t.assign(_x=xs, _y=ys)
     if t.empty:
-        layers = [hv.Curve([], "x0", "y0")]
+        layers = [hv.Curve([], "x0", ABOVE)]
     elif median:
         layers = medians(t, color, log)
     else:
         rank = t["rank"].to_numpy()
         joined = rank[1:] == rank[:-1]
         segments = pd.DataFrame(
-            {"x0": xs[:-1], "y0": ys[:-1], "x1": xs[1:], "y1": ys[1:], "rank": rank[:-1]}
+            {
+                "x0": xs[:-1],
+                "above_best": ys[:-1],
+                "x1": xs[1:],
+                "above_best_end": ys[1:],
+                "rank": rank[:-1],
+            }
         )[joined]
         segments["color"] = segments["rank"].map(color)
         layers = [
-            hv.Segments(on_top(segments), ["x0", "y0", "x1", "y1"], ["rank", "color"]).opts(
-                color=hv.dim("color"), line_width=1.2, alpha=0.8
-            )
+            hv.Segments(
+                on_top(segments), ["x0", ABOVE, "x1", "above_best_end"], ["rank", "color"]
+            ).opts(color=hv.dim("color"), line_width=1.2, alpha=0.8)
         ]
-    low = min(OFFSET / 2, float(np.nanmin(ys)) / 2) if len(ys) else OFFSET / 2
     return hv.Overlay(layers).opts(
         hv.opts.Segments(logx=log, logy=log),
         hv.opts.Curve(logx=log, logy=log),
@@ -491,10 +514,9 @@ def traces(
         hv.opts.Overlay(
             responsive=True,
             height=300,
-            framewise=True,
-            ylim=(low, None) if log else (None, None),
+            ylim=(ylim or (OFFSET / 2, None)) if log else (None, None),
             xlabel="evaluation" if x == "iteration" else "time (s)",
-            ylabel=f"objective − best + {OFFSET:g}",
+            ylabel=ABOVE.label,
         ),
     )
 
@@ -812,12 +834,13 @@ class MultistartTab:
         meta, opt = store.meta(version), store.optimization(version) or {}
         df = waterfall_frame(starts, int(meta.get("n_warm_starts") or 0))
         hidden = self.legend.param.hidden
+        tf = trace_frame(store.trace(version), df)
+        ylim = y_range(df, tf)
         points = hv.DynamicMap(
-            pn.bind(lambda by, off: waterfall_points(df, by, off), self.colour, hidden)
+            pn.bind(lambda by, off: waterfall_points(df, by, off, ylim), self.colour, hidden)
         )
         picked = hv.streams.Selection1D(source=points)
         best = float(df["fval"].min())
-        tf = trace_frame(store.trace(version), df)
         spread_df = spread_frame(starts, opt, store.parameters(version))
 
         def chosen(index):
@@ -830,23 +853,30 @@ class MultistartTab:
         self._watching = [(self.colour, self.colour.param.watch(relegend, "value"))]
         picked.param.watch(relegend, "index")
 
-        # A plot keeps the axes it was first drawn with, log or linear, and its layers: what
-        # changes either draws the plot anew, the rest redraws it in place.
-        def trace_plot(log, median):
+        # A plot keeps the axes it was first drawn with and its layers: what changes either draws
+        # the plot anew, the rest redraws it in place. The objective plot keeps its ranges too, so
+        # picking starts does not rescale the waterfall, whose y axis it shares (ABOVE).
+        def trace_plot(log, median, x):
             return pn.pane.HoloViews(
                 hv.DynamicMap(
                     pn.bind(
-                        lambda index, x, by, off, rejected: traces(
-                            tf, best, chosen(index), x, colors(df, by, off), rejected, median, log
+                        lambda index, by, off, rejected: traces(
+                            tf,
+                            best,
+                            chosen(index),
+                            x,
+                            colors(df, by, off),
+                            rejected,
+                            median,
+                            log,
+                            ylim,
                         ),
-                        x=self.axis,
                         by=self.colour,
                         off=hidden,
                         rejected=self.rejected,
                     ),
                     streams=[picked],
                 ),
-                linked_axes=False,
                 sizing_mode="stretch_width",
             )
 
@@ -890,9 +920,7 @@ class MultistartTab:
                 plot(
                     "Waterfall",
                     WATERFALL,
-                    pn.pane.HoloViews(
-                        waterfall_marks(df) * points, linked_axes=False, sizing_mode="stretch_width"
-                    ),
+                    pn.pane.HoloViews(waterfall_marks(df) * points, sizing_mode="stretch_width"),
                 ),
                 plot(
                     "Objective over the run",
@@ -900,7 +928,7 @@ class MultistartTab:
                     pn.FlexBox(
                         self.axis, self.rejected, self.median, self.log, align_items="center"
                     ),
-                    pn.bind(trace_plot, self.log, self.median),
+                    pn.bind(trace_plot, self.log, self.median, self.axis),
                 ),
                 flex_wrap="wrap",
                 sizing_mode="stretch_width",
