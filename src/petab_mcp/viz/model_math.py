@@ -235,14 +235,19 @@ def from_antimony(
         key = f"{side(reactants)}>{side(products)}" + (f"|{'+'.join(rules)}" if rules else "")
         reactions.append(Reaction(rx.getId(), key, reactants, products, modifiers, rate, rules))
 
+    # Each reaction's terms, collected by the species they change: walking every species past
+    # every reaction multiplied mostly zeros, 96 s of Froehlich_CellSystems2018's 1396 x 2686.
+    terms: dict[str, list[sympy.Expr]] = {}
+    for rx in reactions:
+        for sid in {*rx.reactants, *rx.products}:
+            net = rx.products.get(sid, 0) - rx.reactants.get(sid, 0)
+            if net:
+                terms.setdefault(sid, []).append(net * rx.rate)
     odes: dict[str, sympy.Expr] = {}
     for sid, sp in species.items():
         if sp.held or sympy.Symbol(sid) in assignments:
             continue
-        flux = sum(
-            ((rx.products.get(sid, 0) - rx.reactants.get(sid, 0)) * rx.rate for rx in reactions),
-            sympy.Integer(0),
-        )
+        flux = sympy.Add(*terms.get(sid, ()))
         sbml = sm.getSpecies(sid)
         compartment = sm.getCompartment(sbml.getCompartment())
         if (
@@ -551,7 +556,7 @@ def statement_graph(math_: ModelMath) -> Graph:
     return _graph(nodes + obs_nodes, edges + obs_edges)
 
 
-def influence_graph(math_: ModelMath, max_pairs: int = 4000) -> Graph:
+def influence_graph(math_: ModelMath, max_pairs: int = 1500) -> Graph:
     """Signed influences. From the rows where the model was built from statements
     (:func:`row_edges`); else between species, from the sign of each ODE's derivative in each
     species it reads (:func:`influence_sign`), self-influence left out. Past ``max_pairs`` pairs
@@ -636,7 +641,8 @@ def layout(graphs: list[Graph], seed: int = 0) -> dict[str, tuple[float, float]]
         elif len(sub) <= 250:
             pos = nx.kamada_kawai_layout(sub)
         else:
-            pos = nx.spring_layout(sub, seed=seed, iterations=100)
+            # Froehlich_CellSystems2018's 3942 nodes took 52 s at 100 iterations, 13 s at 30.
+            pos = nx.spring_layout(sub, seed=seed, iterations=30 if len(sub) > 1000 else 100)
         xs = [p[0] for p in pos.values()]
         ys = [p[1] for p in pos.values()]
         scale = max(1.0, math.sqrt(len(sub))) / max(max(xs) - min(xs), max(ys) - min(ys), 1e-9)
@@ -747,7 +753,10 @@ def equations(
         return _amount(math_.species[sid].label) if sid in math_.species else _latex_name(sid)
 
     lines = []
-    for sid in list(math_.odes) if everything else species or []:
+    for n, sid in enumerate(list(math_.odes) if everything else species or []):
+        if len(lines) >= limit:  # each line is LaTeX to render: stop once the page is full
+            lines.append(rf"&\text{{... and {len(math_.odes) - n} more: click a node for its own}}")
+            return lines
         if sid in math_.odes:
             lines += rhs(rf"\frac{{d\,{name(sid)}}}{{dt}}", math_.odes[sid])
         elif sid in math_.assignments:
