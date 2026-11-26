@@ -19,6 +19,7 @@ Under ``<store_root>/`` (default ``<problem_dir>/.petab_mcp``):
 * ``cache/`` — pyPESTO result files keyed by problem hash (written on each fit, copied into
   version dirs when snapshotted).
 * ``HEAD`` — the current version number.
+* :data:`FIT_PROGRESS` — the running change's fit, for a viewer in another process.
 * ``FORMAT`` — :data:`STORE_FORMAT`. A store without it was written by the PEtab v1 server, whose
   versions hold v1 parameter tables and condition-keyed simulation records; it is refused rather
   than read, since nothing here can tell which of its numbers still mean what they meant.
@@ -41,6 +42,10 @@ from typing import Any
 
 #: The layout a store's ``FORMAT`` file names (see the module docstring).
 STORE_FORMAT = "petab-v2"
+
+#: The running change's fit as :class:`multistart.Progress` publishes it, there only while a change
+#: runs: nothing in the server reads it back.
+FIT_PROGRESS = "fit_progress.json"
 
 #: What :meth:`ProvenanceStore.get_version` can add to a version's meta, model and parameters: the
 #: fit's per-point records (``simulations.json``) and its starts with their traces
