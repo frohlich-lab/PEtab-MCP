@@ -29,8 +29,9 @@ owns that wait, for both pools a fit runs on (:class:`CappedEngine`):
 * **Progress.** Every :data:`PROGRESS_INTERVAL_S` the count of starts done goes to the session's
   log, so a fit that hangs can be located, and the change's :class:`Progress` in :data:`PROGRESS`
   is kept current for a caller waiting on the fit (``wait_for_fit``) and for the call's heartbeat
-  (``server._Heartbeat``). The seconds a fit's starts waited with none of them running are its
-  :attr:`CappedEngine.queue_seconds`.
+  (``server._Heartbeat``), and written to the store's :data:`provenance.FIT_PROGRESS` whenever it
+  changes, for a viewer in another process (:mod:`petab_mcp.viz`). The seconds a fit's starts
+  waited with none of them running are its :attr:`CappedEngine.queue_seconds`.
 * **The client's cancel.** A call its client cancels (MCP ``notifications/cancelled``) sets the
   event in :data:`CANCELLED` (``server._Cancellation``), and its fit stops with
   :class:`~petab_mcp.errors.FitCancelledError`.
@@ -50,12 +51,15 @@ from __future__ import annotations
 import concurrent.futures
 import contextlib
 import logging
+import json
 import math
 import multiprocessing
+import os
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any
 
 import cloudpickle
@@ -101,17 +105,24 @@ class Progress:
 
     ``phase`` is the change's since ``since``: ``compiling`` while it builds a model
     (:func:`compiling`), ``queued`` while none of its multistart's starts is running, else
-    ``running``. ``waited`` is the multistart's seconds queued before the current phase."""
+    ``running``. ``waited`` is the multistart's seconds queued before the current phase. ``fvals``
+    are the finite objectives of the finished starts, in the order they were read.
 
-    def __init__(self) -> None:
+    Given a ``path``, :meth:`publish` writes it there as JSON, its times on the wall clock, and
+    :meth:`close` removes it."""
+
+    def __init__(self, path: Path | None = None) -> None:
         self.began: float | None = None
         self.total = 0
         self.done = 0
         self.queued = 0
         self.best: float | None = None
+        self.fvals: list[float] = []
         self.phase = "running"
         self.since = time.monotonic()
         self.waited = 0.0
+        self.path = path
+        self._published: dict[str, Any] | None = None
 
     def enter(self, phase: str, now: float) -> None:
         """Move to ``phase`` at ``now``, unless already in it."""
@@ -130,6 +141,39 @@ class Progress:
             return None
         return (now - self.began - self.queue_s(now)) * (self.total - self.done) / self.done
 
+    def publish(self) -> None:
+        """Write the state to :attr:`path` if it changed since the last write. Replaced whole, so a
+        reader never sees half of it. Best-effort: a viewer's file never fails a fit."""
+        if self.path is None:
+            return
+        wall = time.time() - time.monotonic()
+        state = {
+            "phase": self.phase,
+            "since": self.since + wall,
+            "began": None if self.began is None else self.began + wall,
+            "waited": self.waited,
+            "total": self.total,
+            "done": self.done,
+            "queued": self.queued,
+            "best": self.best,
+            "fvals": list(self.fvals),
+        }
+        if state == self._published:
+            return
+        try:
+            tmp = self.path.with_name(f".{self.path.name}.tmp")
+            tmp.write_text(json.dumps(state), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError:
+            _log.debug("could not write %s", self.path, exc_info=True)
+            return
+        self._published = state
+
+    def close(self) -> None:
+        """Remove the published state: the change is over."""
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
+
 
 #: The current change's :class:`Progress`, which ``PetabSession.change`` sets for its fit to report
 #: into. A :class:`~contextvars.ContextVar` for the reason :data:`CANCELLED` is one.
@@ -145,10 +189,12 @@ def compiling() -> Iterator[None]:
         return
     previous = progress.phase
     progress.enter("compiling", time.monotonic())
+    progress.publish()
     try:
         yield
     finally:
         progress.enter(previous, time.monotonic())
+        progress.publish()
 
 
 def watch(
@@ -173,6 +219,7 @@ def watch(
     total = sum(sizes)
     began = logged = moved = time.monotonic()
     progress.began, progress.total, progress.done, progress.waited = began, total, 0, 0.0
+    progress.fvals = []
     finished, stopped, read = 0, set(), set()
     while left := [i for i, f in enumerate(futures) if i not in stopped and not f.done()]:
         now = time.monotonic()
@@ -203,11 +250,13 @@ def watch(
         if now - logged >= PROGRESS_INTERVAL_S:
             _log.info("fit: %d/%d starts done after %.0fs", done, total, now - began)
             logged = now
+        progress.publish()
         wait([futures[i] for i in left], POLL_S)
     progress.enter("running", time.monotonic())
     progress.done, progress.queued = total - sum(sizes[i] for i in stopped), 0
     if fvals is not None:
         _read_best(progress, futures, fvals, read | stopped, read)
+    progress.publish()
     return stopped, progress.waited
 
 
@@ -219,8 +268,8 @@ def _read_best(
     read: set[int],
 ) -> None:
     """Lower ``progress.best`` to the finite objectives of the ``futures`` not in ``skip``, adding
-    each one read to ``read``. A future that raised is passed over: the engine raises its error
-    where it collects the results."""
+    them to ``progress.fvals`` and each future read to ``read``. A future that raised is passed
+    over: the engine raises its error where it collects the results."""
     for i, future in enumerate(futures):
         if i in skip:
             continue
@@ -229,6 +278,7 @@ def _read_best(
             values = [v for v in fvals(future) if math.isfinite(v)]
         except Exception:  # noqa: BLE001 - see the docstring
             continue
+        progress.fvals += values
         if values:
             progress.best = min(values if progress.best is None else [progress.best, *values])
 

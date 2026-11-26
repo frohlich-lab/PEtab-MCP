@@ -52,7 +52,7 @@ from .fitting import (
 )
 from .parameters import problem_fingerprint, sha16
 from .problem import WorkingProblem, as_bool
-from .provenance import ProvenanceStore
+from .provenance import FIT_PROGRESS, ProvenanceStore
 from .references import EutilsReferenceResolver
 
 # Appended to an early-stop ``stop_reason`` only when the best model is NOT adequate (see
@@ -305,6 +305,8 @@ class PetabSession:
         self.change_from: int | None = None
         self.change_progress: Any | None = None
         self.provenance = ProvenanceStore(store_root(self.yaml_path, provenance_dir))
+        # A fit a server died in left its progress behind; no change runs yet.
+        (self.provenance.root / FIT_PROGRESS).unlink(missing_ok=True)
         self.resolver = resolver or EutilsReferenceResolver(mode=reference_mode)
         self.logger = logging_setup.configure(self.provenance.root)
         # pyPESTO's own optimizer logs go to a separate <root>/pypesto.log
@@ -1596,13 +1598,14 @@ class PetabSession:
 
         with self.lock:
             self.change_from = self.provenance.last_version
-            self.change_progress = Progress()
+            self.change_progress = Progress(self.provenance.root / FIT_PROGRESS)
             token = PROGRESS.set(self.change_progress)
             self.change_began = time.monotonic()
             try:
                 yield
             finally:
                 self.change_began = None
+                self.change_progress.close()
                 PROGRESS.reset(token)
 
     # -- fit ---------------------------------------------------------------

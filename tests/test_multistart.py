@@ -11,6 +11,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import functools
+import json
 import logging
 import math
 import multiprocessing
@@ -329,6 +330,53 @@ def test_a_running_fit_reports_its_starts_done_and_its_best_into_the_change(monk
 
     assert seen == [(2, 3.0)]
     assert (progress.total, progress.done, progress.best) == (4, 4, 1.5)
+
+
+def test_a_running_fit_publishes_its_finished_starts_for_a_viewer(monkeypatch, tmp_path):
+    """The viewer in another process (`petab_mcp.viz`) sees a running fit only through the store's
+    FIT_PROGRESS file: in-memory Progress was all there was. It holds the finished starts'
+    objectives as they come in, and goes when the change does."""
+    monkeypatch.setattr(M, "POLL_S", 0.02)
+    path = tmp_path / "fit_progress.json"
+    futures = [concurrent.futures.Future() for _ in range(2)]
+    futures[0].set_result([3.0, math.inf])
+    progress, seen = M.Progress(path), []
+
+    def finish():
+        seen.append(json.loads(path.read_text()))
+        futures[1].set_result([1.5])
+
+    threading.Timer(0.2, finish).start()
+    token = M.PROGRESS.set(progress)
+    try:
+        M.watch(futures, [2, 1], concurrent.futures.wait, lambda *_: ((), ()),
+                fvals=lambda f: f.result())
+    finally:
+        M.PROGRESS.reset(token)
+
+    assert (seen[0]["done"], seen[0]["total"], seen[0]["fvals"]) == (2, 3, [3.0])
+    assert seen[0]["began"] == pytest.approx(time.time(), abs=60)
+    final = json.loads(path.read_text())
+    assert (final["done"], final["best"], final["fvals"]) == (3, 1.5, [3.0, 1.5])
+    progress.close()
+    assert not path.exists()
+
+
+def test_a_change_leaves_no_fit_progress_behind(session):
+    """A server that died mid-fit left its progress file; the next session on the store removes it,
+    or a viewer would show a fit running forever."""
+    from petab_mcp.provenance import FIT_PROGRESS
+    from petab_mcp.session import PetabSession
+
+    stale = session.provenance.root / FIT_PROGRESS
+    stale.write_text("{}")
+    with session.change():
+        assert session.change_progress.path == stale
+    assert not stale.exists()
+    stale.write_text("{}")
+    PetabSession(session.yaml_path, provenance_dir=str(session.provenance.root),
+                 resolver=session.resolver)
+    assert not stale.exists()
 
 
 def test_the_starts_left_are_timed_by_the_pace_of_those_done_while_running():
