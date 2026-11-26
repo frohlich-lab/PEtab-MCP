@@ -80,6 +80,9 @@ class VizApp(param.Parameterized):
     def _picked(self, event) -> None:
         self.version = event.new
         self._compare_picked()
+        # A pick of any version but HEAD is a pick to stay on: the next fit must not move it.
+        if event.new != self.store.head():
+            self.follow.value = False
 
     def _compare_picked(self, *_) -> None:
         choice = self.compare_pick.value
@@ -163,7 +166,6 @@ class VizApp(param.Parameterized):
         versions = self.store.versions()
         if versions:
             self.version_pick.value = min(versions, key=lambda v: abs(v - x))
-            self.follow.value = False
 
     def about(self) -> pn.viewable.Viewable:
         def text(version, compare, _tick):
@@ -234,4 +236,17 @@ def build(
     hv.extension("bokeh")
     store = Store(store_root)
     problem = WorkingProblem.from_yaml(petab_yaml)
-    return VizApp(store, problem, poll_seconds, title=f"PEtab-MCP · {Path(petab_yaml).stem}").view()
+    return VizApp(
+        store, problem, poll_seconds, title=f"PEtab-MCP · {problem_name(petab_yaml)}"
+    ).view()
+
+
+def problem_name(petab_yaml: str | Path) -> str:
+    """What the page calls the problem: its YAML's name, or, for the ``problem.yaml`` every gemot
+    example and run has, the directory that names the example (``fujita/problem/problem.yaml`` is
+    fujita, ``fujita/work/problem.yaml`` too)."""
+    path = Path(petab_yaml).resolve()
+    if path.stem != "problem":
+        return path.stem
+    folder = path.parent
+    return folder.parent.name if folder.name in ("problem", "work") else folder.name

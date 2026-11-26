@@ -114,3 +114,19 @@ def test_the_equations_of_a_selection_name_species_by_their_pattern():
     lines = MM.equations(m, species=["__s3"], values={"p_kc": 2.0})
     assert lines[0].startswith(r"\frac{d\,[\text{B(phospho=p)}]}{dt}")
     assert "2.0" in lines[0] and "p_{kc}" not in lines[0]
+
+
+def test_a_long_ode_reads_down_the_pane_and_names_print_as_written():
+    """Fujita's ODEs ran off the equation pane's edge, and sympy printed `reaction_9_k1` as reaction
+    with a subscript 9k1."""
+    text = """
+model m
+  species A = 1, B = 0, C = 0;
+  r1: A => B; reaction_9_k1 * A;
+  r2: B => A; k2 * B;
+  r3: C => B; k3 * C;
+end
+"""
+    lines = MM.equations(MM.from_antimony(text), species=["B"])
+    assert len(lines) == 4 and lines[1].startswith(r"&\quad ")
+    assert r"\text{reaction\_9\_k1}" in " ".join(lines)

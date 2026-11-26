@@ -75,9 +75,12 @@ def summary(meta: dict, opt: dict, starts: pd.DataFrame) -> str:
     finite = starts["fval"].dropna()
     best = finite.min() if len(finite) else None
     at_best = int((finite <= best + AT_BEST_NLL_TOL).sum()) if best is not None else 0
-    parts = [f"**{len(starts)} starts**", f"{at_best} at the best (within {AT_BEST_NLL_TOL:g})"]
+    parts = [
+        f"**{len(starts)} starts**",
+        f"{at_best} reached the best (objective within {AT_BEST_NLL_TOL:g} of it)",
+    ]
     if best is not None:
-        parts.append(f"best objective {best:.6g}")
+        parts.append(f"best objective (negative log-likelihood) {best:.6g}")
     if killed := meta.get("n_starts_killed") or opt.get("n_starts_killed"):
         parts.append(f"{killed} stopped past their cap")
     if failed := int(starts["fval"].isna().sum()):
@@ -94,6 +97,27 @@ def summary(meta: dict, opt: dict, starts: pd.DataFrame) -> str:
     if meta.get("wall_seconds") is not None:
         parts.append(f"{meta['wall_seconds']} s")
     return " · ".join(parts)
+
+
+#: What each way a start ends means, for the caption under the waterfall.
+EXIT_MEANINGS = {
+    "FTOL": "converged: the objective stopped changing",
+    "GTOL": "converged: the gradient vanished",
+    "XTOL": "converged: the parameters stopped changing",
+    "DELTA_TOO_SMALL": "stalled: the trust region shrank to nothing, often a flat or rough objective",
+    "MAXITER": "ran out of iterations",
+    "MAXTIME": "ran out of time (the per-start cap)",
+    "NOT_FINITE": "hit a non-finite objective or gradient",
+    "EXCEEDED_BOUNDARY": "left the parameter bounds",
+    STOPPED: "stuck past its cap, stopped and scored as failed",
+    "DID_NOT_RUN": "never ran",
+}
+
+
+def exit_caption(ended) -> str:
+    """The meaning of each way the shown starts ended, the commonest first."""
+    counts = pd.Series(list(ended)).value_counts()
+    return " · ".join(f"**{e}** {EXIT_MEANINGS[e]}" for e in counts.index if e in EXIT_MEANINGS)
 
 
 def waterfall_frame(starts: pd.DataFrame, n_warm: int = 0) -> pd.DataFrame:
@@ -128,7 +152,7 @@ def waterfall(df: pd.DataFrame) -> tuple[hv.Overlay, hv.Points]:
         ylabel=f"objective − best + {OFFSET:g}",
         responsive=True,
         height=320,
-        ylim=(OFFSET / 2, 3 * max(float(df["above_best"].max()), 10 * OFFSET)),
+        ylim=(OFFSET / 2, 3 * max(float(df["above_best"].max()), 3 * OFFSET)),
     )
     warm = hv.Points(df[df["warm"]], ["rank", "above_best"]).opts(
         marker="circle",
@@ -246,7 +270,7 @@ def spread(df: pd.DataFrame, chosen: list[int], show_x0: bool):
         height=340,
         ylim=(-0.05, 1.05),
         xlabel="estimated parameter",
-        ylabel="lower bound → upper bound",
+        ylabel="position in bounds",
         show_legend=True,
         legend_position="right",
     )
@@ -272,8 +296,11 @@ def spread(df: pd.DataFrame, chosen: list[int], show_x0: bool):
     return hv.Overlay(layers).opts(title="Where each start ended, per estimated parameter")
 
 
-def live_view(progress: dict | None) -> pn.viewable.Viewable | None:
-    """The running fit, or ``None`` when none runs."""
+def live_view(
+    progress: dict | None, reference: tuple[int, float] | None = None
+) -> pn.viewable.Viewable | None:
+    """The running fit, or ``None`` when none runs. ``reference``, HEAD's version and best
+    objective, says whether the fit is beating what is stored."""
     if not progress:
         return None
     now = time.time()
@@ -287,6 +314,8 @@ def live_view(progress: dict | None) -> pn.viewable.Viewable | None:
         line.append(f"{done}/{total} starts done, {progress.get('queued') or 0} not begun")
     if progress.get("best") is not None:
         line.append(f"best so far {progress['best']:.6g}")
+        if reference is not None:
+            line.append(f"v{reference[0]}'s best was {reference[1]:.6g}")
     began = progress.get("began")
     if began and done and done < total:
         waited = (progress.get("waited") or 0.0) + (
@@ -348,7 +377,12 @@ class MultistartTab:
         )
 
     def _live(self, _tick):
-        return live_view(self.app.store.fit_progress()) or pn.Spacer(height=0)
+        store, head = self.app.store, self.app.store.head()
+        starts = store.starts(head) if head is not None else None
+        reference = None
+        if starts is not None and starts["fval"].notna().any():
+            reference = (head, float(starts["fval"].min()))
+        return live_view(store.fit_progress(), reference) or pn.Spacer(height=0)
 
     def _version(self, version):
         store = self.app.store
@@ -392,8 +426,16 @@ class MultistartTab:
                 sizing_mode="stretch_width",
             ),
             pn.pane.Markdown(
-                "Box-select starts in the waterfall to pick them out in the trace and below.",
-                styles={"color": style.MUTED},
+                exit_caption(df["ended"])
+                + "  \nBox-select starts in the waterfall to pick them out in the trace and below.",
+                styles={"color": style.MUTED, "font-size": "12px"},
+            ),
+            pn.pane.Markdown(
+                "Each column is an estimated parameter, 0 its lower bound and 1 its upper, on the "
+                "scale it is estimated on. Where the starts that reached the best are spread out "
+                "along a column, the data do not pin that parameter down; one at 0 or 1 sits on a "
+                "bound.",
+                styles={"color": style.MUTED, "font-size": "12px"},
             ),
             self.show_x0,
             pn.pane.HoloViews(spread_map, linked_axes=False),
