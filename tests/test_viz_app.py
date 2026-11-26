@@ -171,3 +171,17 @@ def test_a_store_before_its_first_version_shows_its_first_fit(tmp_path, viz_stor
     (root / FIT_PROGRESS).unlink()
     app.poll()
     assert app.version == 0
+
+
+def test_a_failed_starts_exit_is_explained_though_it_is_not_plotted(viz_store):
+    """Fujita v0's two NOT_FINITE starts were counted in the summary but missing from the caption,
+    which read only the waterfall's points, and a failed start has no objective to plot."""
+    root, yaml = viz_store
+    opt_path = root / "versions" / "v0" / "optimization.json"
+    opt = json.loads(opt_path.read_text())
+    opt["starts"][2]["fval"] = None  # the start the server stopped (pypesto_result.hdf5)
+    opt_path.write_text(json.dumps(opt))
+    app = VizApp(Store(root), WorkingProblem.from_yaml(yaml), poll_seconds=0)
+    view = app.multistart._version(0)
+    text = " ".join(str(o.object) for o in view.select(pn.pane.Markdown))
+    assert "stopped by the server" in text and "1 failed" in text
