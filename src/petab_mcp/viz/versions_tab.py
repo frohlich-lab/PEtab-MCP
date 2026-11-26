@@ -7,19 +7,21 @@ child and on a new lane below otherwise, so each lane is a line of work and a ne
 node's colour is its score (the session's criterion, lower is better); the best version is ringed,
 HEAD marked, and the picked version's line back to the first version drawn bold.
 
-Under the tree, every version in a table: its parent, kind, score and the change from its parent's,
-k, starts and the justification its change was made with. Clicking a node or a row picks that
-version for every tab.
+Under the tree, every version in a table: its parent, k and the justification its change was made
+with. Hovering a node or a row highlights both, and clicking either picks that version for every
+tab. The two are one component drawn in the browser (:class:`VersionTree`): neither Bokeh nor
+Panel's table reports a hover to the other, and a round trip through the server per mouse move
+would lag behind the pointer.
 """
 
 from __future__ import annotations
 
 import math
 
-import holoviews as hv
 import numpy as np
 import pandas as pd
 import panel as pn
+import param
 
 from . import style
 
@@ -85,68 +87,226 @@ def frame(table: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def tree(df: pd.DataFrame, best: int | None, head: int | None, picked: int | None) -> tuple:
-    """The tree as an overlay, and its nodes, which a tap stream reads."""
-    xy = {v: (v, -lane) for v, lane in zip(df["version"], df["lane"])}
+#: Viridis, sampled: a version's colour runs from its lowest score (yellow) to its highest (purple).
+_VIRIDIS = ("#fde725", "#5ec962", "#21918c", "#3b528b", "#440154")
+
+
+def color(score: float | None, low: float, high: float) -> str:
+    """``score``'s colour between ``low`` and ``high``; grey without one."""
+    if score is None or not math.isfinite(score):
+        return style.MUTED
+    f = 0.0 if high <= low else min(max((score - low) / (high - low), 0.0), 1.0)
+    i = min(int(f * (len(_VIRIDIS) - 1)), len(_VIRIDIS) - 2)
+    a, b = _VIRIDIS[i], _VIRIDIS[i + 1]
+    t = f * (len(_VIRIDIS) - 1) - i
+    mix = [round(int(a[k : k + 2], 16) * (1 - t) + int(b[k : k + 2], 16) * t) for k in (1, 3, 5)]
+    return "#" + "".join(f"{c:02x}" for c in mix)
+
+
+def _num(value) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def tree(df: pd.DataFrame, best: int | None, head: int | None, picked: int | None) -> dict:
+    """What :class:`VersionTree` draws: a node per version (its lane, colour, marks and hover
+    text), an edge per parent, and a table row per version."""
     path = set(lineage(df, picked))
+    scores = [s for s in map(_num, df["criterion_value"]) if s is not None]
+    low, high = (min(scores), max(scores)) if scores else (0.0, 0.0)
+    criterion = str(df["criterion"].dropna().iloc[-1]) if df["criterion"].notna().any() else "score"
+    nodes, rows = [], []
+    parents = [_parent(_num(p)) for p in df["parent_version"]]  # a missing parent is NaN here
+    for r, parent in zip(df.itertuples(), parents):
+        score, change = _num(r.criterion_value), _num(r.change)
+        tip = [f"v{r.version}"]
+        if score is not None:
+            tip.append(f"{criterion} {score:.4g}")
+        if change is not None:
+            tip.append(f"{change:+.3g} on v{parent}")
+        if _num(r.k) is not None:
+            tip.append(f"k {int(r.k)}")
+        nodes.append(
+            {
+                "version": int(r.version),
+                "lane": int(r.lane),
+                "color": color(score, low, high),
+                "best": r.version == best,
+                "head": r.version == head,
+                "picked": r.version == picked,
+                "on_path": r.version in path,
+                "tip": " · ".join(tip),
+            }
+        )
+        rows.append(
+            {
+                "version": int(r.version),
+                "parent": "" if parent is None else parent,
+                "k": "" if _num(r.k) is None else int(r.k),
+                "justification": r.justification if isinstance(r.justification, str) else "",
+            }
+        )
+    known = set(df["version"])
     edges = [
-        (*xy[p], *xy[v], v in path and p in path)
-        for v, p in zip(df["version"], df["parent_version"])
-        if p in xy
+        {"from": p, "to": int(v), "on_path": v in path and p in path}
+        for v, p in zip(df["version"], parents)
+        if p is not None and p in known
     ]
-    segments = pd.DataFrame(edges, columns=["x0", "y0", "x1", "y1", "on_path"])
-    kdims = ["x0", "y0", "x1", "y1"]
-    layers = []
-    if not segments.empty:  # a first version alone has no edge
-        on_path = segments["on_path"].astype(bool)
-        layers += [
-            hv.Segments(segments[~on_path], kdims).opts(color=style.MUTED, line_width=1.5),
-            hv.Segments(segments[on_path], kdims).opts(color=style.PALETTE[3], line_width=3),
-        ]
-    nodes = df.assign(x=df["version"], y=-df["lane"], score=df["criterion_value"])
-    points = hv.Points(
-        nodes, ["x", "y"], ["version", "kind", "score", "change", "k", "n_starts", "why"]
-    ).opts(
-        color="score",
-        cmap="viridis_r",
-        colorbar=True,
-        clabel=str(df["criterion"].dropna().iloc[-1]) if df["criterion"].notna().any() else "",
-        size=13,
-        line_color="white",
-        tools=["hover", "tap"],
+    legend = (
+        f"colour: {criterion}, yellow the lowest ({low:.4g}), purple the highest ({high:.4g})"
+        if scores
+        else ""
     )
-    layers.append(points)
-    if best in xy:
-        layers.append(
-            hv.Points([xy[best]]).opts(
-                marker="circle", fill_alpha=0, line_color=style.ADDED, line_width=3, size=22
-            )
-        )
-    if picked in xy:
-        layers.append(
-            hv.Points([xy[picked]]).opts(
-                marker="circle", fill_alpha=0, line_color=style.PALETTE[3], line_width=3, size=19
-            )
-        )
-    if head in xy:
-        layers.append(
-            hv.Labels([(*xy[head], "HEAD")], ["x", "y"], "text").opts(
-                yoffset=0.35, text_font_size="9pt", text_color=style.PALETTE[1]
-            )
-        )
-    n_lanes = int(df["lane"].max()) + 1 if len(df) else 1
-    overlay = hv.Overlay(layers).opts(
-        responsive=True,
-        height=max(220, 60 * n_lanes + 120),
-        yaxis=None,
-        xlabel="version",
-        ylim=(-n_lanes + 0.4, 0.8),
-        title="Versions, each joined to the one it was made from (ringed: best; bold: the picked "
-        "version's line)",
-        show_legend=False,
-        toolbar="above",
-    )
-    return overlay, points
+    return {"nodes": nodes, "edges": edges, "rows": rows, "legend": legend}
+
+
+class VersionTree(pn.custom.JSComponent):
+    """The tree over the table, drawn in the browser; a hover on either highlights both, and a
+    click sets :attr:`picked`."""
+
+    nodes = param.List(default=[])
+    edges = param.List(default=[])
+    rows = param.List(default=[])
+    legend = param.String(default="")
+    picked = param.Integer(default=None, allow_None=True)
+
+    _stylesheets = [
+        """
+    .vt { font-family: inherit; color: inherit; }
+    .vt .legend { font-size: 12px; opacity: .7; margin: 0 0 4px 4px; }
+    .vt svg { display: block; width: 100%; }
+    .vt .node { cursor: pointer; }
+    .vt .node.hot circle.dot { stroke: #D55E00; stroke-width: 3; }
+    .vt .tip { position: absolute; pointer-events: none; background: rgba(40,40,40,.92);
+               color: #fff; font-size: 12px; padding: 3px 7px; border-radius: 4px;
+               white-space: nowrap; display: none; z-index: 10; }
+    .vt .rows { max-height: 420px; overflow-y: auto; margin-top: 8px;
+                border-top: 1px solid rgba(128,128,128,.35); }
+    .vt table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    .vt th { text-align: left; position: sticky; top: 0; background: var(--panel-background-color,
+             var(--background-color, #fff)); padding: 4px 8px; font-weight: 600; }
+    .vt td { padding: 3px 8px; vertical-align: top; border-top: 1px solid rgba(128,128,128,.2); }
+    .vt td.num { white-space: nowrap; width: 1%; }
+    .vt tr { cursor: pointer; }
+    .vt tr.hot td { background: rgba(213,94,0,.16); }
+    .vt tr.picked td { font-weight: 600; }
+    """
+    ]
+
+    _esm = """
+    const NS = "http://www.w3.org/2000/svg";
+    function svg(tag, attrs) {
+      const e = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+      return e;
+    }
+    export function render({ model, el }) {
+      const root = document.createElement("div"); root.className = "vt";
+      root.style.position = "relative";
+      const legend = document.createElement("div"); legend.className = "legend";
+      const plot = svg("svg", {});
+      const tip = document.createElement("div"); tip.className = "tip";
+      const scroll = document.createElement("div"); scroll.className = "rows";
+      root.append(legend, plot, tip, scroll);
+      let marks = {}, rowsBy = {};
+
+      function hot(v, on, fromTable) {
+        if (marks[v]) marks[v].classList.toggle("hot", on);
+        if (rowsBy[v]) {
+          rowsBy[v].classList.toggle("hot", on);
+          if (on && !fromTable) {  // the table's own scroll only: scrollIntoView moved the page
+            const row = rowsBy[v], head = row.closest("table").tHead.offsetHeight;
+            if (row.offsetTop - head < scroll.scrollTop) scroll.scrollTop = row.offsetTop - head;
+            else if (row.offsetTop + row.offsetHeight > scroll.scrollTop + scroll.clientHeight)
+              scroll.scrollTop = row.offsetTop + row.offsetHeight - scroll.clientHeight;
+          }
+        }
+        if (on && marks[v]) {
+          const c = marks[v].querySelector("circle.dot");
+          const box = root.getBoundingClientRect(), r = c.getBoundingClientRect();
+          tip.textContent = marks[v].dataset.tip;
+          tip.style.display = "block";
+          const right = r.left - box.left + 14;  // left of the node where it would overflow
+          tip.style.left = (right + tip.offsetWidth > box.width
+            ? r.left - box.left - tip.offsetWidth - 6 : right) + "px";
+          tip.style.top = (r.top - box.top - 26) + "px";
+        } else tip.style.display = "none";
+      }
+
+      function draw() {
+        const nodes = model.nodes, width = Math.max(root.clientWidth || el.clientWidth || 800, 300);
+        const lanes = Math.max(1, ...nodes.map(n => n.lane + 1));
+        const maxv = Math.max(1, ...nodes.map(n => n.version));
+        const left = 24, right = 24, top = 26, step = 46, height = top + lanes * step;
+        const x = v => left + (width - left - right) * v / maxv, y = l => top + l * step;
+        plot.innerHTML = ""; marks = {};
+        plot.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        plot.setAttribute("height", height);
+        legend.textContent = model.legend;
+        const at = {}; nodes.forEach(n => at[n.version] = n);
+        for (const e of model.edges) {
+          const a = at[e.from], b = at[e.to]; if (!a || !b) continue;
+          const d = a.lane === b.lane ? `M${x(a.version)},${y(a.lane)} L${x(b.version)},${y(b.lane)}`
+            : `M${x(a.version)},${y(a.lane)} C${x(a.version) + 18},${y(b.lane)} ` +
+              `${x(b.version) - 18},${y(b.lane)} ${x(b.version)},${y(b.lane)}`;
+          plot.append(svg("path", { d, fill: "none", stroke: e.on_path ? "#D55E00" : "#8c8c8c",
+            "stroke-width": e.on_path ? 3 : 1.5, opacity: e.on_path ? 1 : 0.8 }));
+        }
+        for (const n of nodes) {
+          const g = svg("g", { class: "node" }); g.dataset.tip = n.tip;
+          const cx = x(n.version), cy = y(n.lane);
+          if (n.best) g.append(svg("circle", { cx, cy, r: 12, fill: "none", stroke: "#009E73",
+                                                 "stroke-width": 3 }));
+          g.append(svg("circle", { class: "dot", cx, cy, r: 7, fill: n.color,
+            stroke: n.picked ? "#D55E00" : "#fff", "stroke-width": n.picked ? 3 : 1.5 }));
+          const label = svg("text", { x: cx, y: cy + 21, "text-anchor": "middle",
+                                       "font-size": 10, fill: "currentColor", opacity: 0.75 });
+          label.textContent = n.version; g.append(label);
+          if (n.head) {
+            const h = svg("text", { x: cx, y: cy - 13, "text-anchor": "middle", "font-size": 10,
+                                     fill: "#E69F00", "font-weight": 600 });
+            h.textContent = "HEAD"; g.append(h);
+          }
+          g.addEventListener("mouseenter", () => hot(n.version, true, false));
+          g.addEventListener("mouseleave", () => hot(n.version, false, false));
+          g.addEventListener("click", () => { model.picked = n.version; });
+          plot.append(g); marks[n.version] = g;
+        }
+      }
+
+      function table() {
+        scroll.innerHTML = ""; rowsBy = {};
+        const t = document.createElement("table");
+        t.innerHTML = "<thead><tr><th>version</th><th>parent</th><th>k</th>" +
+                      "<th>justification</th></tr></thead>";
+        const body = document.createElement("tbody");
+        const picked = new Set(model.nodes.filter(n => n.picked).map(n => n.version));
+        for (const r of model.rows) {
+          const tr = document.createElement("tr");
+          if (picked.has(r.version)) tr.className = "picked";
+          for (const [k, v] of [["num", r.version], ["num", r.parent], ["num", r.k],
+                                ["", r.justification]]) {
+            const td = document.createElement("td"); td.className = k; td.textContent = v;
+            tr.append(td);
+          }
+          tr.addEventListener("mouseenter", () => hot(r.version, true, true));
+          tr.addEventListener("mouseleave", () => hot(r.version, false, true));
+          tr.addEventListener("click", () => { model.picked = r.version; });
+          body.append(tr); rowsBy[r.version] = tr;
+        }
+        t.append(body); scroll.append(t);
+      }
+
+      model.on("nodes", () => { draw(); table(); });
+      model.on("legend", draw);
+      new ResizeObserver(draw).observe(root);
+      setTimeout(() => { draw(); table(); }, 0);
+      return root;
+    }
+    """
 
 
 class VersionsTab:
@@ -154,68 +314,32 @@ class VersionsTab:
 
     def __init__(self, app) -> None:
         self.app = app
+        self.component = VersionTree(sizing_mode="stretch_width")
+        self.component.param.watch(self._picked, "picked")
+
+    def _picked(self, event) -> None:
+        if event.new is not None and event.new != self.app.version:
+            self.app.version_pick.value = event.new
 
     def view(self) -> pn.viewable.Viewable:
-        return pn.panel(
-            pn.bind(self._render, self.app.param.version, self.app.param.tick),
-            lazy=True,
+        return pn.Column(
+            pn.panel(pn.bind(self._update, self.app.param.version, self.app.param.tick)),
+            self.component,
             sizing_mode="stretch_width",
         )
 
-    def _render(self, version, _tick):
+    def _update(self, version, _tick):
+        """Redraw the component for ``version``; the component itself is the view."""
         store = self.app.store
         table = store.table()
         if table.empty:
             return pn.pane.Markdown("No version yet.")
-        df = frame(table)
-        overlay, points = tree(df, store.best(), store.head(), version)
-        tap = hv.streams.Tap(source=points)
-
-        def picked(x, y):
-            if x is None:
-                return
-            d = (df["version"] - x) ** 2 + (-df["lane"] - y) ** 2
-            self.app.version_pick.value = int(df.loc[d.idxmin(), "version"])
-
-        tap.add_subscriber(picked)
-        shown = df[
-            [
-                "version",
-                "parent_version",
-                "kind",
-                "criterion_value",
-                "change",
-                "k",
-                "n_starts",
-                "why",
-            ]
-        ].rename(
-            columns={
-                "parent_version": "parent",
-                "criterion_value": "score",
-                "change": "change from parent",
-                "n_starts": "starts",
-                "why": "justification",
-            }
-        )
-        shown = shown.astype({"parent": "Int64", "k": "Int64", "starts": "Int64"})
-        rows = pn.widgets.Tabulator(
-            shown.round({"score": 2, "change from parent": 2}),
-            disabled=True,
-            show_index=False,
-            selectable=1,
-            sizing_mode="stretch_width",
-            height=min(420, 32 * len(shown) + 40),
-            widths={"justification": 520},
-        )
-
-        def selected(event):
-            if event.new:
-                self.app.version_pick.value = int(shown["version"].iloc[event.new[0]])
-
-        rows.param.watch(selected, "selection")
-        return pn.Column(
-            pn.pane.HoloViews(overlay, linked_axes=False, sizing_mode="stretch_width"),
-            rows,
+        drawn = tree(frame(table), store.best(), store.head(), version)
+        self.component.param.update(picked=version, **drawn)
+        return pn.pane.Markdown(
+            "Each version is joined to the one it was made from; a fork from an earlier version "
+            "starts a lane. Ringed: the best. Bold: the picked version's line back to the first. "
+            "Hover a node or a row to find the other; click either to pick it.",
+            styles={"color": style.MUTED, "font-size": "12px"},
             sizing_mode="stretch_width",
         )

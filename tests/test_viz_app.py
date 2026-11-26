@@ -246,3 +246,33 @@ def test_versions_branch_onto_lanes_and_a_versions_line_runs_back_to_the_first()
     assert list(T.frame(table)["change"]) == pytest.approx(
         [float("nan"), -2.0, 1.0, -1.0, 2.0], nan_ok=True
     )
+
+
+def test_the_versions_table_and_tree_carry_what_each_is_for():
+    """The table names the version, its parent, k and why it was made; the tree's hover the score,
+    never the justification, which is the table's."""
+    from petab_mcp.viz import versions_tab as T
+
+    table = pd.DataFrame(
+        {
+            "version": [0, 1, 2],
+            "parent": [-1, 0, 0],
+            "criterion_value": [10.0, 8.0, 9.5],
+            "justification": ["start", "add a feedback", "try a delay"],
+            "kind": ["fit"] * 3,
+            "k": [2, 3, 3],
+            "n_starts": [10] * 3,
+            "criterion": ["bic"] * 3,
+        }
+    )
+    drawn = T.tree(T.frame(table), best=1, head=2, picked=2)
+    assert set(drawn["rows"][0]) == {"version", "parent", "k", "justification"}
+    assert drawn["rows"][2] == {"version": 2, "parent": 0, "k": 3, "justification": "try a delay"}
+    tips = [n["tip"] for n in drawn["nodes"]]
+    assert tips[2] == "v2 · bic 9.5 · -0.5 on v0 · k 3"
+    assert not any("delay" in t for t in tips)
+    assert [n["on_path"] for n in drawn["nodes"]] == [True, False, True]
+    assert [(e["from"], e["to"], e["on_path"]) for e in drawn["edges"]] == [
+        (0, 1, False),
+        (0, 2, True),
+    ]
