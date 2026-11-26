@@ -32,6 +32,7 @@ import pandas as pd
 import panel as pn
 
 from ..problem import experiment_inputs
+from . import key as K
 from . import style
 
 #: Experiments the tab shows at first.
@@ -51,6 +52,49 @@ TITLE_INPUTS = 3
 
 #: Residual weights beyond which a point is more than two noise sigmas off.
 BAND = 2.0
+
+FIT = """
+One card per experiment, the worst-fitted first; in each, one plot per measured quantity
+(observable). Dots are the measurements and their bars the noise the fit assumes for them (σ, one
+standard deviation). The line is what the model predicts with its fitted parameters, drawn through
+its values at the measured times, so it can cut corners between them.
+
+The χ² in each title adds up, over the plot's n measurements, the square of each dot's distance
+from the line in units of its σ. About n is a fit as good as the noise allows; far more means the
+model misses the data.
+
+Dashed vertical lines mark where the experiment changes what it does, such as adding a drug. The
+plots under the data show what it sets over time, and the card's last line what it holds fixed.
+"""
+
+CHI2_OBSERVABLE = """
+How badly each measured quantity is fitted, over all its measurements: each adds the square of its
+distance from the model's prediction, in units of its noise σ. A quantity measured n times fits as
+well as its noise allows at about χ² = n (hover a bar for its n). A bar far longer than its n is a
+quantity the model misses.
+"""
+
+CHI2_EXPERIMENT = """
+The same per experiment, for the 25 worst-fitted. Pick an experiment in the list above to see its
+data and the model's prediction side by side.
+"""
+
+RESIDUAL_TIME = """
+Each dot is one measurement's distance from the model's prediction in units of its noise σ (a
+weighted residual), against the time it was taken, coloured by what was measured; the experiments
+picked above only. If the model and its noise are right the dots scatter evenly around 0, about 95
+in 100 between the dashed lines at ±2. A run of dots on one side of 0, or a trend over time, is a
+feature of the data the model misses at those times.
+"""
+
+QQ = """
+Whether the misfit looks like the noise the fit assumes. Each dot is a weighted residual, sorted,
+against where the same number of sorted draws from a standard normal distribution would lie.
+
+On the dashed diagonal, the noise model holds. Steeper than the diagonal, the misfit is larger than
+σ allows: the model misses the data, or σ is too small. Flatter, σ is larger than the misfit needs.
+Dots that leave the diagonal only at its ends are a few outliers.
+"""
 
 
 def _fmt(value) -> str:
@@ -351,11 +395,13 @@ def observable_plot(
 
 
 def residual_views(sim: pd.DataFrame, chosen: list[str]) -> pn.viewable.Viewable:
-    by_obs = chi2(sim, "observable_id").reset_index().rename(columns={"residual_weighted": "chi2"})
-    by_exp = chi2(sim, "experiment_id").reset_index().rename(columns={"residual_weighted": "chi2"})
+    def per(by: str) -> pd.DataFrame:
+        out = chi2(sim, by).reset_index().rename(columns={"residual_weighted": "chi2"})
+        return out.assign(n=out[by].map(sim.groupby(by).size()))
+
+    by_obs, by_exp = per("observable_id"), per("experiment_id")
     by_exp["experiment_id"] = by_exp["experiment_id"].replace("", "(no experiment)")
-    bars_obs = hv.Bars(by_obs.iloc[::-1], "observable_id", "chi2").opts(
-        title="χ² per observable",
+    bars_obs = hv.Bars(by_obs.iloc[::-1], "observable_id", ["chi2", "n"]).opts(
         invert_axes=True,
         responsive=True,
         height=max(180, 26 * len(by_obs) + 80),
@@ -365,8 +411,7 @@ def residual_views(sim: pd.DataFrame, chosen: list[str]) -> pn.viewable.Viewable
         ylabel="χ²",
     )
     worst = by_exp.head(25).iloc[::-1]
-    bars_exp = hv.Bars(worst, "experiment_id", "chi2").opts(
-        title="χ² per experiment (worst 25)",
+    bars_exp = hv.Bars(worst, "experiment_id", ["chi2", "n"]).opts(
         invert_axes=True,
         responsive=True,
         height=max(180, 22 * len(worst) + 80),
@@ -388,9 +433,7 @@ def residual_views(sim: pd.DataFrame, chosen: list[str]) -> pn.viewable.Viewable
         tools=["hover"],
         responsive=True,
         height=300,
-        title="Weighted residual over time (the experiments shown)",
-        show_legend=True,
-        legend_position="right",
+        show_legend=False,
         ylabel="weighted residual",
     )
     band = (hv.HLine(BAND) * hv.HLine(-BAND) * hv.HLine(0)).opts(
@@ -409,22 +452,81 @@ def residual_views(sim: pd.DataFrame, chosen: list[str]) -> pn.viewable.Viewable
             * hv.Curve([(-lim, -lim), (lim, lim)], "normal quantile", "weighted residual").opts(
                 color=style.MUTED, line_dash="dashed"
             )
-        ).opts(title="Weighted residuals against a standard normal", responsive=True, height=300)
+        ).opts(responsive=True, height=300)
     else:
-        qq = hv.Curve([]).opts(title="No residuals")
+        qq = hv.Curve([]).opts(responsive=True, height=300)
+
+    def keyed(header: K.Key, plot) -> pn.Column:
+        return pn.Column(
+            header,
+            pn.pane.HoloViews(plot, linked_axes=False, sizing_mode="stretch_width"),
+            sizing_mode="stretch_width",
+        )
+
+    observables = [K.entry(o, color=c) for o, c in colors.items()]
     return pn.Column(
         pn.Row(
-            pn.pane.HoloViews(bars_obs, linked_axes=False, sizing_mode="stretch_width"),
-            pn.pane.HoloViews(bars_exp, linked_axes=False, sizing_mode="stretch_width"),
+            keyed(K.key("χ² per observable", CHI2_OBSERVABLE), bars_obs),
+            keyed(K.key("χ² per experiment (the worst 25)", CHI2_EXPERIMENT), bars_exp),
             sizing_mode="stretch_width",
         ),
         pn.Row(
-            pn.pane.HoloViews(scatter * band, linked_axes=False, sizing_mode="stretch_width"),
-            pn.pane.HoloViews(qq, linked_axes=False, sizing_mode="stretch_width"),
+            keyed(K.key("Weighted residual over time", RESIDUAL_TIME, observables), scatter * band),
+            keyed(
+                K.key(
+                    "Residuals against a standard normal",
+                    QQ,
+                    [
+                        K.entry("weighted residual", color=style.PALETTE[0]),
+                        K.entry("where noise alone puts them", mark="╍"),
+                    ],
+                ),
+                qq,
+            ),
             sizing_mode="stretch_width",
         ),
         sizing_mode="stretch_width",
     )
+
+
+def fit_entries(version, compare, error_bars: bool, show_periods: bool) -> list[dict]:
+    out = [
+        K.entry(
+            "measured" + (" ± σ" if error_bars else ""),
+            "One measurement" + ("; its bar is ± its noise σ." if error_bars else "."),
+            style.PALETTE[0],
+        ),
+        K.entry(
+            f"v{version}",
+            "The model's prediction at the measured times, with this version's fitted parameters.",
+            style.PALETTE[3],
+            "━",
+        ),
+    ]
+    if compare is not None:
+        out.append(
+            K.entry(
+                f"v{compare}", "The version compared with, for reference.", style.PALETTE[3], "╍"
+            )
+        )
+    if show_periods:
+        out += [
+            K.entry(
+                "a period starts",
+                "The experiment changes what it does here, such as adding or removing a drug.",
+                style.MUTED,
+                "┆",
+            ),
+            K.entry(
+                "what the experiment sets",
+                "Under the data: a quantity the experiment controls over time, such as a drug's "
+                "concentration. Dashed before the first period: the value held while the system "
+                "settled to steady state before the experiment began (pre-equilibration).",
+                style.PALETTE[2],
+                "━",
+            ),
+        ]
+    return out
 
 
 def design_table(problem, chosen: list[str], ends: dict[str, float]) -> pd.DataFrame:
@@ -603,23 +705,12 @@ class FitTab:
             cards.append(
                 pn.pane.Markdown("Nothing measured for the experiments and observables picked.")
             )
-        key = (
-            f"<span style='color:{style.PALETTE[0]}'>●</span> measured"
-            + (" ± noise σ" if error_bars else "")
-            + f" &nbsp; <span style='color:{style.PALETTE[3]}'>━</span> v{version}, simulated at"
-            " the measured times"
-            + (
-                f" &nbsp; <span style='color:{style.PALETTE[3]}'>╍</span> v{compare}"
-                if compare is not None
-                else ""
-            )
-            + (
-                " &nbsp; ┆ a period starts &nbsp; ━ under each: what the experiment sets"
-                if show_periods
-                else ""
-            )
+        cards.insert(
+            0,
+            K.key(
+                "Data and simulation", FIT, fit_entries(version, compare, error_bars, show_periods)
+            ),
         )
-        cards.insert(0, pn.pane.HTML(key, styles={"font-size": "12px", "color": style.MUTED}))
         observable_info = self._observable_table(sim)
         design = design_table(problem, experiments, ends)
         details = [

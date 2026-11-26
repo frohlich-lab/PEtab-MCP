@@ -23,7 +23,21 @@ import pandas as pd
 import panel as pn
 import param
 
+from . import key as K
 from . import style
+
+VERSIONS = """
+Every model the agent made in this session, as a family tree. Each dot is a version, numbered in
+the order it was made, left to right; a line joins it to the version it was edited from. When the
+agent went back to an earlier version and edited that instead, the new branch starts a row of its
+own, so each row is a line of work.
+
+Colour is each version's score: lower is better. The score rewards fitting the data and charges
+for every parameter, so a version that fits no better with more parameters scores worse.
+
+The table below lists the same versions with the agent's reason for each change. Hover a dot or a
+row to find the other; click either to show that version in every tab.
+"""
 
 
 def _parent(value) -> int | None:
@@ -155,12 +169,41 @@ def tree(df: pd.DataFrame, best: int | None, head: int | None, picked: int | Non
         for v, p in zip(df["version"], parents)
         if p is not None and p in known
     ]
-    legend = (
-        f"colour: {criterion}, yellow the lowest ({low:.4g}), purple the highest ({high:.4g})"
-        if scores
-        else ""
+    return {"nodes": nodes, "edges": edges, "rows": rows, "legend": legend(criterion, scores)}
+
+
+def legend(criterion: str, scores: list[float]) -> list[dict]:
+    """The tree's legend entries."""
+    about = (
+        f"Each version's {criterion}, lower is better: yellow the lowest, purple the highest, "
+        "grey a version with no score (a refused change or a failed fit)."
     )
-    return {"nodes": nodes, "edges": edges, "rows": rows, "legend": legend}
+    out = []
+    if scores:
+        out += [
+            K.entry(f"{criterion} {min(scores):.4g}, the lowest", about, _VIRIDIS[0]),
+            K.entry(f"{criterion} {max(scores):.4g}, the highest", about, _VIRIDIS[-1]),
+        ]
+    return out + [
+        K.entry(
+            "the best",
+            "Ringed: the version the server judged best so far.",
+            style.PALETTE[2],
+            "◯",
+        ),
+        K.entry(
+            "HEAD",
+            "The version the agent is working on: its next change will be made from it.",
+            style.PALETTE[1],
+            "▴",
+        ),
+        K.entry(
+            "the picked version's history",
+            "Bold: the edits that led from the first version to the one shown in the other tabs.",
+            style.PALETTE[3],
+            "━",
+        ),
+    ]
 
 
 class VersionTree(pn.custom.JSComponent):
@@ -170,13 +213,11 @@ class VersionTree(pn.custom.JSComponent):
     nodes = param.List(default=[])
     edges = param.List(default=[])
     rows = param.List(default=[])
-    legend = param.String(default="")
     picked = param.Integer(default=None, allow_None=True)
 
     _stylesheets = [
         """
     .vt { font-family: inherit; color: inherit; }
-    .vt .legend { font-size: 12px; opacity: .7; margin: 0 0 4px 4px; }
     .vt svg { display: block; width: 100%; }
     .vt .node { cursor: pointer; }
     .vt .node.hot circle.dot { stroke: #D55E00; stroke-width: 3; }
@@ -206,11 +247,10 @@ class VersionTree(pn.custom.JSComponent):
     export function render({ model, el }) {
       const root = document.createElement("div"); root.className = "vt";
       root.style.position = "relative";
-      const legend = document.createElement("div"); legend.className = "legend";
       const plot = svg("svg", {});
       const tip = document.createElement("div"); tip.className = "tip";
       const scroll = document.createElement("div"); scroll.className = "rows";
-      root.append(legend, plot, tip, scroll);
+      root.append(plot, tip, scroll);
       let marks = {}, rowsBy = {};
 
       function hot(v, on, fromTable) {
@@ -245,7 +285,6 @@ class VersionTree(pn.custom.JSComponent):
         plot.innerHTML = ""; marks = {};
         plot.setAttribute("viewBox", `0 0 ${width} ${height}`);
         plot.setAttribute("height", height);
-        legend.textContent = model.legend;
         const at = {}; nodes.forEach(n => at[n.version] = n);
         for (const e of model.edges) {
           const a = at[e.from], b = at[e.to]; if (!a || !b) continue;
@@ -301,7 +340,6 @@ class VersionTree(pn.custom.JSComponent):
       }
 
       model.on("nodes", () => { draw(); table(); });
-      model.on("legend", draw);
       new ResizeObserver(draw).observe(root);
       setTimeout(() => { draw(); table(); }, 0);
       return root;
@@ -335,11 +373,6 @@ class VersionsTab:
         if table.empty:
             return pn.pane.Markdown("No version yet.")
         drawn = tree(frame(table), store.best(), store.head(), version)
+        entries = drawn.pop("legend")
         self.component.param.update(picked=version, **drawn)
-        return pn.pane.Markdown(
-            "Each version is joined to the one it was made from; a fork from an earlier version "
-            "starts a lane. Ringed: the best. Bold: the picked version's line back to the first. "
-            "Hover a node or a row to find the other; click either to pick it.",
-            styles={"color": style.MUTED, "font-size": "12px"},
-            sizing_mode="stretch_width",
-        )
+        return K.key("Versions", VERSIONS, entries)

@@ -16,6 +16,7 @@ from bokeh.document import Document
 from petab_mcp.problem import WorkingProblem
 from petab_mcp.provenance import FIT_PROGRESS
 from petab_mcp.viz.app import VizApp
+from petab_mcp.viz.key import Key
 from petab_mcp.viz.store import Store
 
 hv.extension("bokeh")
@@ -105,6 +106,7 @@ import holoviews as hv, panel as pn
 from bokeh.document import Document
 from petab_mcp.problem import WorkingProblem
 from petab_mcp.viz.app import VizApp
+from petab_mcp.viz.key import Key
 from petab_mcp.viz.store import Store
 hv.extension("bokeh")
 app = VizApp(Store({str(root)!r}), WorkingProblem.from_yaml({str(yaml)!r}), poll_seconds=0)
@@ -175,8 +177,9 @@ def test_a_store_before_its_first_version_shows_its_first_fit(tmp_path, viz_stor
 
 
 def test_a_failed_starts_exit_is_explained_though_it_is_not_plotted(viz_store):
-    """Fujita v0's two NOT_FINITE starts were counted in the summary but missing from the caption,
+    """Fujita v0's two NOT_FINITE starts were counted in the summary but missing from the legend,
     which read only the waterfall's points, and a failed start has no objective to plot."""
+
     root, yaml = viz_store
     opt_path = root / "versions" / "v0" / "optimization.json"
     opt = json.loads(opt_path.read_text())
@@ -184,8 +187,10 @@ def test_a_failed_starts_exit_is_explained_though_it_is_not_plotted(viz_store):
     opt_path.write_text(json.dumps(opt))
     app = VizApp(Store(root), WorkingProblem.from_yaml(yaml), poll_seconds=0)
     view = app.multistart._version(0)
-    text = " ".join(str(o.object) for o in view.select(pn.pane.Markdown))
-    assert "stopped by the server" in text and "1 failed" in text
+    summary = " ".join(str(o.object) for o in view.select(pn.pane.Markdown))
+    legend = " ".join(e["label"] + e["about"] for k in view.select(Key) for e in k.entries)
+    assert "1 failed" in summary
+    assert "stopped by the server" in legend and "no objective, so they are not drawn" in legend
 
 
 def test_a_harness_adds_a_tab_that_follows_the_version(viz_store):
@@ -208,6 +213,21 @@ def test_a_harness_adds_a_tab_that_follows_the_version(viz_store):
     page.server_doc(Document())
     app.version_pick.value = 0
     assert seen[-1] == 0
+
+
+def test_only_clusters_many_starts_returned_to_get_a_colour():
+    """A waterfall cluster is a run of starts each within AT_BEST_NLL_TOL of the one before; one
+    or two starts on a step are not a fit the optimiser keeps finding, so they stay grey."""
+    from petab_mcp.viz.multistart_tab import OTHERS, cluster_colors, clusters
+
+    fval = [0.0, 0.4, 0.9, 1.5, 5.0, 5.2, 9.0, 9.1, 9.3, 20.0]
+    found = pd.Series(clusters(fval))
+    assert list(found) == [1, 1, 1, 1, 2, 2, 3, 3, 3, 4]
+    colours = cluster_colors(found)
+    assert set(colours) == {1, 3} and OTHERS not in colours.values()
+    # Among 300 starts a cluster needs 2 in 100 of them, 6, except the best, which needs 3.
+    many = pd.Series([1] * 3 + [2] * 5 + [3] * 6 + [4] * 286)
+    assert set(cluster_colors(many)) == {1, 3, 4}
 
 
 def test_the_exit_names_are_fides_own():

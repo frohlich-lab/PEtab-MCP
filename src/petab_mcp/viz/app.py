@@ -27,6 +27,7 @@ import panel as pn
 import param
 
 from ..problem import WorkingProblem
+from . import key as K
 from . import style
 from .fit_tab import FitTab
 from .model_tab import ModelTab
@@ -37,6 +38,12 @@ from .versions_tab import VersionsTab
 #: The *Compare with* choice that follows the picked version's parent.
 PARENT = "parent"
 NONE = "nothing"
+
+TIMELINE = """
+Each version's score ({criterion}, lower is better) against its number, in the order the agent
+made them. A grey line joins each version to the one it was edited from, so a step down is a change
+that helped and a step up one that did not.
+"""
 
 
 class VizApp(param.Parameterized):
@@ -163,15 +170,30 @@ class VizApp(param.Parameterized):
                 )
             tap = hv.streams.Tap(source=points)
             tap.add_subscriber(lambda x, y: self._tapped(x))
+            criterion = df["criterion"].iloc[-1]
             overlay = (path * points * hv.Overlay(marks)).opts(
                 height=230,
                 responsive=True,
                 xlabel="version",
-                ylabel=df["criterion"].iloc[-1],
-                title=f"HEAD v{head}" + (f" · best v{best} (ringed)" if best is not None else ""),
+                ylabel=criterion,
                 toolbar=None,
             )
-            return pn.pane.HoloViews(overlay, linked_axes=False, sizing_mode="stretch_width")
+            key = K.key(
+                f"HEAD v{head}" + (f" · best v{best}" if best is not None else ""),
+                TIMELINE.format(criterion=criterion),
+                [
+                    K.entry("a version", "Click one to show it in every tab.", style.PALETTE[0]),
+                    K.entry("shown", "The version the tabs show.", style.PALETTE[3]),
+                    K.entry(
+                        "the best", "The version the server judged best.", style.PALETTE[2], "◯"
+                    ),
+                ],
+            )
+            return pn.Column(
+                key,
+                pn.pane.HoloViews(overlay, linked_axes=False, sizing_mode="stretch_width"),
+                sizing_mode="stretch_width",
+            )
 
         return pn.panel(pn.bind(plot, self.param.tick, self.param.version))
 

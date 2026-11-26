@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 import panel as pn
 
+from . import key as K
 from . import model_math as MM
 from . import style
 
@@ -181,41 +182,102 @@ def draw(
     return hv.Overlay(layers), nodes
 
 
-def legend(levels: dict[str, MM.Graph]) -> str:
-    """The edge kinds the model's levels draw, and the diff's marks."""
-    present = {k for graph in levels.values() for k in graph.edges["kind"]}
-    present |= {"consumes"} if {"consumes", "produces"} & present else set()
-    kinds = [k for k in (*MM.EDGE_KINDS, "consumes") if k in present and k in style.EDGES]
-    spans = " ".join(
-        f"<span style='color:{style.EDGES[k][0]}'>━ {'consumes / produces' if k == 'consumes' else k}</span>"
-        for k in kinds
-    )
-    kinds_present = {k for graph in levels.values() for k in graph.nodes["kind"]}
-    shapes = {
-        "agent": "● agent",
-        "species": "● species",
-        "row": "■ statement",
-        "reaction": "▪ reaction",
-        "observable": "◆ observable",
-    }
-    nodes = " ".join(
-        f"<span style='color:{style.NODES[k][1]}'>{label}</span>"
-        for k, label in shapes.items()
-        if k in kinds_present
-    )
-    return (
-        f"{nodes} &nbsp;·&nbsp; {spans} &nbsp;·&nbsp; "
-        f"<span style='color:{style.ADDED}'>◯ new</span> "
-        f"<span style='color:{style.PALETTE[1]}'>◯ changed</span> "
-        f"<span style='color:{style.REMOVED}'>● only in the compared version</span>"
-    )
+#: What each kind of node stands for, with its legend mark.
+NODE_ABOUT = {
+    "agent": (
+        "●",
+        "agent",
+        "A molecule (a protein, a gene, a drug) with all its forms and complexes together.",
+    ),
+    "species": (
+        "●",
+        "species",
+        "One molecular form, such as phosphorylated EGFR or a complex: one "
+        "variable of the model, with one equation.",
+    ),
+    "row": (
+        "■",
+        "statement",
+        'One statement the agent wrote, such as "A phosphorylates B", which '
+        "the server turned into reactions.",
+    ),
+    "reaction": ("▪", "reaction", "One reaction, its speed set by its rate law."),
+    "observable": (
+        "◆",
+        "observable",
+        "A measured quantity: what the model predicts the experiment "
+        "read out, computed from the species it is joined to.",
+    ),
+}
+
+#: What each kind of edge means.
+EDGE_ABOUT = {
+    "activates": "More of the source makes the target rise faster or fall slower.",
+    "inhibits": "More of the source makes the target rise slower or fall faster; drawn with a bar "
+    "for a head.",
+    "modulates": "The source changes how fast the target changes, but which way depends on the "
+    "state. Between a species and a reaction: it changes the reaction's speed without being used "
+    "up, as an enzyme does.",
+    "modifies": "A statement in which the source changes the target's state, such as "
+    "phosphorylating it.",
+    "converts": "The source turns into the target, such as a translocation between compartments.",
+    "binds": "The two bind each other in a complex.",
+    "role": "Joins a statement to the agents it names, from the one that acts to the one acted on.",
+    "reads": "The observable is computed from this species.",
+    "consumes": "A reaction uses up the species on the line into it and makes the species on the "
+    "line out of it.",
+}
+
+GRAPH = """
+The model as a network of its molecules and what they do to each other. Zoomed out it shows only
+who influences whom; scroll to zoom in and each part splits into its detail where it stands
+({levels}). The buttons fix one level. Drag to move around; click a node for its equations.
+
+An arrow from A to B means A changes how fast B changes, its colour which way. Measured quantities
+(observables) hang off the species they are computed from. Compared with another version, new and
+changed nodes are ringed and what is gone is drawn faint.
+"""
+
+EQUATIONS = """
+The model's equations. A species' line says how fast its amount changes (d/dt): the reactions that
+make it minus those that use it up, each written as its rate law in the model's parameters and
+species. Its initial value is its amount when an experiment begins. An observable's lines are what
+the model predicts for a measurement and the noise (σ) the fit assumes for it.
+
+Click a node in the graph to show only its equations. "Fitted values" puts the fitted numbers in
+place of the parameter names.
+"""
 
 
-#: How to drive the graph, above it.
-HINT = (
-    "Scroll to zoom: the graph shows more detail the further in you go ({levels}); the buttons "
-    "fix one level. Click a node for its equations."
-)
+def legend(levels: dict[str, MM.Graph], comparing: bool) -> list[dict]:
+    """The node and edge kinds the model's levels draw, and, ``comparing``, the diff's marks."""
+    nodes = {k for graph in levels.values() for k in graph.nodes["kind"]}
+    edges = {k for graph in levels.values() for k in graph.edges["kind"]}
+    edges |= {"consumes"} if {"consumes", "produces"} & edges else set()
+    out = [
+        K.entry(label, about, style.NODES[k][1], mark)
+        for k, (mark, label, about) in NODE_ABOUT.items()
+        if k in nodes
+    ]
+    out += [
+        K.entry(
+            "consumes / produces" if k == "consumes" else k,
+            EDGE_ABOUT[k],
+            style.EDGES[k][0],
+            "╍" if style.EDGES[k][1] != "solid" else "━",
+        )
+        for k in (*MM.EDGE_KINDS, "consumes")
+        if k in edges and k in style.EDGES and k in EDGE_ABOUT
+    ]
+    if comparing:
+        out += [
+            K.entry("new", "Not in the version compared with.", style.ADDED, "◯"),
+            K.entry(
+                "changed", "A statement or reaction whose text changed.", style.PALETTE[1], "◯"
+            ),
+            K.entry("gone", "Only in the version compared with.", style.REMOVED),
+        ]
+    return out
 
 
 class ModelTab:
@@ -322,6 +384,7 @@ class ModelTab:
             return self._equations(math_, drawn.get("nodes"), x, y, values if fitted else None)
 
         side = pn.Column(
+            K.key("Equations", EQUATIONS),
             self.fitted,
             pn.bind(pane, tap.param.x, tap.param.y, self.fitted),
             width=420,
@@ -330,18 +393,12 @@ class ModelTab:
             styles={"flex": "0 0 420px"},
         )
         parts = [
+            K.key(
+                "Model graph",
+                GRAPH.format(levels=" → ".join(available)),
+                legend(levels, compare is not None),
+            ),
             self.level,
-            pn.pane.Markdown(
-                HINT.format(levels=" → ".join(available)),
-                sizing_mode="stretch_width",
-                styles={"color": style.MUTED, "font-size": "12px"},
-                margin=(0, 10),
-            ),
-            pn.pane.HTML(
-                legend(levels),
-                sizing_mode="stretch_width",
-                styles={"font-size": "12px", "white-space": "normal"},
-            ),
             # The equations beside the graph where there is room, under it where there is not: in
             # a narrow window they ran off the page's edge.
             pn.FlexBox(
