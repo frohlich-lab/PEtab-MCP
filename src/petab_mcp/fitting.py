@@ -1513,6 +1513,8 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     optimization["x_scales"] = [str(s) for s in problem.x_scales]
     optimization["n_starts_killed"] = len(killed)
     optimization["n_starts_at_best"] = n_converged
+    # ...out of the starts that ended at a finite objective, the only ones that could reach it.
+    optimization["n_starts_finite"] = len(fvals)
     optimization["result_file"] = _write_pypesto_result(session, result, session.problem_hash())
     return {
         "fitted": fitted,
@@ -1880,6 +1882,7 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
             "n_starts_at_best": (
                 (fit["optimization"] or {}).get("n_starts_at_best") if fit else None
             ),
+            "n_starts_finite": (fit["optimization"] or {}).get("n_starts_finite") if fit else None,
             "records": records,
             "state_trajectories": sim["state_trajectories"],
             "objective_before": fit["objective_before"] if fit else None,

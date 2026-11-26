@@ -396,6 +396,8 @@ def test_a_stopped_start_reaches_the_result_the_version_and_the_de_dup(fit_sessi
 
     assert out["committed"] is True and out["neg_log_likelihood"] is not None
     assert out["n_starts"] == 3 and out["n_starts_killed"] == 1
+    # ...and out of the starts that could reach the best, for the share there.
+    assert fit_session.simulation["n_starts_finite"] == 2
     assert "Starts stopped past the 42s per-start cap: 1 of 3" in out["warnings"][-1]
     assert fit_session.provenance.get_meta(out["version"])["n_starts_killed"] == 1
     stored = fit_session.provenance.get_version(out["version"])["optimization"]
@@ -464,38 +466,36 @@ def test_a_fit_whose_starts_mostly_run_out_of_time_says_more_starts_will_not_hel
     )
 
 
-def test_a_raised_fit_that_still_leaves_one_start_at_the_best_names_a_needle(
-    fit_session, monkeypatch
-):
-    """dessauges raised `n_starts` step by step to 8000, each fit with 1 start at the best
-    (PEtab-MCP#287): a raised fit that still leaves 1 or 2 there says the optimum is a needle. One
-    at the default does not, since there a raise is still the advice, and neither does one where
-    those are half the starts or more."""
-    real, at_best = fitting.fit_and_simulate, {"n": 1}
-
-    def forced_at_best(*args, **kwargs):
-        out = real(*args, **kwargs)
-        out["n_starts_at_best"] = at_best["n"]
-        return out
-
-    monkeypatch.setattr(fitting, "fit_and_simulate", forced_at_best)
-    assert not any("needle" in w for w in fit_session.fit()["warnings"])
-    raised = fit_session.fit(n_starts=3)
-    assert any("1 of 3 starts reached" in w and "needle" in w for w in raised["warnings"])
-    at_best["n"] = 2
-    assert not any("needle" in w for w in fit_session.fit(n_starts=4)["warnings"])
-
-
 def _force_at_best(monkeypatch, at_best: dict[str, int]) -> None:
-    """Every fit reports ``at_best["n"]`` starts at the best, read when the fit returns."""
+    """Every fit reports ``at_best["n"]`` starts at the best, and ``at_best["finite"]`` that ended
+    at a finite objective where it is given, read when the fit returns."""
     real = fitting.fit_and_simulate
 
     def forced(*args, **kwargs):
         out = real(*args, **kwargs)
         out["n_starts_at_best"] = at_best["n"]
+        if "finite" in at_best:
+            out["n_starts_finite"] = at_best["finite"]
         return out
 
     monkeypatch.setattr(fitting, "fit_and_simulate", forced)
+
+
+def test_a_raised_fit_below_the_cap_with_one_start_at_the_best_is_told_to_raise_again(
+    fit_session, monkeypatch
+):
+    """The needle warning told every raised fit with 1 or 2 starts at the best that more starts
+    would not help (PEtab-MCP#287), so on the agent runs' default of 5 a 10-start fit was told so,
+    though 10 starts of Fujita v5-v8 miss the optimum 57-81% of the time and more fix it. Below the
+    cap such a fit is told to raise; only at the cap, where no raise is open, to narrow the bounds
+    or reformulate."""
+    _force_at_best(monkeypatch, {"n": 1})
+    cap = fit_session.max_fit_starts  # 20, on the fixture's default of 2
+    raised = [w for w in fit_session.fit(n_starts=10)["warnings"] if "1 of 10 starts" in w]
+    assert len(raised) == 1 and f"above this fit's 10 (at most {cap})" in raised[0]
+    assert "needle" not in raised[0]
+    at_cap = [w for w in fit_session.fit(n_starts=cap)["warnings"] if f"1 of {cap} starts" in w]
+    assert len(at_cap) == 1 and "a raise is not open" in at_cap[0]
 
 
 def test_a_default_fit_with_few_of_its_starts_at_the_best_says_refit_before_editing(
@@ -503,8 +503,8 @@ def test_a_default_fit_with_few_of_its_starts_at_the_best_says_refit_before_edit
 ):
     """A fit at the default count with few starts at the best warned of nothing, so the agent read
     its score as the structure's and edited the model rather than raising `n_starts`. It now says
-    to refit first once the starts at the best are 20% or fewer of those completed: 1 of 5 is, 1
-    of 3 is not."""
+    to refit first once the starts at the best are 20% or fewer of those that did not fail: 1 of 5
+    is, 1 of 3 is not."""
     _force_at_best(monkeypatch, {"n": 1})
     fit_session.auto_fit_starts = 3
     assert not any("starts reached the best" in w for w in fit_session.fit()["warnings"])
@@ -512,22 +512,29 @@ def test_a_default_fit_with_few_of_its_starts_at_the_best_says_refit_before_edit
     fit_session.auto_fit_starts = 5
     warned = [w for w in fit_session.fit()["warnings"] if "1 of 5 starts reached" in w]
     assert len(warned) == 1
-    assert "20% of those that completed" in warned[0]
+    assert "20% of those that did not fail" in warned[0]
     assert "`n_starts` above this fit's 5 (at most 50)" in warned[0]
+
+
+def test_the_share_at_the_best_leaves_out_the_starts_that_failed(fit_session, monkeypatch):
+    """The share counted every start not stopped past its cap, so a fit that lost starts
+    NOT_FINITE looked like one that missed the optimum: 1 at the best of 5 with 1 failed was warned
+    at 20%, though it is 1 of the 4 that could reach the best."""
+    _force_at_best(monkeypatch, {"n": 1, "finite": 4})
+    fit_session.auto_fit_starts = 5
+    assert not any("starts reached the best" in w for w in fit_session.fit()["warnings"])
 
 
 def test_a_raised_fit_with_few_of_its_starts_at_the_best_warns_too(fit_session, monkeypatch):
     """The warning was confined to fits at the default, so an A/B run whose agent fitted every
-    model at a raised count never saw it. A raised fit with 20% or fewer of its starts at the best,
-    and too many there to be a needle, says to raise again while it can, and at the cap that it
-    cannot."""
+    model at a raised count never saw it. A raised fit with 20% or fewer of its starts at the best
+    says to raise again while it can, and at the cap that it cannot."""
     _force_at_best(monkeypatch, {"n": 3})
     cap = fit_session.max_fit_starts  # 20, on the fixture's default of 2
     raised = [w for w in fit_session.fit(n_starts=15)["warnings"] if "3 of 15 starts" in w]
     assert len(raised) == 1 and f"above this fit's 15 (at most {cap})" in raised[0]
     at_cap = [w for w in fit_session.fit(n_starts=cap)["warnings"] if f"3 of {cap} starts" in w]
     assert len(at_cap) == 1 and "a raise is not open" in at_cap[0]
-    assert "needle" not in at_cap[0]
 
 
 def test_a_refit_at_the_cap_is_not_offered_more_starts(fit_session):

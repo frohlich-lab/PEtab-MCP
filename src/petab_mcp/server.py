@@ -1238,11 +1238,11 @@ _MAKE_CHANGES_PARAMETERS_ROUTE = (
 _MAKE_CHANGES_CONTRACT = f"""\
 `n_starts` REPLACES the configured multistart count (`describe_problem` → \
 `fit_n_starts_default`) rather than adding to it, and may be at most {MAX_FIT_STARTS_FACTOR}x it: \
-omit it unless you want MORE; below it fits LESS hard. MORE is warranted once, when \
-`starts_at_best` shows only 1 or 2 starts reaching the best value; if the raised fit still shows 1 \
-or 2, the optimum is a needle, and the model needs reformulating where it is that sharp (a \
-switch-like term), not more starts. Starts multiply the fit's wall time, and do not help starts \
-that run out of the per-start time limit (`ExitFlag.MAXTIME`).
+omit it unless you want MORE; below it fits LESS hard. MORE is warranted when a fit warns that few \
+of its starts reached the best value, up to the cap; a fit at the cap that still warns needs \
+narrower bounds or a reformulation where its optimum is sharp (a switch-like term), not more \
+starts. Starts multiply the fit's wall time, and do not help starts that run out of the per-start \
+time limit (`ExitFlag.MAXTIME`).
 
 A REFIT is a call with no model route: `parameters` and/or `n_starts` alone fit the current \
 model again (version N's with `base_version=N`) as a new version. One with neither new bounds nor more starts than that model ran is refused.

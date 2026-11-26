@@ -107,32 +107,37 @@ _SIGMA_COLLAPSED_ADVICE = (
     "residuals to ~0."
 )
 
-# A fit's optimum only 1 or 2 starts of a raised multistart reach (PEtab-MCP#287), for the
-# `n_starts` cap's refusal and the warning on such a fit.
-_NEEDLE_ADVICE = (
-    "the optimum is a needle, and more starts will not make it reliable: reformulate the model "
-    "where it is that sharp (a switch-like term, e.g. a steep Hill exponent or a gate at a bound; "
+#: What a fit that may not run more starts does instead, for the `n_starts` cap's refusal and the
+#: warning on a fit at the cap few of whose starts reached the best. Only at the cap. The needle
+#: warning (PEtab-MCP#287) said more starts would not help any raised fit with 1 or 2 starts at the
+#: best, so on the agent runs' default of 5 it said so of every 10-start fit that warned, though a
+#: 10-start fit of Fujita v5-v8 misses the optimum 57-81% of the time and more starts fix it.
+#: Below the cap 1 or 2 at the best cannot tell a narrow optimum from a short search, and a raise
+#: is still open, so do not add a needle verdict back there.
+_AT_CAP_ADVICE = (
+    "narrow the bounds, or reformulate the model where its starts disagree or its optimum is a "
+    "needle (a switch-like term, e.g. a steep Hill exponent or a gate at a bound; "
     "`get_fit_diagnosis(sections='parameters')`)"
 )
 
-#: The share of completed starts at or below which a fit is warned that the optimizer may have
+#: The share of finished starts at or below which a fit is warned that the optimizer may have
 #: missed this structure's optimum, so a raise comes before an edit. A share, not a count: 2 of 5
-#: at the best is a fair search, 2 of 100 is not. At any number of starts: a raised fit whose
-#: starts mostly miss the best has the same problem, short of the needle case above.
+#: at the best is a fair search, 2 of 100 is not. Of the starts that ended at a finite objective:
+#: a start that failed (NOT_FINITE, raised, stopped past its cap) never had the chance to reach
+#: the best, and counting it made a fit that lost starts look like one that missed the optimum.
 _LOW_CONVERGENCE_FRACTION = 0.2
 _LOW_CONVERGENCE = (
-    "{pct:.0%} of those that completed, so the optimizer may not have found this structure's "
+    "{pct:.0%} of those that did not fail, so the optimizer may not have found this structure's "
     "optimum and its score may understate the model"
 )
 _LOW_CONVERGENCE_RAISE = (
     "Refit it before changing the model: `make_changes` with `n_starts` above this fit's "
-    "{starts} (at most {cap}) and no model route. If the raised fit still leaves 1 or 2 at the "
-    "best, the optimum is a needle"
+    "{starts} (at most {cap}) and no model route"
 )
 _LOW_CONVERGENCE_AT_CAP = (
-    "This fit already ran the most starts a fit may ({cap}), so a raise is not open: narrow the "
-    "bounds or reformulate where the starts disagree "
-    "(`get_fit_diagnosis(sections='parameters')`) before judging the structure on this score"
+    "This fit already ran the most starts a fit may ({cap}), so a raise is not open: "
+    + _AT_CAP_ADVICE
+    + ", before judging the structure on this score"
 )
 
 #: The :meth:`PetabSession.progress_report` keys a fit result carries, each only when set;
@@ -1105,7 +1110,8 @@ class PetabSession:
         if n_starts > (cap := self.max_fit_starts):
             raise ValidationError(
                 f"n_starts must be at most {cap}, {MAX_FIT_STARTS_FACTOR}x the default, got "
-                f"{n_starts}. If a raise still leaves 1 or 2 starts at the best, {_NEEDLE_ADVICE}."
+                f"{n_starts}. Where a fit at the cap still leaves few of its starts at the best, "
+                f"{_AT_CAP_ADVICE}."
             )
         return n_starts
 
@@ -1688,7 +1694,8 @@ class PetabSession:
             timed_out = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.MAXTIME", 0) + (
                 killed or 0
             )
-            completed = starts - (killed or 0)
+            # The starts that ended at a finite objective, the ones that could reach the best.
+            finished = fitsim.get("n_starts_finite") or 0
             if 2 * timed_out > starts:
                 warnings = [
                     *warnings,
@@ -1698,23 +1705,12 @@ class PetabSession:
                     "hit it too. The usual causes are a stiff or badly scaled model, or bounds "
                     "that allow extreme rates.",
                 ]
-            # A raise that still leaves 1 or 2 starts at the best, fewer than half of those that
-            # ran to the end (2 of 2 completed is no needle): more will not help (#287).
-            elif (
-                starts > self.auto_fit_starts
-                and (at_best := fitsim.get("n_starts_at_best")) in (1, 2)
-                and 2 * at_best < completed
-            ):
-                warnings = [
-                    *warnings,
-                    f"{at_best} of {starts} starts reached the best value, though this fit ran "
-                    f"more than the default {self.auto_fit_starts}: {_NEEDLE_ADVICE}.",
-                ]
-            # Few of the completed starts at the best, at any number of starts: the score may
-            # understate the structure, so a raise comes before an edit, while one is open.
+            # Few of the finished starts at the best, at any number of starts: the score may
+            # understate the structure, so a raise comes before an edit while one is open, and at
+            # the cap the search changes shape instead (see `_AT_CAP_ADVICE`).
             elif (
                 at_best := fitsim.get("n_starts_at_best")
-            ) and at_best <= _LOW_CONVERGENCE_FRACTION * completed:
+            ) and at_best <= _LOW_CONVERGENCE_FRACTION * finished:
                 cap = self.max_fit_starts
                 next_step = (
                     _LOW_CONVERGENCE_RAISE.format(starts=starts, cap=cap)
@@ -1724,7 +1720,7 @@ class PetabSession:
                 warnings = [
                     *warnings,
                     f"{at_best} of {starts} starts reached the best value, "
-                    f"{_LOW_CONVERGENCE.format(pct=at_best / completed)}. {next_step}.",
+                    f"{_LOW_CONVERGENCE.format(pct=at_best / finished)}. {next_step}.",
                 ]
             # Most starts stopped on a value that is not a number (PEtab-MCP#285).
             not_finite = (fitsim.get("exitflag_counts") or {}).get("ExitFlag.NOT_FINITE", 0)
