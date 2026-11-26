@@ -147,7 +147,9 @@ def waterfall(df: pd.DataFrame) -> tuple[hv.Overlay, hv.Points]:
         active_tools=["box_select"],
         nonselection_alpha=0.3,
         show_legend=True,
-        legend_position="right",
+        # Inside, in the corner a waterfall leaves empty (good starts sit low on the left, bad ones
+        # high on the right): outside, it took most of a narrow window.
+        legend_position="top_left",
         xlabel="start rank (best first)",
         ylabel=f"objective − best + {OFFSET:g}",
         responsive=True,
@@ -416,13 +418,18 @@ class MultistartTab:
         )
         return pn.Column(
             pn.pane.Markdown(summary(meta, opt, starts)),
-            pn.Row(
-                pn.pane.HoloViews(fall, linked_axes=False, sizing_mode="stretch_width"),
+            # Side by side where there is room, one above the other where there is not.
+            pn.FlexBox(
+                pn.pane.HoloViews(
+                    fall, linked_axes=False, sizing_mode="stretch_width", min_width=420
+                ),
                 pn.Column(
                     self.axis,
                     pn.pane.HoloViews(trace_map, linked_axes=False, sizing_mode="stretch_width"),
                     sizing_mode="stretch_width",
+                    min_width=420,
                 ),
+                flex_wrap="wrap",
                 sizing_mode="stretch_width",
             ),
             pn.pane.Markdown(
