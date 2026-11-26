@@ -7,10 +7,14 @@ version as the server writes it.
 
 Each browser session gets its own :class:`VizApp`, which polls the store (:meth:`Store.signature`)
 every ``poll_seconds`` and redraws what changed: a new version, or the running fit's progress.
+
+A harness adds what it alone knows as ``extra_tabs`` (gemot, the agents' conversation): each a
+title and a function of the app, whose ``version`` and ``tick`` its view can follow.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import holoviews as hv
@@ -42,9 +46,11 @@ class VizApp(param.Parameterized):
         problem: WorkingProblem,
         poll_seconds: float = 3.0,
         title: str = "PEtab-MCP",
+        extra_tabs: Sequence[tuple[str, Callable[[VizApp], pn.viewable.Viewable]]] = (),
     ) -> None:
         super().__init__()
         self.store, self.problem, self.title = store, problem, title
+        self.extra_tabs = list(extra_tabs)
         self.poll_seconds = poll_seconds
         self._signature = store.signature()
         self.version_pick = pn.widgets.Select(name="Version", sizing_mode="stretch_width")
@@ -209,6 +215,7 @@ class VizApp(param.Parameterized):
             ("Multistart", self.multistart.view()),
             ("Model", self.model.view()),
             ("Fit", self.fit.view()),
+            *[(name, view(self)) for name, view in self.extra_tabs],
             dynamic=True,
             sizing_mode="stretch_width",
         )
@@ -231,16 +238,19 @@ class VizApp(param.Parameterized):
 
 
 def build(
-    store_root: str | Path, petab_yaml: str | Path, poll_seconds: float = 3.0
+    store_root: str | Path,
+    petab_yaml: str | Path,
+    poll_seconds: float = 3.0,
+    extra_tabs: Sequence[tuple[str, Callable[[VizApp], pn.viewable.Viewable]]] = (),
+    title: str | None = None,
 ) -> pn.viewable.Viewable:
     """The page for the store at ``store_root`` of the problem at ``petab_yaml``, for ``pn.serve``
     or a notebook."""
     hv.extension("bokeh")
     store = Store(store_root)
     problem = WorkingProblem.from_yaml(petab_yaml)
-    return VizApp(
-        store, problem, poll_seconds, title=f"PEtab-MCP · {problem_name(petab_yaml)}"
-    ).view()
+    title = title or f"PEtab-MCP · {problem_name(petab_yaml)}"
+    return VizApp(store, problem, poll_seconds, title=title, extra_tabs=extra_tabs).view()
 
 
 def problem_name(petab_yaml: str | Path) -> str:

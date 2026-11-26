@@ -362,6 +362,14 @@ class ModelTab:
                     sizing_mode="stretch_width",
                 )
             )
+        parts.append(
+            pn.Card(
+                pn.pane.Markdown(f"```\n{self.app.store.antimony(version)}\n```"),
+                title="Model as Antimony",
+                collapsed=True,
+                sizing_mode="stretch_width",
+            )
+        )
         return pn.Column(*parts, sizing_mode="stretch_width")
 
     def _values(self, version: int) -> dict[str, float]:

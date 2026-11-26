@@ -185,3 +185,25 @@ def test_a_failed_starts_exit_is_explained_though_it_is_not_plotted(viz_store):
     view = app.multistart._version(0)
     text = " ".join(str(o.object) for o in view.select(pn.pane.Markdown))
     assert "stopped by the server" in text and "1 failed" in text
+
+
+def test_a_harness_adds_a_tab_that_follows_the_version(viz_store):
+    """gemot's explorer is the viewer plus the agents' conversation, a tab only it can build."""
+    root, yaml = viz_store
+    seen = []
+
+    def conversation(viz):
+        return pn.bind(
+            lambda version: seen.append(version) or f"turns of v{version}", viz.param.version
+        )
+
+    app = VizApp(
+        Store(root),
+        WorkingProblem.from_yaml(yaml),
+        poll_seconds=0,
+        extra_tabs=[("Conversation", conversation)],
+    )
+    page = app.view()
+    page.server_doc(Document())
+    app.version_pick.value = 0
+    assert seen[-1] == 0
