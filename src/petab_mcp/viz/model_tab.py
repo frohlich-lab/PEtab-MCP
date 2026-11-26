@@ -254,7 +254,12 @@ class ModelTab:
 
     # -- the view ------------------------------------------------------------------------------
     def view(self) -> pn.viewable.Viewable:
-        return pn.bind(self._version, self.app.param.version, self.app.param.compare)
+        # lazy: built when the tab is first shown, not with the page (see app.VizApp.view).
+        return pn.panel(
+            pn.bind(self._version, self.app.param.version, self.app.param.compare),
+            lazy=True,
+            sizing_mode="stretch_width",
+        )
 
     def _version(self, version, compare):
         if version is None:

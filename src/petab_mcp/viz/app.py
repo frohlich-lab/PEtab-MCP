@@ -10,6 +10,10 @@ every ``poll_seconds`` and redraws what changed: a new version, or the running f
 
 A harness adds what it alone knows as ``extra_tabs`` (gemot, the agents' conversation): each a
 title and a function of the app, whose ``version`` and ``tick`` its view can follow.
+
+Only the tab shown is computed: the others are ``lazy`` panes, built when first opened. Built with
+the page, as ``pn.Tabs(dynamic=True)`` alone leaves them, Fujita's Model and Fit tabs added 0.7 s to
+a page that showed neither, and a harness's conversation tab a Phoenix fetch.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from .fit_tab import FitTab
 from .model_tab import ModelTab
 from .multistart_tab import MultistartTab
 from .store import Store
+from .versions_tab import VersionsTab
 
 #: The *Compare with* choice that follows the picked version's parent.
 PARENT = "parent"
@@ -47,10 +52,13 @@ class VizApp(param.Parameterized):
         poll_seconds: float = 3.0,
         title: str = "PEtab-MCP",
         extra_tabs: Sequence[tuple[str, Callable[[VizApp], pn.viewable.Viewable]]] = (),
+        inputs: Sequence = (),
     ) -> None:
         super().__init__()
         self.store, self.problem, self.title = store, problem, title
         self.extra_tabs = list(extra_tabs)
+        #: The problem's ``inputs.tsv`` protocols (:mod:`petab_mcp.protocols`), for the Fit tab.
+        self.inputs = tuple(inputs)
         self.poll_seconds = poll_seconds
         self._signature = store.signature()
         self.version_pick = pn.widgets.Select(name="Version", sizing_mode="stretch_width")
@@ -59,6 +67,7 @@ class VizApp(param.Parameterized):
         self.version_pick.param.watch(self._picked, "value")
         self.compare_pick.param.watch(self._compare_picked, "value")
         self._refresh_choices(move=True)
+        self.versions = VersionsTab(self)
         self.multistart, self.model, self.fit = MultistartTab(self), ModelTab(self), FitTab(self)
 
     # -- choices -------------------------------------------------------------------------------
@@ -212,6 +221,7 @@ class VizApp(param.Parameterized):
         # A spinner over whatever is recomputing: a large model's first layout takes seconds.
         pn.config.loading_indicator = True
         tabs = pn.Tabs(
+            ("Versions", self.versions.view()),
             ("Multistart", self.multistart.view()),
             ("Model", self.model.view()),
             ("Fit", self.fit.view()),
@@ -246,11 +256,19 @@ def build(
 ) -> pn.viewable.Viewable:
     """The page for the store at ``store_root`` of the problem at ``petab_yaml``, for ``pn.serve``
     or a notebook."""
+    from ..protocols import ProtocolError, read
+
     hv.extension("bokeh")
     store = Store(store_root)
     problem = WorkingProblem.from_yaml(petab_yaml)
+    try:
+        inputs = read(Path(petab_yaml).parent)
+    except ProtocolError:  # the server refuses such a problem; the viewer shows it without them
+        inputs = ()
     title = title or f"PEtab-MCP · {problem_name(petab_yaml)}"
-    return VizApp(store, problem, poll_seconds, title=title, extra_tabs=extra_tabs).view()
+    return VizApp(
+        store, problem, poll_seconds, title=title, extra_tabs=extra_tabs, inputs=inputs
+    ).view()
 
 
 def problem_name(petab_yaml: str | Path) -> str:

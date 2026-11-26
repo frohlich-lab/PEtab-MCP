@@ -4,27 +4,27 @@ A version stores its simulation at the measured points only (``simulations.json`
 through them is drawn straight between measurement times: it is the fit as scored, not the model's
 trajectory between the points.
 
-**Experiments and their periods, without a wall of text.** A PEtab v2 experiment is a sequence of
-periods, each applying one or more conditions, which set targets (a dose, an amount) from its start
-time on; a pre-equilibration period runs to steady state first. Most of that is the same in every
-experiment, so the tab says only what tells them apart, in layers:
+**What each experiment does, under its data.** A PEtab v2 experiment is a sequence of periods,
+each applying conditions that set targets (a dose, an amount) from its start; a pre-equilibration
+period runs to steady state first; and a problem's ``inputs.tsv`` declares inputs that change within
+a period (a ramp), set per experiment by condition targets (:mod:`petab_mcp.protocols`). Each
+experiment is a card, titled by the inputs that set it apart, its chi2 and its pre-equilibration,
+holding its observables on one time axis and, directly under them on the same axis:
 
-* each experiment is a card whose title names the inputs that set it apart (a target most
-  experiments set alike is not named), its chi2, and whether it is pre-equilibrated;
-* inside, its observables are tracks stacked on one time axis, zoomed and panned together, under a
-  slim track with one segment per period coloured by its condition (one colour per condition
-  across every card), whose hover says what the condition sets and what changed from the period
-  before;
-* faint dashed lines mark where each later period starts in every observable's track;
-* the whole design, period by period, and the observables' formulas sit in collapsed cards.
+* a plot of each quantity that changes over time: a target that steps between periods, its
+  pre-equilibration value a dashed stub before the first period, or an ``inputs.tsv`` input as its
+  formula gives it from the experiment's targets (the design's input, not the model simulated);
+* one line of what the experiment sets and never changes, what sets it apart in bold.
 
-An experiment with one period and no pre-equilibration has no strip at all. Experiments are shown
-worst-fitted first, a page at a time: a problem with thousands of experiments shows a handful.
+Faint dashed lines mark where each later period starts, in every plot of the card. Experiments are
+shown worst-fitted first, a few at a time, each with its worst-fitted observables: a problem with
+thousands of experiments or dozens of observables shows a handful, and the pickers the rest.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 
 import holoviews as hv
 import numpy as np
@@ -34,8 +34,17 @@ import panel as pn
 from ..problem import experiment_inputs
 from . import style
 
-#: Experiments a page shows at first.
-PAGE = 4
+#: Experiments the tab shows at first.
+PAGE = 3
+
+#: Observables a card plots, its worst-fitted first; the picker adds the rest.
+TRACKS = 6
+
+#: Quantities that change over time a card plots under its data.
+PROTOCOLS = 3
+
+#: Settings the line under a card names before "+N more".
+SETTINGS = 10
 
 #: Inputs a card title names before "+N more".
 TITLE_INPUTS = 3
@@ -133,38 +142,157 @@ def distinguishing_inputs(problem) -> dict[str, str]:
     return out
 
 
-def period_strip(df: pd.DataFrame, colors: dict[str, str]) -> hv.Overlay:
-    frame = df.assign(y0=0.0, y1=1.0).rename(columns={"start": "time", "end": "time_end"})
-    rects = hv.Rectangles(
-        frame[["time", "y0", "time_end", "y1", "condition", "changed", "sets"]],
-        kdims=["time", "y0", "time_end", "y1"],
-        vdims=["condition", "changed", "sets"],
-    ).opts(
-        color="condition",
-        cmap=colors,
-        line_color="white",
-        line_width=2,
-        alpha=0.85,
-        tools=["hover"],
-        height=50,
-        responsive=True,
-        yaxis=None,
-        xaxis=None,
-        toolbar=None,
-        show_legend=False,
-        title="",
-    )
-    # A segment says what it changes where it has room, its condition where it has a little, and
-    # nothing where it has none; the hover has it all.
-    share = (df["end"] - df["start"]) / max(float(df["end"].max() - df["start"].min()), 1e-12)
-    text = [
-        (f"{c}: {ch}" if ch != "nothing" else c)[:60] if w > 0.25 else c if w > 0.08 else ""
-        for c, ch, w in zip(df["condition"], df["changed"], share)
-    ]
-    labels = hv.Labels(
-        df.assign(x=(df["start"] + df["end"]) / 2, y=0.5, text=text), ["x", "y"], "text"
-    ).opts(text_font_size="9pt", text_color="white")
-    return rects * labels
+def _number(value) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+@dataclass
+class Protocol:
+    """What an experiment sets. ``curves``: each quantity that changes over time, by name, as
+    ``(time, value, steps)`` arrays (``steps`` for a value held from each period's start), with its
+    pre-equilibration value in ``preeq`` where it has one; ``constant``: each target set and never
+    changed, ``target = value``; ``starts``: the later periods' start times."""
+
+    curves: dict[str, tuple[np.ndarray, np.ndarray, bool]] = field(default_factory=dict)
+    preeq: dict[str, float] = field(default_factory=dict)
+    #: What a curve is made of, for its title: an input's formula and the targets it reads.
+    notes: dict[str, str] = field(default_factory=dict)
+    constant: dict[str, str] = field(default_factory=dict)
+    starts: list[float] = field(default_factory=list)
+
+
+def protocol(problem, inputs, experiment_id: str, t_end: float) -> Protocol:
+    """``experiment_id``'s :class:`Protocol` up to ``t_end``."""
+    edf, cdf = problem.experiment_df, problem.condition_df
+    out = Protocol()
+    if edf is None or not len(edf) or not experiment_id:
+        return out
+    rows = edf[edf["experimentId"].astype(str) == experiment_id]
+    sets: dict[str, list[tuple[str, object]]] = {}
+    if cdf is not None and len(cdf):
+        for cid, sub in cdf.groupby("conditionId", sort=False):
+            sets[str(cid)] = list(zip(sub["targetId"].astype(str), sub["targetValue"]))
+    times = sorted({float(t) for t in rows["time"]})
+    finite = [t for t in times if math.isfinite(t)]
+    t0 = finite[0] if finite else 0.0
+    out.starts = finite[1:]
+    end = max(t_end, finite[-1] if finite else t0)
+    end = end if end > t0 else t0 + 1.0
+    applied: dict[str, object] = {}
+    by_period: list[tuple[float, dict[str, object]]] = []  # each period's targets in effect
+    preeq: dict[str, object] = {}
+    for t in times:
+        for cid in rows.loc[rows["time"].astype(float) == t, "conditionId"].dropna():
+            applied.update(sets.get(str(cid), []))
+        if math.isinf(t) and t < 0:
+            preeq = dict(applied)
+        else:
+            by_period.append((t, dict(applied)))
+    targets = list(dict.fromkeys(k for _, values in by_period for k in values))
+
+    def steps(target: str) -> tuple[np.ndarray, np.ndarray] | None:
+        values = [_number(v.get(target)) for _, v in by_period]
+        if any(v is None for v in values):
+            return None
+        ts = [t for t, _ in by_period] + [end]
+        return np.asarray(ts, float), np.asarray(values + values[-1:], float)
+
+    explained: set[str] = set()
+    for item in inputs:
+        if not set(item.targets) <= set(targets):
+            continue
+        grid = np.unique(np.concatenate([np.linspace(t0, end, 400), finite]))
+        held = {}
+        for target in item.targets:
+            stepped = steps(target)
+            if stepped is None:
+                break
+            ts, vs = stepped
+            held[target] = vs[np.searchsorted(ts, grid, side="right") - 1]
+        else:
+            out.curves[f"{item.id}(t)"] = (grid, item.evaluate(held, grid), False)
+            first = by_period[0][1]
+            out.notes[f"{item.id}(t)"] = f"{item.formula}: " + ", ".join(
+                f"{t}={_fmt(first.get(t))}" for t in item.targets
+            )
+            explained |= set(item.targets)
+    for target in targets:
+        if target in explained:
+            continue
+        values = [v.get(target) for _, v in by_period]
+        first = values[0]
+        changes = any(str(v) != str(first) for v in values) or (
+            target in preeq and str(preeq[target]) != str(first)
+        )
+        stepped = steps(target) if changes else None
+        if stepped is not None:
+            out.curves[target] = (*stepped, True)
+            if target in preeq and (value := _number(preeq[target])) is not None:
+                out.preeq[target] = value
+        elif changes:
+            shown = [_fmt(preeq[target])] if target in preeq else []
+            out.constant[target] = " → ".join(shown + [_fmt(v) for v in values])
+        else:
+            out.constant[target] = _fmt(first)
+    return out
+
+
+def protocol_plots(proto: Protocol) -> list:
+    """A plot of each quantity that changes over time, to sit under a card's data."""
+    t = hv.Dimension("time")
+    plots = []
+    for name, (ts, vs, stepped) in list(proto.curves.items())[:PROTOCOLS]:
+        y = hv.Dimension(f"u_{name}", label=name)
+        layers = [
+            hv.Curve((ts, vs), t, y).opts(
+                color=style.PALETTE[2],
+                line_width=2,
+                interpolation="steps-post" if stepped else "linear",
+            )
+        ]
+        if name in proto.preeq:
+            span = float(ts[-1] - ts[0]) or 1.0
+            stub = proto.preeq[name]
+            layers.append(
+                hv.Curve(([ts[0] - 0.04 * span, ts[0]], [stub, stub]), t, y).opts(
+                    color=style.PALETTE[2], line_dash="dashed", line_width=2
+                )
+            )
+        layers += [
+            hv.VLine(s).opts(color=style.MUTED, line_dash="dashed", line_width=1)
+            for s in proto.starts
+        ]
+        # From zero, with room above: a dose held constant had a range of nothing, its ticks piled.
+        values = [*vs, proto.preeq.get(name, vs[0])]
+        low, high = min(0.0, float(np.min(values))), float(np.max(values))
+        pad = 0.15 * (high - low) if high > low else max(abs(high), 1.0) * 0.15
+        note = proto.notes.get(name)
+        plots.append(
+            hv.Overlay(layers).opts(
+                title=f"{name} = {note}" if note else f"{name}, as the experiment sets it",
+                responsive=True,
+                height=150,
+                ylim=(low - (pad if low < 0 else 0), high + pad),
+                show_legend=False,
+            )
+        )
+    return plots
+
+
+def settings_line(proto: Protocol, apart: str | None) -> str:
+    """The targets an experiment sets and never changes, what sets it apart (``apart``, as
+    :func:`distinguishing_inputs` names it) in bold."""
+    marked = {item.split("=", 1)[0].strip() for item in (apart or "").split(",") if "=" in item}
+    items = [f"**{k} = {v}**" if k in marked else f"{k} = {v}" for k, v in proto.constant.items()]
+    items.sort(key=lambda text: not text.startswith("**"))
+    more = f", +{len(items) - SETTINGS} more" if len(items) > SETTINGS else ""
+    if not items:
+        return ""
+    return "Set throughout: " + ", ".join(items[:SETTINGS]) + more
 
 
 def observable_plot(
@@ -342,7 +470,7 @@ class FitTab:
             value=[],
             sizing_mode="stretch_width",
         )
-        self.show_periods = pn.widgets.Checkbox(name="periods", value=True)
+        self.show_periods = pn.widgets.Checkbox(name="what each experiment sets", value=True)
         self.error_bars = pn.widgets.Checkbox(name="noise σ as error bars", value=True)
         self.view_kind = pn.widgets.RadioButtonGroup(
             options=["Data and simulation", "Residuals"],
@@ -392,7 +520,12 @@ class FitTab:
             self.error_bars,
             self.view_kind,
         )
-        return pn.Column(controls, body, sizing_mode="stretch_width")
+        # lazy: built when the tab is first shown, not with the page (see app.VizApp.view).
+        return pn.Column(
+            controls,
+            pn.panel(body, lazy=True, sizing_mode="stretch_width"),
+            sizing_mode="stretch_width",
+        )
 
     def _body(self, version, compare, experiments, observables, show_periods, error_bars, kind):
         store, problem = self.app.store, self.app.problem
@@ -406,22 +539,17 @@ class FitTab:
         other = store.simulations(compare) if compare is not None else None
         compare_label = f"v{compare}" if compare is not None else None
         ends = sim.groupby("experiment_id")["time"].max().to_dict()
-        condition_colors = style.categorical(
-            []
-            if problem.experiment_df is None
-            else problem.experiment_df["conditionId"].astype(str)
-        )
         titles = distinguishing_inputs(problem)
         cards = []
         for eid in experiments:
             sub = sim[sim["experiment_id"] == eid]
-            table, preeq = periods(problem, eid, float(ends.get(eid, 0.0)))
-            starts = list(table["start"].iloc[1:]) if show_periods else []
+            proto = protocol(problem, self.app.inputs, eid, float(ends.get(eid, 0.0)))
+            _, preeq = periods(problem, eid, float(ends.get(eid, 0.0)))
+            starts = proto.starts if show_periods else []
+            measured = [o for o in chi2(sub, "observable_id").index if o in set(observables)]
             plots = []
-            for obs in observables:
+            for obs in measured[:TRACKS]:
                 points = sub[sub["observable_id"] == obs]
-                if points.empty:
-                    continue
                 theirs = None
                 if other is not None:
                     theirs = other[
@@ -441,21 +569,36 @@ class FitTab:
                         titles.get(eid),
                         f"χ² {total:.3g}",
                         f"pre-equilibrated in {preeq}" if preeq else None,
-                        f"{len(table)} periods" if len(table) > 1 else None,
+                        f"{len(proto.starts) + 1} periods" if proto.starts else None,
                     ],
                 )
             )
-            if show_periods and (len(table) > 1 or preeq):
-                plots.insert(0, period_strip(table, condition_colors))
-            tracks = hv.Layout(plots).cols(1).opts(shared_axes=True)
-            cards.append(
-                pn.Card(
-                    pn.pane.HoloViews(tracks, linked_axes=False, sizing_mode="stretch_width"),
-                    title=title,
+            if show_periods:
+                plots += protocol_plots(proto)
+            items = [
+                pn.pane.HoloViews(
+                    hv.Layout(plots).cols(1).opts(shared_axes=True),
+                    linked_axes=False,
                     sizing_mode="stretch_width",
-                    collapsed=len(cards) >= PAGE,
                 )
-            )
+            ]
+            notes = []
+            if show_periods and (line := settings_line(proto, titles.get(eid))):
+                notes.append(line)
+            if len(measured) > TRACKS:
+                notes.append(
+                    f"{len(measured) - TRACKS} more observables measured here, better fitted: "
+                    "pick them above."
+                )
+            if notes:
+                items.append(
+                    pn.pane.Markdown(
+                        "  \n".join(notes),
+                        styles={"font-size": "12px"},
+                        sizing_mode="stretch_width",
+                    )
+                )
+            cards.append(pn.Card(*items, title=title, sizing_mode="stretch_width"))
         if not cards:
             cards.append(
                 pn.pane.Markdown("Nothing measured for the experiments and observables picked.")
@@ -470,7 +613,11 @@ class FitTab:
                 if compare is not None
                 else ""
             )
-            + (" &nbsp; ┆ a period starts" if show_periods else "")
+            + (
+                " &nbsp; ┆ a period starts &nbsp; ━ under each: what the experiment sets"
+                if show_periods
+                else ""
+            )
         )
         cards.insert(0, pn.pane.HTML(key, styles={"font-size": "12px", "color": style.MUTED}))
         observable_info = self._observable_table(sim)

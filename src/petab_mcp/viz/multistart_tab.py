@@ -56,18 +56,28 @@ TRACES_SHOWN = 50
 OFFSET = 1.0
 
 
+#: Fides' ``ExitFlag`` names by value, written out: importing fides to look them up cost half a
+#: second of the page's first load (it imports scipy). A test holds the table to fides' own enum.
+EXIT_NAMES = {
+    0: "DID_NOT_RUN",
+    -1: "MAXITER",
+    -2: "MAXTIME",
+    -3: "NOT_FINITE",
+    -4: "EXCEEDED_BOUNDARY",
+    -5: "DELTA_TOO_SMALL",
+    1: "FTOL",
+    2: "XTOL",
+    3: "GTOL",
+}
+
+
 def _exit(flag, message) -> str:
     """How a start ended, by Fides' name for its exit flag."""
-    from fides import ExitFlag
-
     if isinstance(message, str) and message.startswith(STOPPED):
         return STOPPED
     if flag is None or (isinstance(flag, float) and math.isnan(flag)):
         return "unknown"
-    try:
-        return ExitFlag(int(flag)).name
-    except ValueError:
-        return str(int(flag))
+    return EXIT_NAMES.get(int(flag), str(int(flag)))
 
 
 def summary(meta: dict, opt: dict, starts: pd.DataFrame) -> str:
@@ -172,25 +182,28 @@ def waterfall(df: pd.DataFrame) -> tuple[hv.Overlay, hv.Points]:
 
 def traces(trace: pd.DataFrame, ranks: dict[str, int], best: float, chosen: list[int], x: str):
     """Each start's objective above the best over ``x`` (``iteration`` or ``time``): the chosen
-    ranks coloured, the rest grey."""
+    ranks coloured, the rest grey. Every start's trace is rows of one segments table: a path per
+    start made HoloViews build a dataset for each, 7.8 s of Fujita's 300 starts."""
     if trace is None or trace.empty:
         return hv.Curve([]).opts(title="No per-iteration trace stored", responsive=True, height=300)
-    trace = trace.assign(rank=trace["start"].map(lambda s: ranks.get(str(s), s)))
+    df = trace.assign(rank=trace["start"].map(lambda s: ranks.get(str(s), s)))
+    df = df.sort_values(["rank", x], kind="stable")
+    rank = df["rank"].to_numpy()
+    xs = df[x].to_numpy(dtype=float)
+    ys = np.maximum(df["fval"].to_numpy(dtype=float) - best + OFFSET, OFFSET * 1e-3)
+    joined = rank[1:] == rank[:-1]
+    segments = pd.DataFrame(
+        {"x0": xs[:-1], "y0": ys[:-1], "x1": xs[1:], "y1": ys[1:], "rank": rank[:-1]}
+    )[joined]
     shown = set(chosen) or set(range(min(TRACES_SHOWN, len(ranks))))
-    grey, picked = [], []
-    for rank, sub in trace.groupby("rank"):
-        sub = sub.sort_values(x)
-        y = np.maximum(sub["fval"].to_numpy(dtype=float) - best + OFFSET, OFFSET * 1e-3)
-        path = {x: sub[x].to_numpy(dtype=float), "above_best": y, "rank": rank}
-        (picked if rank in shown else grey).append(path)
-    lines = hv.Path(grey, [x, "above_best"], vdims="rank").opts(color=style.MUTED, alpha=0.25)
-    colored = hv.Path(picked, [x, "above_best"], vdims="rank").opts(
+    picked = segments["rank"].isin(shown)
+    kdims = ["x0", "y0", "x1", "y1"]
+    grey = hv.Segments(segments[~picked], kdims, "rank").opts(color=style.MUTED, alpha=0.25)
+    colored = hv.Segments(segments[picked], kdims, "rank").opts(
         color="rank", cmap="viridis", line_width=1.5, colorbar=False
     )
-    return (lines * colored).opts(
-        hv.opts.Path(
-            logy=True, responsive=True, height=300, tools=["hover"], ylim=(OFFSET * 1e-3, None)
-        ),
+    return (grey * colored).opts(
+        hv.opts.Segments(logy=True, responsive=True, height=300, ylim=(OFFSET * 1e-3, None)),
         hv.opts.Overlay(
             title="Objective over the run", xlabel=x, ylabel=f"objective − best + {OFFSET:g}"
         ),
@@ -213,32 +226,43 @@ def spread_frame(starts: pd.DataFrame, opt: dict, parameters: pd.DataFrame | Non
     if not names or parameters is None:
         return pd.DataFrame()
     estimated = {p for p, e in parameters["estimate"].items() if str(e).lower() in ("true", "1")}
-    best = starts["fval"].min()
-    rows = []
-    for rank, start in starts.reset_index(drop=True).iterrows():
-        x, x0 = start.get("x"), start.get("x0")
-        if not isinstance(x, list) or len(x) != len(names):
+    cols, lbs, ubs = [], [], []
+    for i, name in enumerate(names):
+        if name not in estimated or name not in parameters.index:
             continue
-        for i, name in enumerate(names):
-            if name not in estimated or name not in parameters.index:
-                continue
-            lb = _scaled(float(parameters.at[name, "lowerBound"]), scales[i])
-            ub = _scaled(float(parameters.at[name, "upperBound"]), scales[i])
-            if not (math.isfinite(lb) and math.isfinite(ub)) or ub <= lb:
-                continue
-            row = {
-                "parameter": name,
-                "rank": rank,
-                "id": start["id"],
-                "position": (x[i] - lb) / (ub - lb),
-                "value": x[i],
-                "scale": scales[i],
-                "above_best": (start["fval"] - best) if start["fval"] is not None else np.nan,
-            }
-            if isinstance(x0, list) and len(x0) == len(names):
-                row["start_position"] = (x0[i] - lb) / (ub - lb)
-            rows.append(row)
-    return pd.DataFrame(rows)
+        lb = _scaled(float(parameters.at[name, "lowerBound"]), scales[i])
+        ub = _scaled(float(parameters.at[name, "upperBound"]), scales[i])
+        if math.isfinite(lb) and math.isfinite(ub) and ub > lb:
+            cols.append(i), lbs.append(lb), ubs.append(ub)
+    starts = starts.reset_index(drop=True)
+
+    def matrix(column: str) -> np.ndarray:
+        rows = [
+            v if isinstance(v, list) and len(v) == len(names) else [np.nan] * len(names)
+            for v in starts.get(column, pd.Series([None] * len(starts)))
+        ]
+        return np.asarray(rows, dtype=float).reshape(len(starts), len(names))[:, cols]
+
+    if not cols or starts.empty:
+        return pd.DataFrame()
+    lb, width = np.asarray(lbs), np.asarray(ubs) - np.asarray(lbs)
+    x, x0 = matrix("x"), matrix("x0")
+    n_starts, n_cols = x.shape
+    fval = starts["fval"].astype(float).to_numpy()
+    df = pd.DataFrame(
+        {
+            "parameter": np.tile([names[i] for i in cols], n_starts),
+            "rank": np.repeat(np.arange(n_starts), n_cols),
+            "id": np.repeat(starts["id"].to_numpy(), n_cols),
+            "position": ((x - lb) / width).ravel(),
+            "value": x.ravel(),
+            "scale": np.tile([scales[i] for i in cols], n_starts),
+            "above_best": np.repeat(fval - np.nanmin(fval), n_cols),
+            "start_position": ((x0 - lb) / width).ravel(),
+        }
+    )
+    df = df[np.isfinite(df["value"])]
+    return df if df["start_position"].notna().any() else df.drop(columns="start_position")
 
 
 def spread(df: pd.DataFrame, chosen: list[int], show_x0: bool):

@@ -8,6 +8,7 @@ import json
 import shutil
 
 import holoviews as hv
+import pandas as pd
 import panel as pn
 import pytest
 from bokeh.document import Document
@@ -29,7 +30,7 @@ def app(viz_store):
 def test_every_tab_of_every_version_renders(app):
     for version in app.store.versions():
         app.version_pick.value = version
-        for tab in (app.multistart, app.model, app.fit):
+        for tab in (app.versions, app.multistart, app.model, app.fit):
             pn.panel(tab.view()).get_root(Document())
     app.fit.view_kind.value = "Residuals"
     pn.panel(app.fit.view()).get_root(Document())
@@ -207,3 +208,41 @@ def test_a_harness_adds_a_tab_that_follows_the_version(viz_store):
     page.server_doc(Document())
     app.version_pick.value = 0
     assert seen[-1] == 0
+
+
+def test_the_exit_names_are_fides_own():
+    """Written out so the page need not import fides (half a second of its first load)."""
+    from fides import ExitFlag
+
+    from petab_mcp.viz.multistart_tab import EXIT_NAMES
+
+    assert EXIT_NAMES == {f.value: f.name for f in ExitFlag}
+
+
+def test_versions_branch_onto_lanes_and_a_versions_line_runs_back_to_the_first():
+    """A change from an earlier version (base_version) is a fork: its own lane, so the tree shows
+    where the session went back."""
+    from petab_mcp.viz import versions_tab as T
+
+    table = pd.DataFrame(
+        {
+            "version": [0, 1, 2, 3, 4],
+            "parent": [-1, 0, 1, 1, 0],
+            "criterion_value": [10.0, 8.0, 9.0, 7.0, 12.0],
+            "justification": [""] * 5,
+            "kind": ["fit"] * 5,
+            "k": [2] * 5,
+            "n_starts": [10] * 5,
+            "criterion": ["bic"] * 5,
+        }
+    )
+    assert T.lanes(table) == {0: 0, 1: 0, 2: 0, 3: 1, 4: 2}
+    # a lane whose line ended before the fork is reused
+    reuse = pd.DataFrame({"version": [0, 1, 2, 3, 4, 5], "parent": [-1, 0, 1, 0, 3, 4]})
+    assert T.lanes(reuse) == {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1}
+    later = pd.DataFrame({"version": [0, 1, 2, 3, 4], "parent": [-1, 0, 0, 2, 2]})
+    assert T.lanes(later)[4] == 0  # lane 0's line ended at v1, before v4's fork from v2
+    assert T.lineage(table, 3) == [3, 1, 0]
+    assert list(T.frame(table)["change"]) == pytest.approx(
+        [float("nan"), -2.0, 1.0, -1.0, 2.0], nan_ok=True
+    )
