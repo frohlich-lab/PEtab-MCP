@@ -203,6 +203,8 @@ class VizApp(param.Parameterized):
 
     # -- page ----------------------------------------------------------------------------------
     def view(self) -> pn.template.FastListTemplate:
+        # A spinner over whatever is recomputing: a large model's first layout takes seconds.
+        pn.config.loading_indicator = True
         tabs = pn.Tabs(
             ("Multistart", self.multistart.view()),
             ("Model", self.model.view()),
