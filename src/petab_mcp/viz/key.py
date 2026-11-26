@@ -26,9 +26,22 @@ def _html(text: str) -> str:
     )
 
 
-def entry(label: str, about: str = "", color: str = style.MUTED, mark: str = "●") -> dict:
-    """A legend entry: ``mark`` in ``color``, ``label``, and on hover ``about``."""
-    return {"label": label, "about": _html(about) if about else "", "color": color, "mark": mark}
+def entry(
+    label: str,
+    about: str = "",
+    color: str = style.MUTED,
+    mark: str = "●",
+    toggle: str | None = None,
+) -> dict:
+    """A legend entry: ``mark`` in ``color``, ``label``, and on hover ``about``. With ``toggle``,
+    a checkbox before it, which adds ``toggle`` to the key's ``hidden`` when unticked."""
+    return {
+        "label": label,
+        "about": _html(about) if about else "",
+        "color": color,
+        "mark": mark,
+        "toggle": toggle,
+    }
 
 
 class Key(pn.custom.JSComponent):
@@ -37,7 +50,8 @@ class Key(pn.custom.JSComponent):
 
     title = param.String(default="")
     about = param.String(default="", doc="HTML: how to read the plot.")
-    entries = param.List(default=[], doc="Dicts of label, about (HTML), color and mark.")
+    entries = param.List(default=[], doc="Dicts of label, about (HTML), color, mark and toggle.")
+    hidden = param.List(default=[], doc="The toggles of the entries unticked.")
 
     _stylesheets = [
         f"""
@@ -48,6 +62,9 @@ class Key(pn.custom.JSComponent):
     .key .entry {{ white-space: nowrap; }}
     .key .entry.tip {{ cursor: help; border-bottom: 1px dotted {style.MUTED}; }}
     .key .mark {{ margin-right: 4px; }}
+    .key input {{ margin: 0 4px 0 0; vertical-align: -1px; cursor: pointer; }}
+    .key label.entry {{ cursor: pointer; }}
+    .key .off {{ opacity: .45; }}
     """
     ]
 
@@ -74,8 +91,8 @@ class Key(pn.custom.JSComponent):
     }
     export function render({ model, el }) {
       const root = document.createElement("div"); root.className = "key";
-      function item(cls, about) {
-        const s = document.createElement("span"); s.className = cls;
+      function item(cls, about, tag = "span") {
+        const s = document.createElement(tag); s.className = cls;
         if (about) {
           s.classList.add("tip");
           s.addEventListener("mouseenter", () => show(s, about));
@@ -93,14 +110,25 @@ class Key(pn.custom.JSComponent):
           i.classList.remove("tip"); root.append(i);
         }
         for (const e of model.entries) {
-          const s = item("entry", e.about);
+          // A label, so a click anywhere on the entry ticks its box.
+          const s = item("entry", e.about, e.toggle ? "label" : "span");
+          if (e.toggle) {
+            const box = document.createElement("input"); box.type = "checkbox";
+            const on = !model.hidden.includes(e.toggle);
+            box.checked = on; s.classList.toggle("off", !on);
+            box.addEventListener("change", () => {
+              const rest = model.hidden.filter(h => h !== e.toggle);
+              model.hidden = box.checked ? rest : [...rest, e.toggle];
+            });
+            s.append(box);
+          }
           const m = document.createElement("span"); m.className = "mark";
           m.style.color = e.color; m.textContent = e.mark;
           s.append(m, document.createTextNode(e.label));
           root.append(s);
         }
       }
-      for (const name of ["title", "about", "entries"]) model.on(name, draw);
+      for (const name of ["title", "about", "entries", "hidden"]) model.on(name, draw);
       model.on("remove", hide);
       window.addEventListener("scroll", hide, true);
       draw();

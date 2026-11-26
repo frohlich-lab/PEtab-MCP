@@ -230,6 +230,27 @@ def test_only_clusters_many_starts_returned_to_get_a_colour():
     assert set(cluster_colors(many)) == {1, 3, 4}
 
 
+def test_a_trace_is_matched_to_its_start_by_place_and_keeps_only_lowering_steps():
+    """The trace numbers a start by its place in pyPESTO's result list, which is not its id: read
+    as an id, the best start's trace was drawn as another start's. A rise is a trial step Fides
+    rejected."""
+    from petab_mcp.viz.multistart_tab import trace_frame
+
+    df = pd.DataFrame({"start": [0, 1], "id": ["7", "0"], "rank": [0, 1]})
+    trace = pd.DataFrame(
+        {
+            "start": [0] * 5 + [1] * 2,
+            "iteration": [0, 1, 2, 3, 4, 0, 1],
+            "fval": [10.0, 12.0, 8.0, 9.0, 7.0, 20.0, 19.0],
+            "time": [1.0, 2, 3, 4, 5, 1, 2],
+        }
+    )
+    tf = trace_frame(trace, df)
+    best = tf[tf["rank"] == 0]
+    assert list(best["fval"]) == [10.0, 12.0, 8.0, 9.0, 7.0]
+    assert list(best["accepted"]) == [True, False, True, False, True]
+
+
 def test_the_exit_names_are_fides_own():
     """Written out so the page need not import fides (half a second of its first load)."""
     from fides import ExitFlag

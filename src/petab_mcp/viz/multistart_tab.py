@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import time
+import warnings
 
 import holoviews as hv
 import numpy as np
@@ -154,28 +155,38 @@ same best fit from different guesses: it is very likely the best this model can 
 right are other fits the optimiser got stuck in (local optima). If only one or two dots reach the
 bottom, the best fit was found by luck, and a better one may exist that more starts would find.
 
-Colour, the same in all three plots, says how each start ended or which step (cluster) it is on;
-hover a legend entry for what it means. Box-select dots to follow those starts in the other two
-plots; press Esc to clear.
+Colour, the same in all three plots, says how each start ended or which step (cluster) it is on.
+Box-select dots to follow those starts in the other two plots; press Esc to clear.
+"""
+
+LEGEND = """
+One colour per group of starts, the same in all three plots: how each start ended, or which
+waterfall cluster it is in. Untick a group to grey it out in the waterfall and leave it out of the
+other two plots. Hover an entry for what it means.
 """
 
 TRACES = """
 How each start's fit improved while the optimiser worked on it: one line per start, from its random
-guess on the left to where it stopped on the right. Across is the optimiser's step (the first is 1)
-or the seconds it had run; up is how much worse than the best start's final fit, plus 1. Both axes
-are logarithmic, so the big early gains and the small late ones both show.
+guess on the left to where it stopped on the right. Across is how many times the optimiser had
+computed the model's fit (the first is 1), or the seconds it had run; up is how much worse than the
+best start's final fit, plus 1.
+
+Each line shows only the steps the optimiser kept, each better than the last; "rejected steps" adds
+the trial steps it computed and threw away, which jump up. "Median per colour" draws, instead of
+each start, the median of the starts of one colour, and a band where the middle half of them lie.
+"Log axes" puts both axes on a log scale, so the big early gains and the small late ones both show.
 
 A line that flattens out converged. One still falling at its right end was cut off before it
-finished. Many lines dropping onto the same floor is the best fit being found again and again. A
-line that runs far longer than the rest is a start where the model was slow or hard to simulate.
-Box-select starts in the waterfall to show only those in colour.
+finished. Many lines dropping onto the same floor is the best fit being found again and again.
+Box-select starts in the waterfall to show only those.
 """
 
 SPREAD = """
 Where each start's fitted parameters ended. Each column is one estimated parameter; up is where its
 value ended between the lowest (0) and highest (1) value it was allowed, on the scale it is
-estimated on (usually log10, so equal steps are equal fold changes). Within a column the dots are
-moved sideways only so they do not hide each other.
+estimated on (usually log10, so equal steps are equal fold changes). With "values" on, up is the
+value itself on that scale, and grey bars mark each parameter's bounds. Within a column the dots
+are moved sideways only so they do not hide each other.
 
 Look at the large dots, the starts that reached the best fit. Where they sit together, the data
 pin that parameter down. Where they spread along the column, very different values fit the data
@@ -186,6 +197,9 @@ spread out first.
 With "connect each start's points" on, each start is one line through the columns. Between two
 neighbouring columns, lines that all cross in an X mean one parameter goes up as the other goes
 down: the data fix a combination of the two, such as their product or ratio, not each one.
+
+With "where each start began" on, an arrow runs from the random guess each start began from to
+where it ended.
 """
 
 RUNNING = """
@@ -235,17 +249,28 @@ def waterfall_frame(starts: pd.DataFrame, n_warm: int = 0) -> pd.DataFrame:
     return df
 
 
-def colors(df: pd.DataFrame, by: str) -> dict[int, str]:
-    """Each start's colour by its rank, ``by`` either colouring."""
-    return dict(zip(df["rank"], df["cluster_color" if by == BY_CLUSTER else "exit_color"]))
+def groups(df: pd.DataFrame, by: str) -> pd.Series:
+    """Each start's colour group, the toggle of its legend entry: how it ended, or its cluster
+    (all the uncoloured clusters one group)."""
+    if by == BY_CLUSTER:
+        return np.where(
+            df["cluster_color"] == OTHERS, "cluster:others", "cluster:" + df["cluster"].astype(str)
+        )
+    return "exit:" + df["ended"]
 
 
-def legend(
-    df: pd.DataFrame, starts: pd.DataFrame, by: str, show_x0: bool, chosen: list[int]
-) -> list[dict]:
-    """The tab's one legend, for all three plots. How the starts ended counts every start, a
-    failed one too: it has no objective to plot, but the summary counts its exit, and the legend
-    must say what it means."""
+def colors(df: pd.DataFrame, by: str, hidden=()) -> dict[int, str]:
+    """Each start's colour by its rank, ``by`` either colouring; the starts of a ``hidden`` group
+    left out."""
+    shown = ~pd.Series(groups(df, by), index=df.index).isin(list(hidden))
+    column = "cluster_color" if by == BY_CLUSTER else "exit_color"
+    return dict(zip(df.loc[shown, "rank"], df.loc[shown, column]))
+
+
+def legend(df: pd.DataFrame, starts: pd.DataFrame, by: str, chosen: list[int]) -> list[dict]:
+    """The tab's one legend, for all three plots, each colour with a checkbox that hides its
+    starts (:func:`groups`). How the starts ended counts every start, a failed one too: it has no
+    objective to plot, but the summary counts its exit, and the legend must say what it means."""
     out = []
     if by == BY_CLUSTER:
         for c, color in cluster_colors(df["cluster"]).items():
@@ -260,6 +285,7 @@ def legend(
                     + ": most likely one fit, found again and again."
                     + (" The best one." if c == 1 else ""),
                     color,
+                    toggle=f"cluster:{c}",
                 )
             )
         if rest := int((df["cluster_color"] == OTHERS).sum()):
@@ -270,6 +296,7 @@ def legend(
                     f"starts), or past the first {CLUSTERS_COLOURED}: fits the optimiser rarely "
                     "returned to.",
                     OTHERS,
+                    toggle="cluster:others",
                 )
             )
     else:
@@ -279,7 +306,9 @@ def legend(
             about = EXIT_MEANINGS.get(e, "")
             if n_failed := int(failed[(ended == e).to_numpy()].sum()):
                 about += f" {n_failed} of these have no objective, so they are not drawn."
-            out.append(K.entry(f"{e} · {n}", about, EXIT_COLORS.get(e, style.MUTED)))
+            out.append(
+                K.entry(f"{e} · {n}", about, EXIT_COLORS.get(e, style.MUTED), toggle=f"exit:{e}")
+            )
     out.append(
         K.entry(
             "reached the best",
@@ -300,21 +329,12 @@ def legend(
                 "◯",
             )
         )
-    if show_x0:
-        out.append(
-            K.entry(
-                "where it began",
-                "In the parameter plot: the random guess each start began from.",
-                "#999999",
-                "×",
-            )
-        )
     if chosen:
         out.append(
             K.entry(
                 f"picked · {len(chosen)}",
-                "The starts box-selected in the waterfall: the only ones in colour in the "
-                "objective plot, marked in the parameter plot.",
+                "The starts box-selected in the waterfall: the only ones drawn in the objective "
+                "plot, marked in the parameter plot.",
                 style.PALETTE[3],
                 "▲",
             )
@@ -322,14 +342,21 @@ def legend(
     return out
 
 
-def waterfall_points(df: pd.DataFrame, by: str = BY_EXIT) -> hv.Points:
-    """The waterfall's points, which a selection stream reads."""
+#: A hidden group's starts in the waterfall: kept, so the waterfall keeps its shape and its
+#: selection its indices, but without their colour.
+HIDDEN = "#e3e3e3"
+
+
+def waterfall_points(df: pd.DataFrame, by: str = BY_EXIT, hidden=()) -> hv.Points:
+    """The waterfall's points, which a selection stream reads; a ``hidden`` group's grey."""
+    shown = colors(df, by, hidden)
+    df = df.assign(color=[shown.get(r, HIDDEN) for r in df["rank"]])
     return hv.Points(
         df,
         ["rank", "above_best"],
-        ["id", "fval", "ended", "cluster", "time", "n_fval", "exit_color", "cluster_color"],
+        ["id", "fval", "ended", "cluster", "time", "n_fval", "color"],
     ).opts(
-        color=hv.dim("cluster_color" if by == BY_CLUSTER else "exit_color"),
+        color=hv.dim("color"),
         size=8,
         line_color="white",
         logy=True,
@@ -370,46 +397,103 @@ def on_top(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def trace_frame(trace: pd.DataFrame | None, df: pd.DataFrame) -> pd.DataFrame | None:
+    """The stored trace, a row per evaluation of a start's objective, with the start's waterfall
+    ``rank`` and whether the optimiser kept the step (``accepted``). The trace numbers a start by
+    its place in pyPESTO's result list (``start``), not by its id. It records every evaluation, a
+    rejected trial step too; Fides keeps a step only where it lowers the objective, so a step
+    counts as kept where it lowers the start's best so far."""
+    if trace is None or trace.empty:
+        return None
+    place = df["start"] if "start" in df else df["rank"]
+    rank = dict(zip(place.astype(int), df["rank"]))
+    t = trace.assign(rank=trace["start"].map(rank)).dropna(subset=["rank", "fval"])
+    t = t.assign(rank=t["rank"].astype(int)).sort_values(["rank", "iteration"], kind="stable")
+    before = t.groupby("rank")["fval"].cummin().groupby(t["rank"]).shift(1)
+    return t.assign(accepted=before.isna() | (t["fval"] < before))
+
+
+def medians(t: pd.DataFrame, color: dict[int, str], log: bool) -> list:
+    """For each colour, the median over its starts of their best so far at each ``_x``, and a band
+    where the middle half of them lie: grey first, then the worst colour to the best."""
+    xs = t["_x"].to_numpy()
+    high = float(np.nanmax(xs))
+    low = float(np.nanmin(xs[xs > 0])) if (xs > 0).any() else high / 1e3
+    grid = np.geomspace(low, high, 200) if log and high > low else np.linspace(low, high, 200)
+    by = t.assign(_c=t["rank"].map(color))
+    first = by.groupby("_c")["rank"].min()
+    order = sorted(first.index, key=lambda c: (c != OTHERS, -first[c]))
+    layers = []
+    for c in order:
+        rows = []
+        for _, s in by[by["_c"] == c].groupby("rank"):
+            at = np.searchsorted(s["_x"].to_numpy(), grid, side="right") - 1
+            rows.append(np.where(at >= 0, s["_y"].to_numpy()[np.clip(at, 0, None)], np.nan))
+        with warnings.catch_warnings():  # a grid point no start of the colour has reached
+            warnings.simplefilter("ignore", RuntimeWarning)
+            q25, q50, q75 = np.nanpercentile(np.vstack(rows), [25, 50, 75], axis=0)
+        ok = ~np.isnan(q50)
+        layers += [
+            hv.Area((grid[ok], q25[ok], q75[ok]), "x0", ["y0", "y1"]).opts(
+                color=c, alpha=0.2, line_alpha=0
+            ),
+            hv.Curve((grid[ok], q50[ok]), "x0", "y0").opts(color=c, line_width=2.5),
+        ]
+    return layers
+
+
 def traces(
-    trace: pd.DataFrame,
-    ranks: dict[str, int],
+    tf: pd.DataFrame | None,
     best: float,
     chosen: list[int],
     x: str,
     color: dict[int, str],
+    rejected: bool = False,
+    median: bool = False,
+    log: bool = True,
 ):
-    """Each start's objective above the best over ``x`` (``iteration`` or ``time``), both axes
-    logarithmic: the chosen ranks, or every one, in their ``color``, the rest grey. Every start's
-    trace is rows of one segments table: a path per start made HoloViews build a dataset for each,
-    7.8 s of Fujita's 300 starts."""
-    if trace is None or trace.empty:
+    """Each start's objective above the best over ``x`` (``iteration``, counted from 1, or
+    ``time``): the starts ``color`` holds, the ``chosen`` ones only where there are any, in their
+    colour. Only the steps the optimiser kept unless ``rejected``; with ``median``, each colour's
+    median and middle half (:func:`medians`) instead of its starts. Every start's trace is rows of
+    one segments table: a path per start made HoloViews build a dataset for each, 7.8 s of
+    Fujita's 300 starts."""
+    if tf is None:
         return hv.Curve([]).opts(responsive=True, height=300)
-    df = trace.assign(rank=trace["start"].map(lambda s: ranks.get(str(s), s)))
-    df = df.sort_values(["rank", x], kind="stable")
-    rank = df["rank"].to_numpy()
-    xs = df[x].to_numpy(dtype=float)
-    if x == "iteration":
-        xs = xs + 1  # the first iteration is 0, which a log axis cannot show
-    else:
+    shown = set(color) & set(chosen) if chosen else set(color)
+    t = tf[tf["rank"].isin(shown) & (tf["accepted"] | (rejected and not median))]
+    xs = t[x].to_numpy(dtype=float) + (1 if x == "iteration" else 0)
+    if log and x == "time":
         xs = np.maximum(xs, np.nanmin(xs[xs > 0]) if (xs > 0).any() else 1e-3)
-    ys = np.maximum(df["fval"].to_numpy(dtype=float) - best + OFFSET, OFFSET * 1e-3)
-    joined = rank[1:] == rank[:-1]
-    segments = pd.DataFrame(
-        {"x0": xs[:-1], "y0": ys[:-1], "x1": xs[1:], "y1": ys[1:], "rank": rank[:-1]}
-    )[joined]
-    segments["color"] = segments["rank"].map(color).fillna(OTHERS)
-    picked = segments["rank"].isin(chosen) if chosen else np.full(len(segments), True)
-    kdims = ["x0", "y0", "x1", "y1"]
+    ys = t["fval"].to_numpy(dtype=float) - best + OFFSET
+    t = t.assign(_x=xs, _y=ys)
+    if t.empty:
+        layers = [hv.Curve([], "x0", "y0")]
+    elif median:
+        layers = medians(t, color, log)
+    else:
+        rank = t["rank"].to_numpy()
+        joined = rank[1:] == rank[:-1]
+        segments = pd.DataFrame(
+            {"x0": xs[:-1], "y0": ys[:-1], "x1": xs[1:], "y1": ys[1:], "rank": rank[:-1]}
+        )[joined]
+        segments["color"] = segments["rank"].map(color)
+        layers = [
+            hv.Segments(on_top(segments), ["x0", "y0", "x1", "y1"], ["rank", "color"]).opts(
+                color=hv.dim("color"), line_width=1.2, alpha=0.8
+            )
+        ]
     low = min(OFFSET / 2, float(np.nanmin(ys)) / 2) if len(ys) else OFFSET / 2
-    return (
-        hv.Segments(segments[~picked], kdims, "rank").opts(color=style.MUTED, alpha=0.2)
-        * hv.Segments(on_top(segments[picked]), kdims, ["rank", "color"]).opts(
-            color=hv.dim("color"), line_width=1.2, alpha=0.8
-        )
-    ).opts(
-        hv.opts.Segments(logx=True, logy=True, responsive=True, height=300, ylim=(low, None)),
+    return hv.Overlay(layers).opts(
+        hv.opts.Segments(logx=log, logy=log),
+        hv.opts.Curve(logx=log, logy=log),
+        hv.opts.Area(logx=log, logy=log),
         hv.opts.Overlay(
-            xlabel="iteration" if x == "iteration" else "time (s)",
+            responsive=True,
+            height=300,
+            framewise=True,
+            ylim=(low, None) if log else (None, None),
+            xlabel="evaluation" if x == "iteration" else "time (s)",
             ylabel=f"objective − best + {OFFSET:g}",
         ),
     )
@@ -425,7 +509,8 @@ def _scaled(value: float, scale: str) -> float:
 
 def spread_frame(starts: pd.DataFrame, opt: dict, parameters: pd.DataFrame | None) -> pd.DataFrame:
     """One row per (start, estimated parameter): where the start ended within the parameter's
-    bounds on its estimation scale, 0 at the lower bound and 1 at the upper."""
+    bounds on its estimation scale, 0 at the lower bound and 1 at the upper; its value and the
+    bounds on that scale."""
     names = list(opt.get("x_names") or [])
     scales = list(opt.get("x_scales") or ["lin"] * len(names))
     if not names or parameters is None:
@@ -462,6 +547,8 @@ def spread_frame(starts: pd.DataFrame, opt: dict, parameters: pd.DataFrame | Non
             "position": ((x - lb) / width).ravel(),
             "value": x.ravel(),
             "scale": np.tile([scales[i] for i in cols], n_starts),
+            "lower": np.tile(lb, n_starts),
+            "upper": np.tile(lb + width, n_starts),
             "above_best": np.repeat(fval - np.nanmin(fval), n_cols),
             "start_position": ((x0 - lb) / width).ravel(),
         }
@@ -480,10 +567,12 @@ def spread(
     show_x0: bool,
     connect: bool,
     color: dict[int, str],
+    raw: bool = False,
 ):
-    """Where each start ended in each parameter's bounds, in its ``color``: the starts at the best
-    large, the rest small and faint. A start keeps one sideways offset in every column, so
-    ``connect`` can draw it as one line through the columns."""
+    """Where each start ``color`` holds ended in each parameter's bounds, or, ``raw``, at what
+    value on its estimation scale; in its colour, the starts at the best large, the rest small and
+    faint. A start keeps one sideways offset in every column, so ``connect`` can draw it as one
+    line through the columns, and ``show_x0`` an arrow from where it began to where it ended."""
     if df.empty:
         return hv.Points([]).opts(responsive=True, height=320)
     at_best = df["above_best"] <= AT_BEST_NLL_TOL
@@ -497,65 +586,95 @@ def spread(
         .index
     )
     column = {p: i for i, p in enumerate(order)}
+    bounds = df.groupby("parameter")[["lower", "upper"]].first().reindex(order)
     # The golden ratio's fractions spread the starts evenly across the offsets, the same in
     # every column.
     offset = ((df["rank"].to_numpy() * 0.618034) % 1 - 0.5) * 2 * SIDEWAYS
-    df = on_top(
-        df.assign(
-            column=df["parameter"].map(column).to_numpy() + offset,
-            color=df["rank"].map(color).fillna(OTHERS).to_numpy(),
-            best=at_best.to_numpy(),
-        )
+    df = df.assign(
+        column=df["parameter"].map(column).to_numpy() + offset,
+        color=df["rank"].map(color).to_numpy(),
+        best=at_best.to_numpy(),
     )
+    df = on_top(df[df["rank"].isin(color)])
+    y = "value" if raw else "position"
+    if "start_position" in df:
+        df["began"] = (
+            df["lower"] + df["start_position"] * (df["upper"] - df["lower"])
+            if raw
+            else df["start_position"]
+        )
     col = hv.Dimension("column", label="estimated parameter")
-    layers = [
-        hv.HLine(0).opts(color=style.MUTED, line_width=1),
-        hv.HLine(1).opts(color=style.MUTED, line_width=1),
-    ]
+    if raw:
+        edges = np.concatenate([bounds["lower"].to_numpy(), bounds["upper"].to_numpy()])
+        middle = np.tile(np.arange(len(order)), 2)
+        ticks = pd.DataFrame({"x0": middle - 0.45, "y0": edges, "x1": middle + 0.45, "y1": edges})
+        layers = [
+            hv.Segments(ticks, ["x0", "y0", "x1", "y1"]).opts(color=style.MUTED, line_width=2)
+        ]
+        pad = 0.05 * float((bounds["upper"] - bounds["lower"]).max())
+        ylim = (float(bounds["lower"].min()) - pad, float(bounds["upper"].max()) + pad)
+    else:
+        layers = [hv.HLine(edge).opts(color=style.MUTED, line_width=1) for edge in (0, 1)]
+        ylim = (-0.05, 1.05)
+
+    def lines(x0, y0, x1, y1, frame) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "x0": np.asarray(x0),
+                "y0": np.asarray(y0),
+                "x1": np.asarray(x1),
+                "y1": np.asarray(y1),
+                "color": frame["color"].to_numpy(),
+                "rank": frame["rank"].to_numpy(),
+                "best": frame["best"].to_numpy(),
+            }
+        )
+
     if connect:
         path = df.sort_values(["rank", "column"])
         same = path["rank"].to_numpy()[1:] == path["rank"].to_numpy()[:-1]
-        lines = on_top(
-            pd.DataFrame(
-                {
-                    "x0": path["column"].to_numpy()[:-1],
-                    "y0": path["position"].to_numpy()[:-1],
-                    "x1": path["column"].to_numpy()[1:],
-                    "y1": path["position"].to_numpy()[1:],
-                    "color": path["color"].to_numpy()[:-1],
-                    "rank": path["rank"].to_numpy()[:-1],
-                    "best": path["best"].to_numpy()[:-1],
-                }
-            )[same]
-        )
+        xs, ys = path["column"].to_numpy(), path[y].to_numpy()
+        joined = on_top(lines(xs[:-1], ys[:-1], xs[1:], ys[1:], path.iloc[:-1])[same])
         layers.append(
-            hv.Segments(lines, ["x0", "y0", "x1", "y1"], ["color", "best"]).opts(
+            hv.Segments(joined, ["x0", "y0", "x1", "y1"], ["color", "best"]).opts(
                 color=hv.dim("color"),
                 alpha=hv.dim("best").categorize({True: 0.6}, default=0.15),
                 line_width=1,
             )
         )
-    if show_x0 and "start_position" in df:
+    if show_x0 and "began" in df:
+        moved = df[df["began"].notna()]
+        arrows = on_top(lines(moved["column"], moved["began"], moved["column"], moved[y], moved))
+        heads = arrows.assign(y=arrows["y0"] + 0.8 * (arrows["y1"] - arrows["y0"]))
         layers.append(
-            hv.Scatter(df, col, "start_position").opts(marker="x", color="#999999", size=5)
+            hv.Segments(arrows, ["x0", "y0", "x1", "y1"], ["color", "best"]).opts(
+                color=hv.dim("color"),
+                alpha=hv.dim("best").categorize({True: 0.6}, default=0.2),
+                line_width=1,
+            )
         )
+        for marker, up in (("triangle", True), ("inverted_triangle", False)):
+            layers.append(
+                hv.Points(heads[(heads["y1"] > heads["y0"]) == up], ["x0", "y"], "color").opts(
+                    marker=marker, color=hv.dim("color"), size=6, alpha=0.6
+                )
+            )
     layers.append(
         hv.Scatter(
             df,
             col,
-            ["position", "color", "best", "parameter", "id", "value", "scale", "above_best"],
+            [y, "color", "best", "parameter", "id", "value", "position", "scale", "above_best"],
         ).opts(
             color=hv.dim("color"),
             size=hv.dim("best").categorize({True: 8}, default=4),
             alpha=hv.dim("best").categorize({True: 1.0}, default=0.45),
             tools=["hover"],
-            hover_tooltips=["parameter", "id", "value", "scale", "above_best"],
+            hover_tooltips=["parameter", "id", "value", "position", "scale", "above_best"],
         )
     )
     if chosen:
-        sel = df[df["rank"].isin(chosen)]
         layers.append(
-            hv.Scatter(sel, col, ["position", "id"]).opts(
+            hv.Scatter(df[df["rank"].isin(chosen)], col, [y, "id"]).opts(
                 color=style.PALETTE[3], size=9, marker="triangle"
             )
         )
@@ -564,11 +683,12 @@ def spread(
             xticks=list(enumerate(order)),
             xrotation=60,
             xlim=(-0.6, len(order) - 0.4),
-            ylim=(-0.05, 1.05),
+            ylim=ylim,
+            framewise=True,
             width=max(500, 32 * len(order)),
             height=340,
             xlabel="estimated parameter",
-            ylabel="position in bounds",
+            ylabel="value (on its estimation scale)" if raw else "position in bounds",
         )
     )
 
@@ -641,14 +761,25 @@ class MultistartTab:
 
     def __init__(self, app) -> None:
         self.app = app
-        self.axis = pn.widgets.RadioButtonGroup(
-            options=["iteration", "time"], value="iteration", button_type="light"
-        )
         self.colour = pn.widgets.RadioButtonGroup(
             options=[BY_EXIT, BY_CLUSTER], value=BY_EXIT, button_type="light", align="center"
         )
-        self.show_x0 = pn.widgets.Checkbox(name="show where each start began", value=False)
+        #: The one legend, kept across versions so a colour unticked stays unticked.
+        self.legend = K.key("Colours", LEGEND)
+        self.axis = pn.widgets.RadioButtonGroup(
+            options={"evaluations": "iteration", "time": "time"},
+            value="iteration",
+            button_type="light",
+        )
+        self.rejected = pn.widgets.Checkbox(name="rejected steps", value=False)
+        self.median = pn.widgets.Checkbox(name="median per colour", value=False)
+        self.log = pn.widgets.Checkbox(name="log axes", value=True)
+        self.show_x0 = pn.widgets.Checkbox(name="where each start began", value=False)
         self.connect = pn.widgets.Checkbox(name="connect each start's points", value=False)
+        self.raw = pn.widgets.Checkbox(name="values, not position in bounds", value=False)
+        # A median is over the steps kept; the rejected ones have no median to add to.
+        self.median.param.watch(lambda e: setattr(self.rejected, "disabled", e.new), "value")
+        self._watching: list = []
 
     def view(self) -> pn.viewable.Viewable:
         return pn.Column(
@@ -667,6 +798,9 @@ class MultistartTab:
 
     def _version(self, version):
         store = self.app.store
+        for widget, watcher in self._watching:  # the version shown before
+            widget.param.unwatch(watcher)
+        self._watching = []
         if version is None:
             return pn.pane.Markdown("No version yet.")
         starts = store.starts(version)
@@ -677,53 +811,69 @@ class MultistartTab:
             )
         meta, opt = store.meta(version), store.optimization(version) or {}
         df = waterfall_frame(starts, int(meta.get("n_warm_starts") or 0))
-        points = hv.DynamicMap(pn.bind(lambda by: waterfall_points(df, by), self.colour))
+        hidden = self.legend.param.hidden
+        points = hv.DynamicMap(
+            pn.bind(lambda by, off: waterfall_points(df, by, off), self.colour, hidden)
+        )
         picked = hv.streams.Selection1D(source=points)
-        ranks = {str(i): r for i, r in zip(df["id"], df["rank"])}
         best = float(df["fval"].min())
-        trace = store.trace(version)
+        tf = trace_frame(store.trace(version), df)
         spread_df = spread_frame(starts, opt, store.parameters(version))
 
         def chosen(index):
             return [int(df["rank"].iloc[i]) for i in index or [] if i < len(df)]
 
-        trace_map = hv.DynamicMap(
-            pn.bind(
-                lambda index, x, by: traces(trace, ranks, best, chosen(index), x, colors(df, by)),
-                x=self.axis,
-                by=self.colour,
-            ),
-            streams=[picked],
-        )
-        spread_map = hv.DynamicMap(
-            pn.bind(
-                lambda index, x0, line, by: spread(
-                    spread_df, chosen(index), x0, line, colors(df, by)
-                ),
-                x0=self.show_x0,
-                line=self.connect,
-                by=self.colour,
-            ),
-            streams=[picked],
-        )
-        key = pn.bind(
-            lambda index, by, x0: K.Key(
-                entries=legend(df, starts, by, x0, chosen(index)),
-                sizing_mode="stretch_width",
-                margin=(0, 10),
-            ),
-            picked.param.index,
-            self.colour,
-            self.show_x0,
-        )
+        def relegend(*_):
+            self.legend.entries = legend(df, starts, self.colour.value, chosen(picked.index))
 
-        def plot(title: str, about: str, *body, basis: int = 420) -> pn.Column:
+        relegend()
+        self._watching = [(self.colour, self.colour.param.watch(relegend, "value"))]
+        picked.param.watch(relegend, "index")
+
+        # A plot keeps the axes it was first drawn with, log or linear, and its layers: what
+        # changes either draws the plot anew, the rest redraws it in place.
+        def trace_plot(log, median):
+            return pn.pane.HoloViews(
+                hv.DynamicMap(
+                    pn.bind(
+                        lambda index, x, by, off, rejected: traces(
+                            tf, best, chosen(index), x, colors(df, by, off), rejected, median, log
+                        ),
+                        x=self.axis,
+                        by=self.colour,
+                        off=hidden,
+                        rejected=self.rejected,
+                    ),
+                    streams=[picked],
+                ),
+                linked_axes=False,
+                sizing_mode="stretch_width",
+            )
+
+        def spread_plot(raw):
+            return pn.pane.HoloViews(
+                hv.DynamicMap(
+                    pn.bind(
+                        lambda index, x0, line, by, off: spread(
+                            spread_df, chosen(index), x0, line, colors(df, by, off), raw
+                        ),
+                        x0=self.show_x0,
+                        line=self.connect,
+                        by=self.colour,
+                        off=hidden,
+                    ),
+                    streams=[picked],
+                ),
+                linked_axes=False,
+            )
+
+        def plot(title: str, about: str, *body) -> pn.Column:
             return pn.Column(
                 K.key(title, about),
                 *body,
                 sizing_mode="stretch_width",
-                min_width=basis,
-                styles={"flex": f"1 1 {basis}px"},
+                min_width=420,
+                styles={"flex": "1 1 420px"},
             )
 
         return pn.Column(
@@ -732,7 +882,7 @@ class MultistartTab:
                 pn.pane.HTML("<b>Colour by</b>", align="center", margin=(0, 4, 0, 10)),
                 self.colour,
             ),
-            key,
+            self.legend,
             # Side by side where there is room, one above the other where there is not.
             pn.FlexBox(
                 # A flex basis each: stretch_width alone claims the whole row, so they always
@@ -747,14 +897,16 @@ class MultistartTab:
                 plot(
                     "Objective over the run",
                     TRACES,
-                    self.axis,
-                    pn.pane.HoloViews(trace_map, linked_axes=False, sizing_mode="stretch_width"),
+                    pn.FlexBox(
+                        self.axis, self.rejected, self.median, self.log, align_items="center"
+                    ),
+                    pn.bind(trace_plot, self.log, self.median),
                 ),
                 flex_wrap="wrap",
                 sizing_mode="stretch_width",
             ),
             K.key("Where each start ended, per estimated parameter", SPREAD),
-            pn.Row(self.show_x0, self.connect),
-            pn.pane.HoloViews(spread_map, linked_axes=False),
+            pn.Row(self.show_x0, self.connect, self.raw),
+            pn.bind(spread_plot, self.raw),
             sizing_mode="stretch_width",
         )
