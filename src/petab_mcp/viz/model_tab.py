@@ -176,9 +176,7 @@ def draw(
                 )
             ]
         layers.append(
-            hv.Labels(labels, ["x", "y"], "label").opts(
-                text_font_size="8pt", yoffset=0.12, text_color="#333333"
-            )
+            hv.Labels(labels, ["x", "y"], "label").opts(text_font_size="8pt", yoffset=0.12)
         )
     return hv.Overlay(layers), nodes
 

@@ -472,7 +472,7 @@ class FitTab:
             )
             + (" &nbsp; ┆ a period starts" if show_periods else "")
         )
-        cards.insert(0, pn.pane.HTML(key, styles={"font-size": "12px", "color": "#555"}))
+        cards.insert(0, pn.pane.HTML(key, styles={"font-size": "12px", "color": style.MUTED}))
         observable_info = self._observable_table(sim)
         design = design_table(problem, experiments, ends)
         details = [
