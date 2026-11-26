@@ -727,7 +727,8 @@ def equations(
             for s in expr.free_symbols
             if isinstance(s, sympy.Symbol) and s.name.count("_") > 1 and s not in names
         }
-        return sympy.latex(expr, symbol_names={**names, **verbatim})
+        # An explicit dot: a model's names are words, and `cyt*k1aBasic` juxtaposed read as one.
+        return sympy.latex(expr, symbol_names={**names, **verbatim}, mul_symbol="dot")
 
     def rhs(left: str, expr: sympy.Expr, relation: str = "=") -> list[str]:
         """``left relation expr``, a long one a term per aligned line, so an ODE reads down the
