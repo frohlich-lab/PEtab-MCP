@@ -147,13 +147,14 @@ def waterfall(df: pd.DataFrame) -> tuple[hv.Overlay, hv.Points]:
         active_tools=["box_select"],
         nonselection_alpha=0.3,
         show_legend=True,
-        # Inside, in the corner a waterfall leaves empty (good starts sit low on the left, bad ones
-        # high on the right): outside, it took most of a narrow window.
-        legend_position="top_left",
+        # Above the plot, in columns: on its right it took most of a narrow window, and inside it
+        # covered starts wherever it sat.
+        legend_position="top",
+        legend_cols=3,
         xlabel="start rank (best first)",
         ylabel=f"objective − best + {OFFSET:g}",
         responsive=True,
-        height=320,
+        height=370,
         ylim=(OFFSET / 2, 3 * max(float(df["above_best"].max()), 3 * OFFSET)),
     )
     warm = hv.Points(df[df["warm"]], ["rank", "above_best"]).opts(
@@ -440,7 +441,9 @@ class MultistartTab:
                 sizing_mode="stretch_width",
             ),
             pn.pane.Markdown(
-                exit_caption(df["ended"])
+                # Every start's, failed ones included: they have no objective to plot, but the
+                # summary counts their exit and the caption must say what it means.
+                exit_caption(_exit(f, m) for f, m in zip(starts["exitflag"], starts["message"]))
                 + "  \nBox-select starts in the waterfall to pick them out in the trace and below.",
                 styles={"color": style.MUTED, "font-size": "12px"},
             ),
