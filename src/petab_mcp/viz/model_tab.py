@@ -336,11 +336,14 @@ class ModelTab:
                 sizing_mode="stretch_width",
                 styles={"font-size": "12px", "white-space": "normal"},
             ),
-            pn.Row(
+            # The equations beside the graph where there is room, under it where there is not: in
+            # a narrow window they ran off the page's edge.
+            pn.FlexBox(
                 pn.pane.HoloViews(
                     graph, linked_axes=False, sizing_mode="stretch_width", min_width=420, height=640
                 ),
                 side,
+                flex_wrap="wrap",
                 sizing_mode="stretch_width",
             ),
         ]
