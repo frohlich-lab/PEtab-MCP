@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 import panel as pn
 from bokeh.models import ColumnDataSource, DataRange1d, HoverTool, Whisker
+from bokeh.palettes import Viridis256
 from bokeh.plotting import figure
 
 from ..problem import experiment_inputs
@@ -45,6 +46,15 @@ TITLE_INPUTS = 3
 #: The height of an observable's plot in a card, and the width below which the next wraps under it.
 HEIGHT, WIDTH = 190, 260
 
+#: The Simulations view's groupings: a card per experiment, or a plot per observable over them all.
+BY_EXPERIMENT, BY_OBSERVABLE = "experiment", "observable"
+
+#: Its x axes besides an input that sets the experiments apart.
+TIME, SIMULATED = "time", "simulated value"
+
+#: Measurement times a dose-response plot names in its legend before naming only the first and last.
+TIMES_NAMED = 10
+
 #: Residual weights beyond which a point is more than two noise sigmas off.
 BAND = 2.0
 
@@ -61,6 +71,11 @@ model misses the data.
 The background is shaded period by period: a new shade where the experiment changes what it does,
 such as adding a drug, grey before the first period while it settles to steady state. Hover a band
 for what the experiment sets and changes in it; "periods" turns the shading off.
+
+"Group by observable" draws one plot per observable with the experiments picked overlaid, each in
+its colour. "x axis" puts the simulated value across instead of time (a perfect fit lies on the
+diagonal), or, grouped by observable, an input that differs between the experiments, such as a
+dose: a dose-response curve per measurement time.
 """
 
 CHI2_OBSERVABLE = """
@@ -332,6 +347,162 @@ def observable_figure(
     return p
 
 
+def numeric_inputs(problem, experiments: list[str]) -> pd.DataFrame:
+    """The inputs that take more than one numeric value across ``experiments``, one column each
+    (:func:`petab_mcp.problem.experiment_inputs`), NaN where an experiment's is not a number."""
+    try:
+        wide = experiment_inputs(problem)
+    except Exception:  # noqa: BLE001 - a design the helper cannot read has no inputs to plot on
+        return pd.DataFrame()
+    if wide is None or wide.empty:
+        return pd.DataFrame()
+    wide = wide.reindex([e for e in experiments if e in wide.index])
+    wide = wide.apply(pd.to_numeric, errors="coerce")
+    return wide.loc[:, [c for c in wide.columns if wide[c].nunique(dropna=True) > 1]]
+
+
+def _points(sim: pd.DataFrame, color: str | pd.Series) -> ColumnDataSource:
+    """A plot's measurements, with their noise interval, simulation and hover fields."""
+    noise = sim["noise"].astype(float).fillna(0.0).to_numpy()
+    measured = sim["measurement"].astype(float).to_numpy()
+    return ColumnDataSource(
+        {
+            "time": sim["time"].astype(float).to_numpy(),
+            "measurement": measured,
+            "simulation": sim["simulation"].astype(float).to_numpy(),
+            "residual": sim["residual_weighted"].astype(float).to_numpy(),
+            "lower": measured - noise,
+            "upper": measured + noise,
+            "experiment": sim["experiment_id"].astype(str).to_numpy(),
+            "color": np.broadcast_to(np.asarray(color, dtype=object), len(sim)).tolist(),
+        }
+    )
+
+
+#: What hovering a measurement shows in the plots over several experiments.
+POINT_HOVER = [
+    ("experiment", "@experiment"),
+    ("time", "@time{0.[00]}"),
+    ("measured", "@measurement{0.[0000]}"),
+    ("simulated", "@simulation{0.[0000]}"),
+    ("weighted residual", "@residual{0.00}"),
+]
+
+
+def agreement_figure(obs: str, sim: pd.DataFrame, colors: dict[str, str], error_bars: bool):
+    """An observable's measurements against the simulation at the same points, each experiment in
+    its colour: on the diagonal where the model matches the measurement."""
+    sim = sim.assign(_c=sim["experiment_id"].map(colors).fillna(style.MUTED))
+    source = _points(sim, sim["_c"])
+    total = float((sim["residual_weighted"].astype(float) ** 2).sum())
+    p = figure(
+        title=f"{obs} · χ² {total:.3g} (n={len(sim)})",
+        height=HEIGHT,
+        sizing_mode="stretch_width",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+        x_axis_label=f"simulated {obs}",
+        y_axis_label=f"measured {obs}",
+    )
+    p.title.text_font_size = "9pt"
+    p.toolbar.autohide = True
+    values = np.concatenate([source.data["simulation"], source.data["measurement"]])
+    values = values[np.isfinite(values)]
+    if values.size:
+        low, high = float(values.min()), float(values.max())
+        p.line([low, high], [low, high], color=style.MUTED, line_dash="dashed")
+    if error_bars and sim["noise"].notna().any():
+        p.add_layout(
+            Whisker(
+                source=source, base="simulation", lower="lower", upper="upper", line_color="#7f7f7f"
+            )
+        )
+    dots = p.scatter("simulation", "measurement", source=source, size=6, color="color")
+    p.add_tools(HoverTool(renderers=[dots], tooltips=POINT_HOVER))
+    return p
+
+
+def overlay_figure(
+    obs: str,
+    sim: pd.DataFrame,
+    compare: pd.DataFrame | None,
+    colors: dict[str, str],
+    error_bars: bool,
+):
+    """An observable over time in several experiments, each in its colour: measured as dots, its
+    simulation as a line, the compared version's dashed."""
+    p = _figure(
+        f"{obs} · χ² {float((sim['residual_weighted'].astype(float) ** 2).sum()):.3g}",
+        DataRange1d(),
+        obs,
+    )
+    dots = []
+    for eid, color in colors.items():
+        sub = sim[sim["experiment_id"] == eid].sort_values("time")
+        if sub.empty:
+            continue
+        source = _points(sub, color)
+        if error_bars and sub["noise"].notna().any():
+            p.add_layout(
+                Whisker(source=source, base="time", lower="lower", upper="upper", line_color=color)
+            )
+        line = sub.groupby("time")["simulation"].mean()
+        p.line(line.index.to_numpy(), line.to_numpy(), color=color, line_width=2)
+        if compare is not None:
+            theirs = compare[compare["experiment_id"] == eid].groupby("time")["simulation"].mean()
+            if not theirs.empty:
+                p.line(
+                    theirs.index.to_numpy(),
+                    theirs.to_numpy(),
+                    color=color,
+                    line_dash="dashed",
+                    alpha=0.7,
+                )
+        dots.append(p.scatter("time", "measurement", source=source, size=6, color=color))
+    p.add_tools(HoverTool(renderers=dots, tooltips=POINT_HOVER))
+    return p
+
+
+def dose_figure(obs: str, sim: pd.DataFrame, dose: pd.Series, name: str, error_bars: bool):
+    """An observable against an input (``dose``, its value by experiment), a curve per measurement
+    time in a sequential palette, early dark to late yellow: measured as dots, the simulation as a
+    line. The axis is logarithmic where the input spans two decades or more."""
+    sim = sim.assign(x=sim["experiment_id"].map(dose)).dropna(subset=["x"])
+    xs = sim["x"].to_numpy(dtype=float)
+    log = bool(xs.size) and xs.min() > 0 and xs.max() >= 100 * xs.min()
+    p = figure(
+        title=f"{obs} against {name}",
+        height=HEIGHT,
+        sizing_mode="stretch_width",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+        x_axis_type="log" if log else "linear",
+        x_axis_label=name,
+        y_axis_label=obs,
+    )
+    p.title.text_font_size = "9pt"
+    p.toolbar.autohide = True
+    dots = []
+    for t, color in time_colors(sim["time"]).items():
+        sub = sim[sim["time"] == t].sort_values("x")
+        source = _points(sub, color)
+        source.data["x"] = sub["x"].to_numpy(dtype=float)
+        if error_bars and sub["noise"].notna().any():
+            p.add_layout(
+                Whisker(source=source, base="x", lower="lower", upper="upper", line_color=color)
+            )
+        line = sub.groupby("x")["simulation"].mean()
+        p.line(line.index.to_numpy(), line.to_numpy(), color=color, line_width=1.5)
+        dots.append(p.scatter("x", "measurement", source=source, size=6, color=color))
+    p.add_tools(HoverTool(renderers=dots, tooltips=[(name, "@x"), *POINT_HOVER]))
+    return p
+
+
+def time_colors(times: pd.Series) -> dict[float, str]:
+    """Each measurement time's colour, early dark to late yellow (viridis)."""
+    unique = sorted(times.astype(float).unique())
+    picks = np.linspace(0, len(Viridis256) - 1, max(len(unique), 1)).astype(int)
+    return {t: Viridis256[i] for t, i in zip(unique, picks)}
+
+
 def _normal_pdf(x):
     """The standard normal's density: scipy's import cost the residuals view a second."""
     return np.exp(-np.square(x) / 2) / math.sqrt(2 * math.pi)
@@ -535,6 +706,35 @@ def fit_entries(version, compare, error_bars: bool, show_periods: bool) -> list[
     return out
 
 
+def scheme_entries(
+    group: str, x: str, colors: dict[str, str], labels: dict[str, str], times: pd.Series | None
+) -> list[dict]:
+    """The legend of the views other than an experiment's data over time (:func:`fit_entries`)."""
+    out = []
+    if group == BY_OBSERVABLE and x in (TIME, SIMULATED):
+        out += [K.entry(labels.get(e, e) or "(no experiment)", e, c) for e, c in colors.items()]
+    if x == SIMULATED:
+        out.append(
+            K.entry(
+                "where they agree",
+                "The diagonal: a measurement on it is exactly what the model predicts; above it "
+                "the model predicts too little, below it too much.",
+                style.MUTED,
+                "╌",
+            )
+        )
+    elif x not in (TIME, SIMULATED) and times is not None:
+        shown = time_colors(times)
+        named = list(shown.items())
+        if len(named) > TIMES_NAMED:
+            named = [named[0], named[-1]]
+        out += [
+            K.entry(f"t = {_fmt(t)}", "Measured at this time (dots) and simulated (line).", c)
+            for t, c in named
+        ]
+    return out
+
+
 def design_table(problem, chosen: list[str], ends: dict[str, float]) -> pd.DataFrame:
     rows = []
     for eid in chosen:
@@ -564,6 +764,24 @@ def design_table(problem, chosen: list[str], ends: dict[str, float]) -> pd.DataF
     )
 
 
+def _wrapped(plots: list) -> pn.FlexBox:
+    """Bokeh's own figures, side by side as the window allows: built through HoloViews, a card's
+    four plots took most of the tab's load."""
+    return pn.FlexBox(
+        *[
+            pn.Column(
+                pn.pane.Bokeh(plot, sizing_mode="stretch_width"),
+                sizing_mode="stretch_width",
+                min_width=WIDTH,
+                styles={"flex": f"1 1 {WIDTH}px"},
+            )
+            for plot in plots
+        ],
+        flex_wrap="wrap",
+        sizing_mode="stretch_width",
+    )
+
+
 class FitTab:
     """The tab, reading the app's ``version`` and ``compare``."""
 
@@ -580,6 +798,14 @@ class FitTab:
         )
         self.show_periods = pn.widgets.Checkbox(name="periods", value=True)
         self.error_bars = pn.widgets.Checkbox(name="noise σ as error bars", value=True)
+        self.group = pn.widgets.RadioButtonGroup(
+            options=[BY_EXPERIMENT, BY_OBSERVABLE], value=BY_EXPERIMENT, button_type="light"
+        )
+        self.x_axis = pn.widgets.Select(options=[TIME, SIMULATED], value=TIME, width=200)
+        self.group.param.watch(self._axes, "value")
+        self.experiments.param.watch(self._axes, "value")
+        self.x_axis.param.watch(self._periods_apply, "value")
+        self.group.param.watch(self._periods_apply, "value")
         self._version_seen: int | None = None
         self.app.param.watch(self._reset, "version")
         self._reset()
@@ -607,6 +833,22 @@ class FitTab:
         self.observables.options = obs
         self.observables.value = [o for o in self.observables.value if o in obs] or obs
 
+    def _axes(self, *_):
+        """The x axes the grouping and the experiments picked allow: an input only over several
+        experiments, where it differs."""
+        options = [TIME, SIMULATED]
+        if self.group.value == BY_OBSERVABLE:
+            options += list(numeric_inputs(self.app.problem, self.experiments.value).columns)
+        self.x_axis.options = options
+        if self.x_axis.value not in options:
+            self.x_axis.value = TIME
+
+    def _periods_apply(self, *_):
+        """Periods shade only an experiment's data over time."""
+        self.show_periods.disabled = not (
+            self.group.value == BY_EXPERIMENT and self.x_axis.value == TIME
+        )
+
     def view(self) -> pn.viewable.Viewable:
         simulations = pn.bind(
             self._simulations,
@@ -616,6 +858,8 @@ class FitTab:
             self.observables,
             self.show_periods,
             self.error_bars,
+            self.group,
+            self.x_axis,
         )
         residuals = pn.bind(self._residuals, self.app.param.version, self.experiments)
         # lazy: built when the tab is first shown, not with the page (see app.VizApp.view); the
@@ -626,7 +870,15 @@ class FitTab:
                 (
                     "Simulations",
                     pn.Column(
-                        pn.Row(self.show_periods, self.error_bars),
+                        pn.Row(
+                            pn.pane.HTML("<b>Group by</b>", align="center", margin=(0, 4, 0, 10)),
+                            self.group,
+                            pn.pane.HTML("<b>x axis</b>", align="center", margin=(0, 4, 0, 16)),
+                            self.x_axis,
+                            self.show_periods,
+                            self.error_bars,
+                            align="center",
+                        ),
                         pn.panel(simulations, lazy=True, sizing_mode="stretch_width"),
                         sizing_mode="stretch_width",
                     ),
@@ -650,7 +902,9 @@ class FitTab:
         sim = self._stored(version)
         return residual_views(sim, experiments) if isinstance(sim, pd.DataFrame) else sim
 
-    def _simulations(self, version, compare, experiments, observables, show_periods, error_bars):
+    def _simulations(
+        self, version, compare, experiments, observables, show_periods, error_bars, group, x
+    ):
         store, problem = self.app.store, self.app.problem
         sim = self._stored(version)
         if not isinstance(sim, pd.DataFrame):
@@ -658,6 +912,72 @@ class FitTab:
         other = store.simulations(compare) if compare is not None else None
         ends = sim.groupby("experiment_id")["time"].max().to_dict()
         titles = distinguishing_inputs(problem)
+        show_periods = show_periods and x == TIME
+        if group == BY_OBSERVABLE:
+            body = self._by_observable(sim, other, experiments, observables, error_bars, x)
+        else:
+            body = self._by_experiment(
+                sim, other, experiments, observables, show_periods, error_bars, x, titles, ends
+            )
+        if x == TIME and group == BY_EXPERIMENT:
+            entries = fit_entries(version, compare, error_bars, show_periods)
+        else:
+            colors = style.categorical(experiments)
+            shown = sim[sim["experiment_id"].isin(experiments)]
+            entries = scheme_entries(group, x, colors, titles, shown["time"])
+        observable_info = self._observable_table(sim)
+        design = design_table(problem, experiments, ends)
+        details = [
+            pn.Card(
+                pn.pane.DataFrame(observable_info, index=False, sizing_mode="stretch_width"),
+                title="Observables",
+                collapsed=True,
+                sizing_mode="stretch_width",
+            )
+        ]
+        if not design.empty:
+            details.append(
+                pn.Card(
+                    pn.pane.DataFrame(design, index=False, sizing_mode="stretch_width"),
+                    title="Design of the experiments shown, period by period",
+                    collapsed=True,
+                    sizing_mode="stretch_width",
+                )
+            )
+        return pn.Column(
+            K.key("Data and simulation", FIT, entries),
+            *body,
+            *details,
+            sizing_mode="stretch_width",
+        )
+
+    def _by_observable(self, sim, other, experiments, observables, error_bars, x):
+        """A plot per observable over the experiments picked."""
+        colors = style.categorical(experiments)
+        shown = sim[sim["experiment_id"].isin(experiments)]
+        theirs = other[other["experiment_id"].isin(experiments)] if other is not None else None
+        dose = numeric_inputs(self.app.problem, experiments)
+        plots = []
+        for obs in [o for o in chi2(shown, "observable_id").index if o in set(observables)]:
+            points = shown[shown["observable_id"] == obs]
+            if x == SIMULATED:
+                plots.append(agreement_figure(obs, points, colors, error_bars))
+            elif x in dose.columns:
+                plots.append(dose_figure(obs, points, dose[x], x, error_bars))
+            else:
+                compare = theirs[theirs["observable_id"] == obs] if theirs is not None else None
+                plots.append(overlay_figure(obs, points, compare, colors, error_bars))
+        if not plots:
+            return [
+                pn.pane.Markdown("Nothing measured for the experiments and observables picked.")
+            ]
+        return [_wrapped(plots)]
+
+    def _by_experiment(
+        self, sim, other, experiments, observables, show_periods, error_bars, x, titles, ends
+    ):
+        """A card per experiment, a plot per observable in it."""
+        problem = self.app.problem
         cards = []
         for eid in experiments:
             sub = sim[sim["experiment_id"] == eid]
@@ -683,7 +1003,10 @@ class FitTab:
                     theirs = other[
                         (other["experiment_id"] == eid) & (other["observable_id"] == obs)
                     ]
-                plots.append(observable_figure(obs, points, theirs, bands, error_bars, x_range))
+                if x == SIMULATED:
+                    plots.append(agreement_figure(obs, points, {eid: style.PALETTE[0]}, error_bars))
+                else:
+                    plots.append(observable_figure(obs, points, theirs, bands, error_bars, x_range))
             if not plots:
                 continue
             total = float((sub["residual_weighted"].astype(float) ** 2).sum())
@@ -699,23 +1022,7 @@ class FitTab:
                     ],
                 )
             )
-            # Bokeh's own figures, side by side as the window allows: built through HoloViews, a
-            # card's four plots took most of the tab's load.
-            items = [
-                pn.FlexBox(
-                    *[
-                        pn.Column(
-                            pn.pane.Bokeh(plot, sizing_mode="stretch_width"),
-                            sizing_mode="stretch_width",
-                            min_width=WIDTH,
-                            styles={"flex": f"1 1 {WIDTH}px"},
-                        )
-                        for plot in plots
-                    ],
-                    flex_wrap="wrap",
-                    sizing_mode="stretch_width",
-                )
-            ]
+            items = [_wrapped(plots)]
             if len(measured) > TRACKS:
                 items.append(
                     pn.pane.Markdown(
@@ -730,32 +1037,7 @@ class FitTab:
             cards.append(
                 pn.pane.Markdown("Nothing measured for the experiments and observables picked.")
             )
-        cards.insert(
-            0,
-            K.key(
-                "Data and simulation", FIT, fit_entries(version, compare, error_bars, show_periods)
-            ),
-        )
-        observable_info = self._observable_table(sim)
-        design = design_table(problem, experiments, ends)
-        details = [
-            pn.Card(
-                pn.pane.DataFrame(observable_info, index=False, sizing_mode="stretch_width"),
-                title="Observables",
-                collapsed=True,
-                sizing_mode="stretch_width",
-            )
-        ]
-        if not design.empty:
-            details.append(
-                pn.Card(
-                    pn.pane.DataFrame(design, index=False, sizing_mode="stretch_width"),
-                    title="Design of the experiments shown, period by period",
-                    collapsed=True,
-                    sizing_mode="stretch_width",
-                )
-            )
-        return pn.Column(*cards, *details, sizing_mode="stretch_width")
+        return cards
 
     def _observable_table(self, sim: pd.DataFrame) -> pd.DataFrame:
         odf = self.app.problem.observable_df

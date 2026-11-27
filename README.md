@@ -104,8 +104,10 @@ default). The tabs show that version, and every plot explains on hover how to re
   run, and below, where each start ended within each estimated parameter's bounds. A running fit's
   starts appear as they finish.
 - **Fit:** data against simulation, one card per experiment, worst-fitted first, each plot shaded
-  by the experiment's periods; hover a period for what the experiment sets and changes in it. A
-  Residuals sub-tab sits beside it.
+  by the experiment's periods; hover a period for what the experiment sets and changes in it.
+  Grouped by observable instead, the experiments are overlaid; the x axis can be time, the
+  simulated value, or an input that differs between experiments (dose-response). A Residuals
+  sub-tab sits beside it.
 
 The page never writes to the store and never compiles or simulates a model: it shows what the fits
 stored. A running fit reaches it through `fit_progress.json`, which the server keeps in the store

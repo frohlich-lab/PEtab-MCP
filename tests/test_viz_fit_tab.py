@@ -59,3 +59,37 @@ def test_a_chi2_of_pure_noise_is_a_standard_normal_z_whatever_its_n():
     chi2 = np.array([(rng.standard_normal(k) ** 2).sum() for k in n])
     z = F.chi2_z(chi2, n)
     assert abs(z.mean()) < 0.05 and abs(z.std() - 1) < 0.05
+
+
+def test_a_dose_response_plot_draws_a_curve_per_measurement_time_on_a_log_axis():
+    """Two doses three decades apart, each measured at two times: a line per time, the dose axis
+    logarithmic."""
+    sim = pd.DataFrame(
+        {
+            "experiment_id": ["a", "a", "b", "b"],
+            "observable_id": "y",
+            "time": [0.0, 1.0, 0.0, 1.0],
+            "measurement": [1.0, 2.0, 3.0, 4.0],
+            "simulation": [1.0, 2.0, 3.0, 4.0],
+            "residual_weighted": 0.0,
+            "noise": 0.1,
+        }
+    )
+    p = F.dose_figure("y", sim, pd.Series({"a": 1.0, "b": 1000.0}), "dose", True)
+    assert sum(type(r.glyph).__name__ == "Line" for r in p.renderers) == 2
+    assert type(p.x_scale).__name__ == "LogScale"
+
+
+def test_only_an_input_with_several_numbers_across_the_experiments_is_an_axis(monkeypatch):
+    """Lucarelli sets some initial amounts by name (S2tot): those experiments are off the axis."""
+    wide = pd.DataFrame(
+        {"init_S2": ["S2tot", 142.3, 284.7], "EGF_end": [3600.0, 3600.0, 3600.0]},
+        index=["e1", "e2", "e3"],
+    )
+    monkeypatch.setattr(F, "experiment_inputs", lambda problem: wide)
+    axes = F.numeric_inputs(None, ["e1", "e2", "e3"])
+    assert list(axes.columns) == ["init_S2"] and axes["init_S2"].isna().tolist() == [
+        True,
+        False,
+        False,
+    ]

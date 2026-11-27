@@ -37,6 +37,26 @@ def test_every_tab_of_every_version_renders(app):
     app.view().server_doc(Document())
 
 
+def test_every_grouping_and_x_axis_of_the_simulations_renders(app):
+    from petab_mcp.viz.fit_tab import BY_EXPERIMENT, BY_OBSERVABLE
+
+    f = app.fit
+    for group in (BY_EXPERIMENT, BY_OBSERVABLE):
+        f.group.value = group
+        for x in f.x_axis.options:
+            view = f._simulations(
+                app.version,
+                app.compare,
+                f.experiments.value,
+                f.observables.value,
+                True,
+                True,
+                group,
+                x,
+            )
+            pn.panel(view).get_root(Document())
+
+
 def test_the_app_opens_on_head_and_compares_with_its_parent(app):
     assert (app.version, app.compare) == (1, 0)
     app.compare_pick.value = "nothing"
