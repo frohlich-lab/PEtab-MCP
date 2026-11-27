@@ -25,11 +25,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from statistics import NormalDist
 
 import holoviews as hv
 import numpy as np
 import pandas as pd
 import panel as pn
+from bokeh.models import ColumnDataSource, DataRange1d, HoverTool, Range1d, Span, Whisker
+from bokeh.plotting import figure
 
 from ..problem import experiment_inputs
 from . import key as K
@@ -49,6 +52,10 @@ SETTINGS = 10
 
 #: Inputs a card title names before "+N more".
 TITLE_INPUTS = 3
+
+#: The height of an observable's plot in a card, of a quantity the experiment sets, and the width
+#: below which the next plot wraps under it.
+HEIGHT, PROTOCOL_HEIGHT, WIDTH = 190, 130, 260
 
 #: Residual weights beyond which a point is more than two noise sigmas off.
 BAND = 2.0
@@ -296,45 +303,60 @@ def protocol(problem, inputs, experiment_id: str, t_end: float) -> Protocol:
     return out
 
 
-def protocol_plots(proto: Protocol) -> list:
-    """A plot of each quantity that changes over time, to sit under a card's data."""
-    t = hv.Dimension("time")
+def _figure(title: str, x_range, y_label: str, height: int = HEIGHT) -> figure:
+    p = figure(
+        title=title,
+        x_range=x_range,
+        height=height,
+        sizing_mode="stretch_width",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+        x_axis_label="time",
+        y_axis_label=y_label,
+    )
+    p.title.text_font_size = "9pt"
+    p.xaxis.ticker.desired_num_ticks = 4
+    p.toolbar.autohide = True
+    return p
+
+
+def _period_starts(p: figure, starts: list[float]) -> None:
+    for start in starts:
+        p.add_layout(
+            Span(location=start, dimension="height", line_color=style.MUTED, line_dash="dashed")
+        )
+
+
+def protocol_figures(proto: Protocol, x_range) -> list[figure]:
+    """A plot of each quantity that changes over time, beside a card's data on its time axis."""
     plots = []
     for name, (ts, vs, stepped) in list(proto.curves.items())[:PROTOCOLS]:
-        y = hv.Dimension(f"u_{name}", label=name)
-        layers = [
-            hv.Curve((ts, vs), t, y).opts(
-                color=style.PALETTE[2],
-                line_width=2,
-                interpolation="steps-post" if stepped else "linear",
-            )
-        ]
+        note = proto.notes.get(name)
+        p = _figure(
+            f"{name} = {note}" if note else f"{name}, as the experiment sets it",
+            x_range,
+            name,
+            PROTOCOL_HEIGHT,
+        )
+        draw = p.step if stepped else p.line
+        kwargs = {"mode": "after"} if stepped else {}
+        draw(list(ts), list(vs), color=style.PALETTE[2], line_width=2, **kwargs)
         if name in proto.preeq:
             span = float(ts[-1] - ts[0]) or 1.0
             stub = proto.preeq[name]
-            layers.append(
-                hv.Curve(([ts[0] - 0.04 * span, ts[0]], [stub, stub]), t, y).opts(
-                    color=style.PALETTE[2], line_dash="dashed", line_width=2
-                )
+            p.line(
+                [ts[0] - 0.04 * span, ts[0]],
+                [stub, stub],
+                color=style.PALETTE[2],
+                line_dash="dashed",
+                line_width=2,
             )
-        layers += [
-            hv.VLine(s).opts(color=style.MUTED, line_dash="dashed", line_width=1)
-            for s in proto.starts
-        ]
+        _period_starts(p, proto.starts)
         # From zero, with room above: a dose held constant had a range of nothing, its ticks piled.
         values = [*vs, proto.preeq.get(name, vs[0])]
         low, high = min(0.0, float(np.min(values))), float(np.max(values))
         pad = 0.15 * (high - low) if high > low else max(abs(high), 1.0) * 0.15
-        note = proto.notes.get(name)
-        plots.append(
-            hv.Overlay(layers).opts(
-                title=f"{name} = {note}" if note else f"{name}, as the experiment sets it",
-                responsive=True,
-                height=150,
-                ylim=(low - (pad if low < 0 else 0), high + pad),
-                show_legend=False,
-            )
-        )
+        p.y_range = Range1d(low - (pad if low < 0 else 0), high + pad)
+        plots.append(p)
     return plots
 
 
@@ -350,59 +372,64 @@ def settings_line(proto: Protocol, apart: str | None) -> str:
     return "Set throughout: " + ", ".join(items[:SETTINGS]) + more
 
 
-def observable_plot(
+def observable_figure(
     obs: str,
     sim: pd.DataFrame,
     compare: pd.DataFrame | None,
     starts: list[float],
     error_bars: bool,
-    compare_label: str | None,
-) -> hv.Overlay:
-    y = hv.Dimension(f"y_{obs}", label=obs)
-    t = hv.Dimension("time")
+    x_range,
+) -> figure:
+    """An observable's measurements in one experiment, ± their noise, and the version's
+    simulation through them, the compared version's dashed."""
     points = sim.sort_values("time")
-    layers = []
-    if error_bars and points["noise"].notna().any():
-        layers.append(
-            hv.ErrorBars(
-                (points["time"], points["measurement"], points["noise"].fillna(0)),
-                kdims=[t],
-                vdims=[y, "noise"],
-            ).opts(color="#7f7f7f", line_width=1)
-        )
-    layers.append(
-        hv.Scatter(
-            points.rename(columns={"measurement": y.name}),
-            t,
-            [y, "residual_weighted"],
-        ).opts(color=style.PALETTE[0], size=6, tools=["hover"])
+    noise = points["noise"].astype(float).fillna(0.0).to_numpy()
+    measured = points["measurement"].astype(float).to_numpy()
+    source = ColumnDataSource(
+        {
+            "time": points["time"].astype(float).to_numpy(),
+            "measurement": measured,
+            "residual": points["residual_weighted"].astype(float).to_numpy(),
+            "lower": measured - noise,
+            "upper": measured + noise,
+        }
     )
-    line = points.groupby("time", as_index=False)["simulation"].mean()
-    layers.append(
-        hv.Curve((line["time"], line["simulation"]), t, y, label="simulation").opts(
-            color=style.PALETTE[3], line_width=2
-        )
-    )
-    if compare is not None and not compare.empty:
-        cline = compare.groupby("time", as_index=False)["simulation"].mean()
-        layers.append(
-            hv.Curve((cline["time"], cline["simulation"]), t, y, label=compare_label).opts(
-                color=style.PALETTE[3], line_dash="dashed", line_width=1.5, alpha=0.7
-            )
-        )
-    layers += [
-        hv.VLine(start).opts(color=style.MUTED, line_dash="dashed", line_width=1)
-        for start in starts
-    ]
-    n = len(points)
     total = float((points["residual_weighted"].astype(float) ** 2).sum())
-    return hv.Overlay(layers).opts(
-        title=f"{obs} · χ² {total:.3g} (n={n})",
-        responsive=True,
-        height=210,
-        show_legend=False,
-        framewise=True,
+    p = _figure(f"{obs} · χ² {total:.3g} (n={len(points)})", x_range, obs)
+    if error_bars and points["noise"].notna().any():
+        p.add_layout(
+            Whisker(source=source, base="time", lower="lower", upper="upper", line_color="#7f7f7f")
+        )
+    dots = p.scatter("time", "measurement", source=source, size=6, color=style.PALETTE[0])
+    p.add_tools(
+        HoverTool(
+            renderers=[dots],
+            tooltips=[
+                ("time", "@time{0.[00]}"),
+                ("measured", "@measurement{0.[0000]}"),
+                ("weighted residual", "@residual{0.00}"),
+            ],
+        )
     )
+    line = points.groupby("time")["simulation"].mean()
+    p.line(line.index.to_numpy(), line.to_numpy(), color=style.PALETTE[3], line_width=2)
+    if compare is not None and not compare.empty:
+        theirs = compare.groupby("time")["simulation"].mean()
+        p.line(
+            theirs.index.to_numpy(),
+            theirs.to_numpy(),
+            color=style.PALETTE[3],
+            line_dash="dashed",
+            line_width=1.5,
+            alpha=0.7,
+        )
+    _period_starts(p, starts)
+    return p
+
+
+def _normal_pdf(x):
+    """The standard normal's density: scipy's import cost the residuals view a second."""
+    return np.exp(-np.square(x) / 2) / math.sqrt(2 * math.pi)
 
 
 def chi2_z(chi2, n) -> np.ndarray:
@@ -419,14 +446,12 @@ def chi2_distribution(frame: pd.DataFrame, name: str, color: str) -> hv.Overlay:
     """``frame``'s χ² (columns ``name``, ``chi2`` and ``n``) as z-scores (:func:`chi2_z`): their
     histogram, the standard normal they would follow, a mark for each, and the furthest out on
     either side named."""
-    from scipy.stats import norm
-
     df = frame.assign(z=chi2_z(frame["chi2"], frame["n"])).sort_values("z")
     low, high = min(float(df["z"].min()), -3.5), max(float(df["z"].max()), 3.5)
     edges = np.linspace(low, high, int(np.clip(2 * np.sqrt(len(df)), 8, 40)) + 1)
     density, _ = np.histogram(df["z"], bins=edges, density=True)
     xs = np.linspace(low, high, 300)
-    top = max(float(density.max()), float(norm.pdf(0)))
+    top = max(float(density.max()), _normal_pdf(0.0))
     k = NAMED if len(df) >= 10 else NAMED_FEW
     named = df if len(df) <= 2 * k else pd.concat([df.head(k), df.tail(k)])
     # Stacked above the plot, each a level of its own on its side, so long names do not overlap.
@@ -437,7 +462,7 @@ def chi2_distribution(frame: pd.DataFrame, name: str, color: str) -> hv.Overlay:
         hv.Histogram((edges, density), kdims=[z], vdims=["density"]).opts(
             color=color, alpha=0.45, line_color=None
         ),
-        hv.Curve((xs, norm.pdf(xs)), z, "density").opts(
+        hv.Curve((xs, _normal_pdf(xs)), z, "density").opts(
             color=style.MUTED, line_dash="dashed", line_width=2
         ),
         hv.Segments(named, [z, "y0", "z1", "y"]).opts(
@@ -495,9 +520,8 @@ def residual_views(sim: pd.DataFrame, chosen: list[str]) -> pn.viewable.Viewable
     )
     r = np.sort(sim["residual_weighted"].dropna().astype(float).to_numpy())
     if len(r):
-        from scipy.stats import norm
-
-        q = norm.ppf((np.arange(1, len(r) + 1) - 0.5) / len(r))
+        normal = NormalDist()
+        q = np.array([normal.inv_cdf((i + 0.5) / len(r)) for i in range(len(r))])
         lim = float(max(abs(r).max(), abs(q).max()))
         qq = (
             hv.Scatter((q, r), "normal quantile", "weighted residual").opts(
@@ -692,7 +716,7 @@ class FitTab:
         # lazy: built when the tab is first shown, not with the page (see app.VizApp.view); the
         # sub-tab not shown is not built either.
         return pn.Column(
-            pn.Column(self.experiments, self.observables, sizing_mode="stretch_width"),
+            pn.Row(self.experiments, self.observables, sizing_mode="stretch_width"),
             pn.Tabs(
                 (
                     "Simulations",
@@ -727,7 +751,6 @@ class FitTab:
         if not isinstance(sim, pd.DataFrame):
             return sim
         other = store.simulations(compare) if compare is not None else None
-        compare_label = f"v{compare}" if compare is not None else None
         ends = sim.groupby("experiment_id")["time"].max().to_dict()
         titles = distinguishing_inputs(problem)
         cards = []
@@ -737,6 +760,8 @@ class FitTab:
             _, preeq = periods(problem, eid, float(ends.get(eid, 0.0)))
             starts = proto.starts if show_periods else []
             measured = [o for o in chi2(sub, "observable_id").index if o in set(observables)]
+            # One time axis for the card's plots, so they zoom and pan together.
+            x_range = DataRange1d()
             plots = []
             for obs in measured[:TRACKS]:
                 points = sub[sub["observable_id"] == obs]
@@ -745,9 +770,7 @@ class FitTab:
                     theirs = other[
                         (other["experiment_id"] == eid) & (other["observable_id"] == obs)
                     ]
-                plots.append(
-                    observable_plot(obs, points, theirs, starts, error_bars, compare_label)
-                )
+                plots.append(observable_figure(obs, points, theirs, starts, error_bars, x_range))
             if not plots:
                 continue
             total = float((sub["residual_weighted"].astype(float) ** 2).sum())
@@ -764,11 +787,21 @@ class FitTab:
                 )
             )
             if show_periods:
-                plots += protocol_plots(proto)
+                plots += protocol_figures(proto, x_range)
+            # Bokeh's own figures, side by side as the window allows: built through HoloViews, a
+            # card's four plots took most of the tab's load.
             items = [
-                pn.pane.HoloViews(
-                    hv.Layout(plots).cols(1).opts(shared_axes=True),
-                    linked_axes=False,
+                pn.FlexBox(
+                    *[
+                        pn.Column(
+                            pn.pane.Bokeh(plot, sizing_mode="stretch_width"),
+                            sizing_mode="stretch_width",
+                            min_width=WIDTH,
+                            styles={"flex": f"1 1 {WIDTH}px"},
+                        )
+                        for plot in plots
+                    ],
+                    flex_wrap="wrap",
                     sizing_mode="stretch_width",
                 )
             ]
@@ -788,7 +821,7 @@ class FitTab:
                         sizing_mode="stretch_width",
                     )
                 )
-            cards.append(pn.Card(*items, title=title, sizing_mode="stretch_width"))
+            cards.append(pn.Card(*items, title=title, sizing_mode="stretch_width", margin=(5, 0)))
         if not cards:
             cards.append(
                 pn.pane.Markdown("Nothing measured for the experiments and observables picked.")
@@ -803,9 +836,7 @@ class FitTab:
         design = design_table(problem, experiments, ends)
         details = [
             pn.Card(
-                pn.widgets.Tabulator(
-                    observable_info, disabled=True, show_index=False, sizing_mode="stretch_width"
-                ),
+                pn.pane.DataFrame(observable_info, index=False, sizing_mode="stretch_width"),
                 title="Observables",
                 collapsed=True,
                 sizing_mode="stretch_width",
@@ -814,9 +845,7 @@ class FitTab:
         if not design.empty:
             details.append(
                 pn.Card(
-                    pn.widgets.Tabulator(
-                        design, disabled=True, show_index=False, sizing_mode="stretch_width"
-                    ),
+                    pn.pane.DataFrame(design, index=False, sizing_mode="stretch_width"),
                     title="Design of the experiments shown, period by period",
                     collapsed=True,
                     sizing_mode="stretch_width",
