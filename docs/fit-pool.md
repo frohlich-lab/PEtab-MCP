@@ -14,9 +14,11 @@ shared server instead and was closed as superseded.
 
 - **`petab-mcp-pool`** (`pool.py`) is the pool: a long-lived SLURM job whose process hosts a
   `dask_jobqueue.SLURMCluster` scheduler on `--port` of its node.
-  - It submits `--slurm-max-jobs` worker jobs as it starts and keeps them until it stops. It does
-    not `adapt`: a worker joins before it can take a batch (a cold `import petab_mcp`), so adapt saw
-    idle workers beside queued batches and cancelled each new job (#250).
+  - It submits a worker job for every `processes` batches queued or running, up to
+    `--slurm-max-jobs`, and cancels a job none of whose workers has run a batch for
+    `--slurm-idle-minutes`, down to `--slurm-min-jobs`. A job whose workers have all left is
+    replaced. dask's own `adapt` cancelled each new job before its workers could take a batch
+    (#250), so `pool._Jobs` replaces its rules.
   - It writes its address to `--address-file` once the scheduler listens, and removes it on exit.
   - On SIGTERM it removes the address file, waits up to 10 min for the batches running, then closes
     the cluster, which cancels its jobs.
@@ -28,7 +30,7 @@ shared server instead and was closed as superseded.
 - **`DaskEngine`** (`dask_engine.py`) is the server's side: a pyPESTO engine that sends a fit's
   starts to the pool and waits for them (`multistart.watch`).
 - **`python -m petab_mcp.pool_stress`** loads a pool's scheduler as a sweep's servers would, and
-  says whether it holds up (see "Measured on NEMO").
+  says whether it holds up (see "Measured on a cluster").
 - **The sweep driver is gemot's** (frohlich-lab/gemot#107): it submits, finds and signals the
   pool's job, refuses a sweep whose pool is not published and reachable, and gives each task the
   pool's address and build root.
@@ -83,7 +85,7 @@ shared server instead and was closed as superseded.
   - A worker killed under a batch (`KilledWorker`: memory, a crash, or its job ending) fails the
     fit with a message that names the pool, not the model; nothing is scored.
 
-## Measured on NEMO
+## Measured on a cluster
 
 On 2026-11-04, with `pool_stress` at 1200 workers and 100 clients each sending a fit's batches in
 one burst:
@@ -95,13 +97,11 @@ one burst:
 
 Also found there:
 
-- **Worker jobs are not replaced.** With several workers to a job, jobqueue never resubmits one
-  that ends, and a worker reaching `--lifetime` drops its running batch. So worker jobs ask for a
-  walltime past the pool's life, set no `--lifetime`, and the pool is restarted between sweeps.
+- **Worker jobs were not replaced.** With several workers to a job, jobqueue never resubmits one
+  that ends; the pool now does. A worker reaching `--lifetime` still drops its running batch, so
+  worker jobs ask for a walltime past the pool's life and set no `--lifetime`.
 - **A full job's workers need time to start.** Importing from GPFS takes 48–98 s cold, so
   `death-timeout` is 600 s, not dask's 60.
-- **NEMO moves any job of 6 h or less to QOS `short`,** which runs only on 12 nodes (cn077–cn088)
-  that are often full. So the pool's job and its worker jobs ask for more than 6 h.
 
 ## Decisions
 
@@ -122,6 +122,9 @@ Also found there:
 
 ## Open
 
+- **Scaling is not measured on a cluster.** How long a resubmitted worker job waits in SLURM's
+  queue, and so what `--slurm-idle-minutes` a sweep needs, is not known. `--slurm-min-jobs` equal to
+  `--slurm-max-jobs` keeps the fixed pool measured above.
 - **The sweep driver** (frohlich-lab/gemot#107, PR frohlich-lab/gemot#114) is not merged. Until it
   is, the application repositories still carry their own copies of `slurm/`, and drop them at the
   gemot pin bump that brings the driver.

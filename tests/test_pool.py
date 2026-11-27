@@ -46,8 +46,8 @@ _POOL = textwrap.dedent("""
         if sys.argv[1] != "-":
             ours = dask_engine.versions
             dask_engine.versions = lambda: {**ours(), "amici": sys.argv[1]}
-        pool._slurm_cluster = lambda port, jobs: LocalCluster(
-            n_workers=jobs, threads_per_worker=1, scheduler_port=port, dashboard_address=":0"
+        pool._slurm_cluster = lambda port, min_jobs, max_jobs, idle_s: LocalCluster(
+            n_workers=max_jobs, threads_per_worker=1, scheduler_port=port, dashboard_address=":0"
         )
         raise SystemExit(pool.main(sys.argv[2:]))
 """)
@@ -223,7 +223,7 @@ def test_a_pool_lost_mid_fit_ends_the_call_as_fit_pool(
 def test_a_pool_restarted_at_its_address_serves_the_next_fit_unless_from_another_environment(
     yaml_path, amici_build_root, tmp_path, monkeypatch
 ):
-    """A pool resubmitted to SLURM came back 4 min later (NEMO, 2026-11-04), long after its client
+    """A pool resubmitted to SLURM came back 4 min later (2026-11-04), long after its client
     had stopped reconnecting and closed, and every later fit failed as ``fit_pool`` until the server
     restarted (#216). A fit while the pool is away still fails so; the next one, once it is back,
     opens a new client there and runs. A pool back from another environment is refused naming
@@ -281,10 +281,10 @@ def test_the_pool_listens_on_its_port_and_takes_every_slurm_setting_from_dask_co
     """``_slurm_cluster`` gives ``SLURMCluster`` the port and nothing else, so what the README's
     ``jobqueue.yaml`` sets must reach the job script from dask's config alone: partition, cores,
     one single-threaded worker process per core, memory, walltime, the workers' lifetime, both
-    directories, and the scheduler's host. With no job asked for, nothing is submitted."""
+    directories, and the scheduler's host. With no batch, nothing is submitted."""
     logs = tmp_path / "logs"
     config = {
-        "jobqueue.slurm.queue": "ncpu",
+        "jobqueue.slurm.queue": "compute",
         "jobqueue.slurm.cores": 4,
         "jobqueue.slurm.processes": 4,
         "jobqueue.slurm.memory": "8GiB",
@@ -296,10 +296,10 @@ def test_the_pool_listens_on_its_port_and_takes_every_slurm_setting_from_dask_co
     }
     port = _free_port()
     # Every job reads the config as it is described, the script's one included.
-    with dask.config.set(config), pool._slurm_cluster(port, jobs=0) as cluster:
+    with dask.config.set(config), pool._slurm_cluster(port, 0, 1, 60.0) as cluster:
         script = cluster.job_script()
         assert cluster.scheduler_address == f"tcp://127.0.0.1:{port}"
-    for directive in ("-p ncpu", "--cpus-per-task=4", "--mem=8G", "-t 01:00:00", f"-o {logs}/"):
+    for directive in ("-p compute", "--cpus-per-task=4", "--mem=8G", "-t 01:00:00", f"-o {logs}/"):
         assert f"#SBATCH {directive}" in script
     for arg in ("--nworkers 4", "--nthreads 1", "--lifetime 55m", "--local-directory $TMPDIR"):
         assert arg in script
@@ -336,7 +336,7 @@ _FAKE_SLURM_HEAD = """
 
 class _UnpickledSlowly(WorkerPlugin):
     """Takes 8 s to unpickle on a worker, as :class:`~petab_mcp.dask_engine._NoBuild` does where
-    ``import petab_mcp`` is cold (48-98 s on NEMO)."""
+    ``import petab_mcp`` is cold (48-98 s from shared storage)."""
 
     def __reduce__(self):
         def unpickle():
@@ -346,14 +346,11 @@ class _UnpickledSlowly(WorkerPlugin):
         return unpickle, ()
 
 
-def test_a_fit_of_fewer_starts_than_a_jobs_workers_runs_on_the_job_the_pool_submitted_once(
-    tmp_path, monkeypatch
-):
-    """A worker joins the scheduler, then unpickles its plugins, and takes no batch until it has.
-    While a job's workers did, ``adapt`` saw them all idle beside the queued batches, cancelled the
-    job and submitted another, and so on: on NEMO five 64-worker jobs came up and were cancelled
-    within 15 s each, and the fit ran 0/100 starts in 300 s (#250). Here ``sbatch`` runs the job on
-    this machine, and its 2 workers' plugin takes 8 s: the one job submitted runs the batch."""
+@contextlib.contextmanager
+def _fake_slurm(tmp_path: Path, monkeypatch, **config):
+    """:data:`_FAKE_SLURM` first on ``PATH``, and dask's config for jobs of 2 workers plus
+    ``config``; yields a function giving the ledger's ``(event, job id)`` pairs, and kills every job
+    submitted on exit."""
     for name, body in _FAKE_SLURM.items():
         command = tmp_path / "bin" / name
         command.parent.mkdir(exist_ok=True)
@@ -361,36 +358,108 @@ def test_a_fit_of_fewer_starts_than_a_jobs_workers_runs_on_the_job_the_pool_subm
         command.write_text(f"#!{sys.executable}\n{head}\n{body}", encoding="utf-8")
         command.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    ledger = tmp_path / "ledger"
+
+    def events() -> list[tuple[str, str]]:
+        lines = ledger.read_text().splitlines() if ledger.exists() else []
+        return [tuple(line.split()) for line in lines]
+
     config = {
         "jobqueue.slurm.cores": 2,
         "jobqueue.slurm.processes": 2,
         "jobqueue.slurm.memory": "2GiB",
         "jobqueue.slurm.scheduler-options": {"host": "127.0.0.1"},
+        **config,
     }
-    ledger = tmp_path / "ledger"
     try:
-        with (
-            dask.config.set(config),
-            pool._slurm_cluster(_free_port(), jobs=1) as cluster,
-            Client(cluster) as client,
-        ):
-            client.register_plugin(_UnpickledSlowly(), name="unpickled-slowly")
-            batch = client.submit(time.sleep, 1, pure=False)
-            with contextlib.suppress(TimeoutError):
-                batch.result(timeout=120)
-            events = [line.split()[0] for line in ledger.read_text().splitlines()]
-            assert events == ["submitted"] and batch.done()
-            assert len(client.scheduler_info()["workers"]) == 2
+        with dask.config.set(config):
+            yield events
     finally:
-        for line in ledger.read_text().splitlines() if ledger.exists() else []:
+        for _, job in events():
             with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(int(line.split()[1]), signal.SIGKILL)
+                os.killpg(int(job), signal.SIGKILL)
 
 
-@pytest.mark.parametrize("jobs", ["0", "-1"])
-def test_a_pool_of_no_jobs_is_refused_before_it_starts(monkeypatch, capsys, tmp_path, jobs):
-    """A pool of no jobs would otherwise start without a word and serve no fit."""
+def test_jobs_still_starting_run_the_batches_and_only_a_job_running_none_is_cancelled(
+    tmp_path, monkeypatch
+):
+    """A worker joins the scheduler, then unpickles its plugins, and takes no batch until it has.
+    dask's ``adapt`` took such a job's workers for idle beside the queued batches, cancelled the job
+    and submitted another, and so on: on a cluster five 64-worker jobs came up and were cancelled within
+    15 s each, and the fit ran 0/100 starts in 300 s (#250). It also closed single idle workers, and
+    the cluster cancels the job of each, busy workers included. Here the workers' plugin takes 8 s,
+    and 3 batches get the 2 jobs they need; once 2 have finished, the job not running the last one
+    is cancelled, and the last runs once."""
+    starts = tmp_path / "starts"
+
+    def last(seconds):
+        from distributed import get_worker
+
+        with open(starts, "a") as log:
+            log.write(f"{get_worker().name}\n")
+        time.sleep(seconds)
+        return get_worker().name
+
+    with (
+        _fake_slurm(tmp_path, monkeypatch) as events,
+        pool._slurm_cluster(_free_port(), 0, 2, 1.0) as cluster,
+        Client(cluster) as client,
+    ):
+        client.register_plugin(_UnpickledSlowly(), name="unpickled-slowly")
+        batches = [client.submit(time.sleep, 2, pure=False) for _ in range(2)]
+        batches.append(client.submit(last, 12, pure=False))
+        ran_on = batches[-1].result(timeout=120).rsplit("-", 1)[0]
+        assert len(starts.read_text().splitlines()) == 1
+        submitted = [job for event, job in events() if event == "submitted"]
+        cancelled = [job for event, job in events() if event == "cancelled"]
+        assert len(submitted) == 2 and cancelled == [
+            j for j in submitted if j != cluster.workers[ran_on].job_id
+        ]
+        for batch in batches:
+            batch.release()
+        deadline = time.monotonic() + 60
+        while len(events()) < 4 and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert sorted(job for event, job in events() if event == "cancelled") == sorted(submitted)
+
+
+def test_a_job_whose_workers_have_all_left_is_replaced_while_batches_wait(tmp_path, monkeypatch):
+    """A job that ended (its walltime, a failed node) was never replaced: the cluster matches a
+    worker's name to its job's, and a job's 2 workers are ``<job>-0`` and ``<job>-1``
+    (2026-11-04). Here the job is killed under its batch, once the pool has seen it run: it is
+    cancelled, another is submitted, and the batch reruns there."""
+    config = {
+        "distributed.deploy.lost-worker-timeout": "1s",
+        "distributed.adaptive.interval": "100ms",
+    }
+    with (
+        _fake_slurm(tmp_path, monkeypatch, **config) as events,
+        pool._slurm_cluster(_free_port(), 0, 1, 60.0) as cluster,
+        Client(cluster) as client,
+    ):
+        batch = client.submit(time.sleep, 3, pure=False)
+        while not any(client.processing().values()):
+            time.sleep(0.1)
+        time.sleep(1.0)
+        os.killpg(int(events()[0][1]), signal.SIGKILL)
+        batch.result(timeout=120)
+        assert [event for event, _ in events()] == ["submitted", "cancelled", "submitted"]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--slurm-max-jobs", "0"],
+        ["--slurm-max-jobs", "2", "--slurm-min-jobs", "3"],
+        ["--slurm-max-jobs", "2", "--slurm-min-jobs", "-1"],
+        ["--slurm-max-jobs", "2", "--slurm-idle-minutes", "-1"],
+    ],
+)
+def test_bounds_the_pool_cannot_keep_are_refused_before_it_starts(
+    monkeypatch, capsys, tmp_path, flags
+):
+    """Bounds outside 0 <= min <= max, max >= 1, or a negative idle time would otherwise pass without
+    a word: a pool of no jobs serves no fit, and dask clamps the rest."""
     monkeypatch.setattr(pool, "_slurm_cluster", lambda *a: pytest.fail("the pool started"))
-    argv = ["--slurm-max-jobs", jobs, "--address-file", str(tmp_path / "address")]
-    assert pool.main(argv) == 2
-    assert "--slurm-max-jobs >= 1" in capsys.readouterr().err
+    assert pool.main([*flags, "--address-file", str(tmp_path / "address")]) == 2
+    assert "0 <= --slurm-min-jobs <= --slurm-max-jobs" in capsys.readouterr().err
