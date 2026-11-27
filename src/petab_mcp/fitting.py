@@ -2127,6 +2127,19 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
     ``session.optimization`` (``None`` on a simulate-only pass).
     """
     with session.lock:
+        n_estimated = int(session.problem.n_estimated)
+        constants = _literals.hardcoded_constants(session.model.sbml_model)
+        from .multistart import PROGRESS
+
+        criterion = getattr(session, "criterion", None)
+        if do_fit and (progress := PROGRESS.get()) is not None and criterion is not None:
+            # A viewer of the running fit ranks its best start as this fit will be ranked: n is
+            # one record per measurement, as engine.residuals counts them.
+            progress.criterion = criterion.name
+            progress.penalty = criterion.penalty(
+                complexity_k({"n_estimated": n_estimated, "hardcoded_constants": constants}),
+                len(session.problem.measurement_df),
+            )
         fit = _run_fit(session, engine, n_starts) if do_fit else None
         # The effective parameter count at the optimum the fit just froze (see
         # identifiability.effective_parameter_count). It reaches a client through the stored
@@ -2135,8 +2148,6 @@ def fit_and_simulate(session, engine, *, do_fit: bool, n_starts: int) -> dict[st
         # ranks THIS payload, and under TIC it needs the count to rank at all. None on a
         # simulate-only pass: no optimum of its own. `k` is complexity_k, so the literals reach
         # the count as the inner-solved parameters do, one unit each: TIC prices them too.
-        n_estimated = int(session.problem.n_estimated)
-        constants = _literals.hardcoded_constants(session.model.sbml_model)
         k_eff = None
         if fit is not None:
             from .identifiability import effective_parameter_count

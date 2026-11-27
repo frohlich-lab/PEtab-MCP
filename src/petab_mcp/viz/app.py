@@ -30,7 +30,7 @@ from ..problem import WorkingProblem
 from . import key as K
 from . import style
 from .fit_tab import FitTab
-from .multistart_tab import MultistartTab
+from .multistart_tab import MultistartTab, running_view
 from .store import Store
 from .versions_tab import VersionsTab
 
@@ -233,8 +233,6 @@ class VizApp(param.Parameterized):
                 lines.append(f"> {why}")
             if compare is not None:
                 lines.append(f"compared with v{compare}")
-            if self.store.fit_progress():
-                lines.append(f"<span style='color:{style.PALETTE[1]}'>● a fit is running</span>")
             return "\n\n".join(lines)
 
         return pn.pane.Markdown(
@@ -260,6 +258,11 @@ class VizApp(param.Parameterized):
                 self.version_pick,
                 self.compare_pick,
                 self.follow,
+                pn.panel(
+                    pn.bind(
+                        lambda _tick: running_view(self.store, self.param.clock), self.param.tick
+                    )
+                ),
                 self.timeline(),
                 self.about(),
             ],

@@ -107,7 +107,9 @@ class Progress:
     ``compiling`` while it builds a model
     (:func:`compiling`), ``queued`` while none of its multistart's starts is running, else
     ``running``. ``waited`` is the multistart's seconds queued before the current phase. ``fvals``
-    are the finite objectives of the finished starts, in the order they were read.
+    are the finite objectives of the finished starts, in the order they were read. The fit sets
+    ``criterion`` and ``penalty``, its ``penalty(k, n)`` for the model being fitted, so ``best``
+    is scored as the session will rank the fit: ``2*best + penalty``.
 
     Given a ``path``, :meth:`publish` writes it there as JSON, its times on the wall clock, and
     :meth:`close` removes it."""
@@ -122,6 +124,8 @@ class Progress:
         self.phase = "running"
         self.since = self.started = time.monotonic()
         self.waited = 0.0
+        self.criterion: str | None = None
+        self.penalty: float | None = None
         self.path = path
         self._published: dict[str, Any] | None = None
 
@@ -158,6 +162,10 @@ class Progress:
             "done": self.done,
             "queued": self.queued,
             "best": self.best,
+            "criterion": self.criterion,
+            "best_score": (
+                None if self.best is None or self.penalty is None else 2 * self.best + self.penalty
+            ),
             "fvals": list(self.fvals),
         }
         if state == self._published:

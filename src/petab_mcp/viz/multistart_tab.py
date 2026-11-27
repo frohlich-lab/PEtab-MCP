@@ -227,13 +227,6 @@ With "where each start began" on, an arrow runs from the random guess each start
 where it ended.
 """
 
-RUNNING = """
-A fit is running now. Each dot is a start that has finished, sorted from the best fit on the left;
-up is how much worse its objective is than the best so far, plus 1, on a log scale. A flat step of
-dots at the bottom left means the best fit is being found again and again; the stored version's
-plots below show how the last fit went.
-"""
-
 
 def clusters(fval) -> np.ndarray:
     """Each start's waterfall cluster, 1 the best, for objectives sorted best first: a new cluster
@@ -920,80 +913,67 @@ def duration(seconds: float) -> str:
 
 
 def live_text(progress: dict, reference: tuple[int, float] | None, now: float) -> str:
-    """The running fit in words, as of ``now``: what it is doing and how long the change has run,
-    its starts done, running and not begun, its best against ``reference`` (HEAD's version and
-    best objective), and how long it has left at the rate its finished starts took."""
+    """The running fit in a few lines, as of ``now``: what it is doing, its starts done, running
+    and not begun, how long the change has run and has left at the rate its finished starts took,
+    and its best score so far against ``reference``, HEAD's version and score."""
     phase = progress.get("phase")
     total, done = progress.get("total") or 0, progress.get("done") or 0
     queued = progress.get("queued") or 0
     # A progress file from before the server published `started`: the phase's start instead.
     started = progress.get("started") or progress.get("since") or now
-    lines = [
-        f"**Fitting now** · {PHASES.get(phase, phase)} · "
-        f"{duration(now - started)} since the change began"
-    ]
+    lines = [f"**Fitting now** · {PHASES.get(phase, phase)}"]
     if total:
         lines.append(
             f"{done} of {total} starts done · {max(total - done - queued, 0)} running · "
             f"{queued} not begun"
         )
-    if progress.get("best") is not None:
-        best = f"best so far {progress['best']:.6g}"
-        if reference is not None:
-            best += f" · v{reference[0]}'s best was {reference[1]:.6g}"
-        lines.append(best)
+    times = f"{duration(now - started)} so far"
     began = progress.get("began")
     if began and done and done < total:
         waited = (progress.get("waited") or 0.0) + (
             now - progress["since"] if phase == "queued" else 0.0
         )
-        left = (now - began - waited) * (total - done) / done
-        lines.append(f"about {duration(left)} left · about {duration(now - started + left)} in all")
+        times += f" · about {duration((now - began - waited) * (total - done) / done)} left"
+    lines.append(times)
+    if (score := progress.get("best_score")) is not None:
+        best = f"best {progress.get('criterion') or 'score'} so far {score:.6g}"
+        if reference is not None:
+            best += f" · v{reference[0]}'s {reference[1]:.6g}"
+        lines.append(best)
     return "  \n".join(lines)
 
 
-def live_view(progress: dict, text: pn.viewable.Viewable) -> pn.Card:
-    """The running fit: ``text`` (:func:`live_text`, kept current by the caller), its starts done
-    as a bar, and the objectives of those finished so far."""
+def running_view(store, clock) -> pn.viewable.Viewable:
+    """The running fit for the sidebar, or nothing: :func:`live_text` over a bar of its starts
+    done. The words follow ``clock`` (the app's), so its times move between finished starts."""
+    progress = store.fit_progress()
+    if not progress:
+        return pn.Spacer(height=0)
+    head = store.head()
+    meta = store.meta(head) if head is not None else {}
+    score = meta.get("criterion_value")
+    reference = (head, float(score)) if score is not None else None
+
+    def text(_clock):
+        return live_text(store.fit_progress() or progress, reference, time.time())
+
     total, done = progress.get("total") or 0, progress.get("done") or 0
-    items = [text]
-    if total:
-        items.append(
-            pn.indicators.Progress(
-                value=done, max=total, bar_color="warning", sizing_mode="stretch_width", height=12
-            )
-        )
-    fvals = sorted(progress.get("fvals") or [])
-    if fvals:
-        # Dimensions of their own: HoloViews links the ranges of same-named dimensions across the
-        # page, which stretched the stored version's waterfall to the running fit's starts.
-        df = pd.DataFrame(
-            {
-                "finished": range(len(fvals)),
-                "running_above_best": np.array(fvals) - fvals[0] + OFFSET,
-                "fval": fvals,
-            }
-        )
-        items += [
-            K.key("Finished starts so far", RUNNING),
-            pn.pane.HoloViews(
-                hv.Points(df, ["finished", "running_above_best"], "fval").opts(
-                    xlabel="finished start (best first)",
-                    logy=True,
-                    color=style.PALETTE[1],
-                    size=7,
-                    tools=["hover"],
-                    responsive=True,
-                    height=200,
-                    ylabel=f"objective − best + {OFFSET:g}",
-                ),
-                sizing_mode="stretch_width",
-            ),
-        ]
-    return pn.Card(
-        *items,
-        title="Running fit",
-        collapsible=False,
+    return pn.Column(
+        pn.pane.Markdown(pn.bind(text, clock), sizing_mode="stretch_width", margin=(0, 5)),
+        *(
+            [
+                pn.indicators.Progress(
+                    value=done,
+                    max=total,
+                    bar_color="warning",
+                    sizing_mode="stretch_width",
+                    height=10,
+                    margin=(0, 10),
+                )
+            ]
+            if total
+            else []
+        ),
         sizing_mode="stretch_width",
         styles={"border-left": f"4px solid {style.PALETTE[1]}"},
     )
@@ -1029,29 +1009,7 @@ class MultistartTab:
 
     def view(self) -> pn.viewable.Viewable:
         return pn.Column(
-            pn.bind(self._live, self.app.param.tick),
-            pn.bind(self._version, self.app.param.version),
-            sizing_mode="stretch_width",
-        )
-
-    def _live(self, _tick):
-        """The running fit, drawn anew when its progress file changes; its words also at each
-        poll in between (the app's ``clock``), so its times move while no start finishes."""
-        store, head = self.app.store, self.app.store.head()
-        progress = store.fit_progress()
-        if not progress:
-            return pn.Spacer(height=0)
-        starts = store.starts(head) if head is not None else None
-        reference = None
-        if starts is not None and starts["fval"].notna().any():
-            reference = (head, float(starts["fval"].min()))
-
-        def text(_clock):
-            return live_text(store.fit_progress() or progress, reference, time.time())
-
-        return live_view(
-            progress,
-            pn.pane.Markdown(pn.bind(text, self.app.param.clock), sizing_mode="stretch_width"),
+            pn.bind(self._version, self.app.param.version), sizing_mode="stretch_width"
         )
 
     def _version(self, version):

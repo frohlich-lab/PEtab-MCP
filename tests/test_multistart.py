@@ -341,6 +341,7 @@ def test_a_running_fit_publishes_its_finished_starts_for_a_viewer(monkeypatch, t
     futures = [concurrent.futures.Future() for _ in range(2)]
     futures[0].set_result([3.0, math.inf])
     progress, seen = M.Progress(path), []
+    progress.criterion, progress.penalty = "bic", 10.0
 
     def finish():
         seen.append(json.loads(path.read_text()))
@@ -359,8 +360,21 @@ def test_a_running_fit_publishes_its_finished_starts_for_a_viewer(monkeypatch, t
     assert seen[0]["started"] <= seen[0]["began"]
     final = json.loads(path.read_text())
     assert (final["done"], final["best"], final["fvals"]) == (3, 1.5, [3.0, 1.5])
+    assert (final["criterion"], final["best_score"]) == ("bic", 13.0)  # 2 * 1.5 + 10
     progress.close()
     assert not path.exists()
+
+
+def test_a_running_fit_scores_its_best_start_as_its_version_is_scored(fit_session):
+    """The viewer shows the best BIC so far: the penalty the fit publishes is the one its version
+    is scored with."""
+    with fit_session.change():
+        out = fit_session.fit(n_starts=2)
+        progress = fit_session.change_progress
+    assert progress.criterion == out["criterion"]
+    assert 2 * out["neg_log_likelihood"] + progress.penalty == pytest.approx(
+        out["criterion_value"]
+    )
 
 
 def test_a_change_leaves_no_fit_progress_behind(session):

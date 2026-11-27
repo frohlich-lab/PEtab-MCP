@@ -72,8 +72,8 @@ def test_a_running_fit_shows_without_a_new_version(app):
     )
     app.poll()
     assert app.tick == tick + 1 and app.version == 1
-    pn.panel(app.multistart.view()).get_root(Document())
-    # Nothing written since: the card's clock moves, nothing is drawn anew.
+    app.view().server_doc(Document())  # the sidebar's running fit among it
+    # Nothing written since: the running fit's clock moves, nothing is drawn anew.
     clock = app.clock
     app.poll()
     assert (app.tick, app.clock) == (tick + 1, clock + 1)
@@ -81,7 +81,8 @@ def test_a_running_fit_shows_without_a_new_version(app):
 
 def test_a_running_fit_says_how_long_it_has_run_and_has_left():
     """4 of 10 starts done in the 30 s the multistart has run (40 s since it began, 10 of them
-    queued): 45 s left for the other 6, at the rate the finished ones took."""
+    queued): 45 s left for the other 6, at the rate the finished ones took. The best start is
+    scored as its version will be."""
     from petab_mcp.viz.multistart_tab import live_text
 
     progress = {
@@ -94,12 +95,13 @@ def test_a_running_fit_says_how_long_it_has_run_and_has_left():
         "done": 4,
         "queued": 2,
         "best": 1.5,
+        "criterion": "bic",
+        "best_score": 13.0,
     }
-    text = live_text(progress, (3, 2.0), now=990.0)
-    assert "1 min 30 s since the change began" in text
+    text = live_text(progress, (3, 14.0), now=990.0)
     assert "4 of 10 starts done · 4 running · 2 not begun" in text
-    assert "best so far 1.5 · v3's best was 2" in text
-    assert "about 45 s left · about 2 min 15 s in all" in text
+    assert "1 min 30 s so far · about 45 s left" in text
+    assert "best bic so far 13 · v3's 14" in text
 
 
 def test_a_starts_exit_is_named_as_fides_names_it():
