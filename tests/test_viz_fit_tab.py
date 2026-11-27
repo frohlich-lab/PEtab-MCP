@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from petab_mcp.problem import WorkingProblem
 from petab_mcp.viz import fit_tab as F
@@ -37,51 +36,19 @@ def test_a_title_names_only_what_sets_an_experiment_apart(monkeypatch):
     assert titles["two_steps"] == "dose_1=1.2, time_2=4, dose_2=8.8"
 
 
-def test_what_an_experiment_sets_is_plotted_under_its_data(viz_store):
-    """The periods strip above the data named conditions; what a reader needs is the inputs over
-    time, under the data on its time axis: A steps from 1 to 3 at t = 4, and pre-equilibrated at
-    1 before a period of 3."""
+def test_each_period_is_a_band_that_says_what_it_sets_and_changes(viz_store):
+    """The periods shade each plot, pre-equilibration first; a band's hover names its condition,
+    what it changes and sets, and the formula of an input the experiment sets."""
     problem = WorkingProblem.from_yaml(viz_store[1])
-    step = F.protocol(problem, (), "e_step", 8.0)
-    ts, vs, stepped = step.curves["A"]
-    assert stepped and list(ts) == [0.0, 4.0, 8.0] and list(vs) == [1.0, 3.0, 3.0]
-    assert step.starts == [4.0] and step.constant == {}
-    pre = F.protocol(problem, (), "e_pre", 8.0)
-    assert pre.preeq == {"A": 1.0} and list(pre.curves["A"][1]) == [3.0, 3.0]
-
-
-def test_an_input_that_ramps_within_a_period_is_drawn_from_its_formula():
-    """Fujita's EGF is no condition target but inputs.tsv's ramp over three of them; the targets
-    are shown as the curve they make, not listed."""
-    from types import SimpleNamespace
-
-    from petab_mcp.protocols import Input
-
-    problem = SimpleNamespace(
-        experiment_df=pd.DataFrame({"experimentId": ["e"], "time": [0.0], "conditionId": ["c"]}),
-        condition_df=pd.DataFrame(
-            {
-                "conditionId": ["c"] * 4,
-                "targetId": ["EGF_0", "EGF_rate", "EGF_end", "init_S"],
-                "targetValue": [1.0, 0.5, 10.0, "S_tot"],
-            }
-        ),
-    )
-    egf = Input(
-        "EGF",
-        "piecewise(EGF_rate*time + EGF_0, time <= EGF_end, 0)",
-        ("EGF_0", "EGF_rate", "EGF_end"),
-    )
-    proto = F.protocol(problem, (egf,), "e", 20.0)
-    ts, vs, stepped = proto.curves["EGF(t)"]
-    assert not stepped and vs[0] == 1.0 and vs[-1] == 0.0
-    assert np.interp(4.0, ts, vs) == pytest.approx(3.0, abs=0.01)
-    assert proto.constant == {"init_S": "S_tot"}
-
-
-def test_the_settings_line_puts_what_sets_an_experiment_apart_first():
-    proto = F.Protocol(constant={"init_S2": "S2tot", "EGF_0": "10"})
-    assert F.settings_line(proto, "EGF_0=10") == "Set throughout: **EGF_0 = 10**, init_S2 = S2tot"
+    table, preeq = F.periods(problem, "e_step", 8.0)
+    bands = F.period_bands(table, preeq, ["U(t) = A*time"])
+    assert list(bands["left"]) == [0.0, 4.0] and bands["alpha"].nunique() == 2
+    assert "period 2 of 2" in bands["info"][1] and "changes: A: 1 → 3" in bands["info"][1]
+    assert "U(t) = A*time" in bands["info"][0]
+    table, preeq = F.periods(problem, "e_pre", 8.0)
+    bands = F.period_bands(table, preeq, [])
+    assert bands["info"][0].startswith("<b>pre-equilibration</b>, condition low")
+    assert bands["right"][0] == bands["left"][1]
 
 
 def test_a_chi2_of_pure_noise_is_a_standard_normal_z_whatever_its_n():

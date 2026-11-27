@@ -4,34 +4,29 @@ A version stores its simulation at the measured points only (``simulations.json`
 through them is drawn straight between measurement times: it is the fit as scored, not the model's
 trajectory between the points.
 
-**What each experiment does, under its data.** A PEtab v2 experiment is a sequence of periods,
+**What each experiment does, in its plots.** A PEtab v2 experiment is a sequence of periods,
 each applying conditions that set targets (a dose, an amount) from its start; a pre-equilibration
 period runs to steady state first; and a problem's ``inputs.tsv`` declares inputs that change within
 a period (a ramp), set per experiment by condition targets (:mod:`petab_mcp.protocols`). Each
 experiment is a card, titled by the inputs that set it apart, its chi2 and its pre-equilibration,
-holding its observables on one time axis and, directly under them on the same axis:
-
-* a plot of each quantity that changes over time: a target that steps between periods, its
-  pre-equilibration value a dashed stub before the first period, or an ``inputs.tsv`` input as its
-  formula gives it from the experiment's targets (the design's input, not the model simulated);
-* one line of what the experiment sets and never changes, what sets it apart in bold.
-
-Faint dashed lines mark where each later period starts, in every plot of the card. Experiments are
-shown worst-fitted first, a few at a time, each with its worst-fitted observables: a problem with
-thousands of experiments or dozens of observables shows a handful, and the pickers the rest.
+holding its observables on one time axis, each plot's background shaded period by period
+(:func:`period_bands`): hovering a band says what the experiment sets and changes in it, and the
+formula of each input it sets. Experiments are shown worst-fitted first, a few at a time, each with
+its worst-fitted observables: a problem with thousands of experiments or dozens of observables
+shows a handful, and the pickers the rest.
 """
 
 from __future__ import annotations
 
+import html
 import math
-from dataclasses import dataclass, field
 from statistics import NormalDist
 
 import holoviews as hv
 import numpy as np
 import pandas as pd
 import panel as pn
-from bokeh.models import ColumnDataSource, DataRange1d, HoverTool, Range1d, Span, Whisker
+from bokeh.models import ColumnDataSource, DataRange1d, HoverTool, Whisker
 from bokeh.plotting import figure
 
 from ..problem import experiment_inputs
@@ -44,18 +39,11 @@ PAGE = 3
 #: Observables a card plots, its worst-fitted first; the picker adds the rest.
 TRACKS = 6
 
-#: Quantities that change over time a card plots under its data.
-PROTOCOLS = 3
-
-#: Settings the line under a card names before "+N more".
-SETTINGS = 10
-
 #: Inputs a card title names before "+N more".
 TITLE_INPUTS = 3
 
-#: The height of an observable's plot in a card, of a quantity the experiment sets, and the width
-#: below which the next plot wraps under it.
-HEIGHT, PROTOCOL_HEIGHT, WIDTH = 190, 130, 260
+#: The height of an observable's plot in a card, and the width below which the next wraps under it.
+HEIGHT, WIDTH = 190, 260
 
 #: Residual weights beyond which a point is more than two noise sigmas off.
 BAND = 2.0
@@ -70,8 +58,9 @@ The χ² in each title adds up, over the plot's n measurements, the square of ea
 from the line in units of its σ. About n is a fit as good as the noise allows; far more means the
 model misses the data.
 
-Dashed vertical lines mark where the experiment changes what it does, such as adding a drug. The
-plots under the data show what it sets over time, and the card's last line what it holds fixed.
+The background is shaded period by period: a new shade where the experiment changes what it does,
+such as adding a drug, grey before the first period while it settles to steady state. Hover a band
+for what the experiment sets and changes in it; "periods" turns the shading off.
 """
 
 CHI2_OBSERVABLE = """
@@ -204,103 +193,47 @@ def distinguishing_inputs(problem) -> dict[str, str]:
     return out
 
 
-def _number(value) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
+def period_bands(table: pd.DataFrame, preeq: str | None, inputs: list[str]) -> pd.DataFrame:
+    """The bands that shade an experiment's periods (:func:`periods`' ``table``) and its
+    pre-equilibration (``preeq``, a stub before the first period), each with its shade and what a
+    hover says (``info``, HTML): its span, condition, what it changes and sets, and the formula of
+    each of the experiment's ``inputs``."""
+    if table.empty:
+        return pd.DataFrame(columns=["left", "right", "fill", "alpha", "info"])
+    first, last = float(table["start"].iloc[0]), float(table["end"].iloc[-1])
+    formulas = "".join(f"<br>{html.escape(i)}" for i in inputs)
 
+    def lines(text: str) -> str:
+        return "<br>&nbsp;&nbsp;".join(html.escape(part) for part in text.split("; "))
 
-@dataclass
-class Protocol:
-    """What an experiment sets. ``curves``: each quantity that changes over time, by name, as
-    ``(time, value, steps)`` arrays (``steps`` for a value held from each period's start), with its
-    pre-equilibration value in ``preeq`` where it has one; ``constant``: each target set and never
-    changed, ``target = value``; ``starts``: the later periods' start times."""
-
-    curves: dict[str, tuple[np.ndarray, np.ndarray, bool]] = field(default_factory=dict)
-    preeq: dict[str, float] = field(default_factory=dict)
-    #: What a curve is made of, for its title: an input's formula and the targets it reads.
-    notes: dict[str, str] = field(default_factory=dict)
-    constant: dict[str, str] = field(default_factory=dict)
-    starts: list[float] = field(default_factory=list)
-
-
-def protocol(problem, inputs, experiment_id: str, t_end: float) -> Protocol:
-    """``experiment_id``'s :class:`Protocol` up to ``t_end``."""
-    edf, cdf = problem.experiment_df, problem.condition_df
-    out = Protocol()
-    if edf is None or not len(edf) or not experiment_id:
-        return out
-    rows = edf[edf["experimentId"].astype(str) == experiment_id]
-    sets: dict[str, list[tuple[str, object]]] = {}
-    if cdf is not None and len(cdf):
-        for cid, sub in cdf.groupby("conditionId", sort=False):
-            sets[str(cid)] = list(zip(sub["targetId"].astype(str), sub["targetValue"]))
-    times = sorted({float(t) for t in rows["time"]})
-    finite = [t for t in times if math.isfinite(t)]
-    t0 = finite[0] if finite else 0.0
-    out.starts = finite[1:]
-    end = max(t_end, finite[-1] if finite else t0)
-    end = end if end > t0 else t0 + 1.0
-    applied: dict[str, object] = {}
-    by_period: list[tuple[float, dict[str, object]]] = []  # each period's targets in effect
-    preeq: dict[str, object] = {}
-    for t in times:
-        for cid in rows.loc[rows["time"].astype(float) == t, "conditionId"].dropna():
-            applied.update(sets.get(str(cid), []))
-        if math.isinf(t) and t < 0:
-            preeq = dict(applied)
-        else:
-            by_period.append((t, dict(applied)))
-    targets = list(dict.fromkeys(k for _, values in by_period for k in values))
-
-    def steps(target: str) -> tuple[np.ndarray, np.ndarray] | None:
-        values = [_number(v.get(target)) for _, v in by_period]
-        if any(v is None for v in values):
-            return None
-        ts = [t for t, _ in by_period] + [end]
-        return np.asarray(ts, float), np.asarray(values + values[-1:], float)
-
-    explained: set[str] = set()
-    for item in inputs:
-        if not set(item.targets) <= set(targets):
-            continue
-        grid = np.unique(np.concatenate([np.linspace(t0, end, 400), finite]))
-        held = {}
-        for target in item.targets:
-            stepped = steps(target)
-            if stepped is None:
-                break
-            ts, vs = stepped
-            held[target] = vs[np.searchsorted(ts, grid, side="right") - 1]
-        else:
-            out.curves[f"{item.id}(t)"] = (grid, item.evaluate(held, grid), False)
-            first = by_period[0][1]
-            out.notes[f"{item.id}(t)"] = f"{item.formula}: " + ", ".join(
-                f"{t}={_fmt(first.get(t))}" for t in item.targets
-            )
-            explained |= set(item.targets)
-    for target in targets:
-        if target in explained:
-            continue
-        values = [v.get(target) for _, v in by_period]
-        first = values[0]
-        changes = any(str(v) != str(first) for v in values) or (
-            target in preeq and str(preeq[target]) != str(first)
+    rows = []
+    if preeq is not None:
+        rows.append(
+            {
+                "left": first - 0.04 * ((last - first) or 1.0),
+                "right": first,
+                "fill": style.MUTED,
+                "alpha": 0.25,
+                "info": f"<b>pre-equilibration</b>, condition {html.escape(preeq)}: run to steady "
+                "state before the first period",
+            }
         )
-        stepped = steps(target) if changes else None
-        if stepped is not None:
-            out.curves[target] = (*stepped, True)
-            if target in preeq and (value := _number(preeq[target])) is not None:
-                out.preeq[target] = value
-        elif changes:
-            shown = [_fmt(preeq[target])] if target in preeq else []
-            out.constant[target] = " → ".join(shown + [_fmt(v) for v in values])
-        else:
-            out.constant[target] = _fmt(first)
-    return out
+    n = len(table)
+    for i, r in enumerate(table.itertuples()):
+        rows.append(
+            {
+                "left": float(r.start),
+                "right": float(r.end),
+                "fill": style.PALETTE[2],
+                "alpha": 0.06 if i % 2 == 0 else 0.16,
+                "info": f"<b>period {i + 1} of {n}</b>, time {_fmt(r.start)} to {_fmt(r.end)}, "
+                f"condition {html.escape(r.condition)}"
+                # A first period changes all it sets: once is enough.
+                + (f"<br>changes: {lines(r.changed)}" if r.changed != r.sets else "")
+                + f"<br>sets: {lines(r.sets)}{formulas}",
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _figure(title: str, x_range, y_label: str, height: int = HEIGHT) -> figure:
@@ -319,69 +252,21 @@ def _figure(title: str, x_range, y_label: str, height: int = HEIGHT) -> figure:
     return p
 
 
-def _period_starts(p: figure, starts: list[float]) -> None:
-    for start in starts:
-        p.add_layout(
-            Span(location=start, dimension="height", line_color=style.MUTED, line_dash="dashed")
-        )
-
-
-def protocol_figures(proto: Protocol, x_range) -> list[figure]:
-    """A plot of each quantity that changes over time, beside a card's data on its time axis."""
-    plots = []
-    for name, (ts, vs, stepped) in list(proto.curves.items())[:PROTOCOLS]:
-        note = proto.notes.get(name)
-        p = _figure(
-            f"{name} = {note}" if note else f"{name}, as the experiment sets it",
-            x_range,
-            name,
-            PROTOCOL_HEIGHT,
-        )
-        draw = p.step if stepped else p.line
-        kwargs = {"mode": "after"} if stepped else {}
-        draw(list(ts), list(vs), color=style.PALETTE[2], line_width=2, **kwargs)
-        if name in proto.preeq:
-            span = float(ts[-1] - ts[0]) or 1.0
-            stub = proto.preeq[name]
-            p.line(
-                [ts[0] - 0.04 * span, ts[0]],
-                [stub, stub],
-                color=style.PALETTE[2],
-                line_dash="dashed",
-                line_width=2,
-            )
-        _period_starts(p, proto.starts)
-        # From zero, with room above: a dose held constant had a range of nothing, its ticks piled.
-        values = [*vs, proto.preeq.get(name, vs[0])]
-        low, high = min(0.0, float(np.min(values))), float(np.max(values))
-        pad = 0.15 * (high - low) if high > low else max(abs(high), 1.0) * 0.15
-        p.y_range = Range1d(low - (pad if low < 0 else 0), high + pad)
-        plots.append(p)
-    return plots
-
-
-def settings_line(proto: Protocol, apart: str | None) -> str:
-    """The targets an experiment sets and never changes, what sets it apart (``apart``, as
-    :func:`distinguishing_inputs` names it) in bold."""
-    marked = {item.split("=", 1)[0].strip() for item in (apart or "").split(",") if "=" in item}
-    items = [f"**{k} = {v}**" if k in marked else f"{k} = {v}" for k, v in proto.constant.items()]
-    items.sort(key=lambda text: not text.startswith("**"))
-    more = f", +{len(items) - SETTINGS} more" if len(items) > SETTINGS else ""
-    if not items:
-        return ""
-    return "Set throughout: " + ", ".join(items[:SETTINGS]) + more
+#: What hovering a period's band shows: its ``info`` (:func:`period_bands`), HTML.
+BAND_HOVER = '<div style="max-width: 380px; font-size: 12px">@info{safe}</div>'
 
 
 def observable_figure(
     obs: str,
     sim: pd.DataFrame,
     compare: pd.DataFrame | None,
-    starts: list[float],
+    bands: pd.DataFrame | None,
     error_bars: bool,
     x_range,
 ) -> figure:
     """An observable's measurements in one experiment, ± their noise, and the version's
-    simulation through them, the compared version's dashed."""
+    simulation through them, the compared version's dashed, over the experiment's period
+    ``bands`` (:func:`period_bands`)."""
     points = sim.sort_values("time")
     noise = points["noise"].astype(float).fillna(0.0).to_numpy()
     measured = points["measurement"].astype(float).to_numpy()
@@ -396,11 +281,29 @@ def observable_figure(
     )
     total = float((points["residual_weighted"].astype(float) ** 2).sum())
     p = _figure(f"{obs} · χ² {total:.3g} (n={len(points)})", x_range, obs)
+    if bands is not None and not bands.empty:
+        # Far past the data either way, and left out of the y range: a band is the plot's height.
+        low, high = np.nanmin(source.data["lower"]), np.nanmax(source.data["upper"])
+        reach = 10 * ((high - low) or 1.0)
+        shade = p.quad(
+            left="left",
+            right="right",
+            bottom=low - reach,
+            top=high + reach,
+            fill_color="fill",
+            fill_alpha="alpha",
+            line_alpha=0,
+            source=ColumnDataSource(bands),
+        )
+        p.add_tools(HoverTool(renderers=[shade], tooltips=BAND_HOVER))
+    data = []
     if error_bars and points["noise"].notna().any():
         p.add_layout(
             Whisker(source=source, base="time", lower="lower", upper="upper", line_color="#7f7f7f")
         )
+        data += [p.scatter("time", y, source=source, alpha=0) for y in ("lower", "upper")]
     dots = p.scatter("time", "measurement", source=source, size=6, color=style.PALETTE[0])
+    data.append(dots)
     p.add_tools(
         HoverTool(
             renderers=[dots],
@@ -412,7 +315,9 @@ def observable_figure(
         )
     )
     line = points.groupby("time")["simulation"].mean()
-    p.line(line.index.to_numpy(), line.to_numpy(), color=style.PALETTE[3], line_width=2)
+    data.append(
+        p.line(line.index.to_numpy(), line.to_numpy(), color=style.PALETTE[3], line_width=2)
+    )
     if compare is not None and not compare.empty:
         theirs = compare.groupby("time")["simulation"].mean()
         p.line(
@@ -423,7 +328,7 @@ def observable_figure(
             line_width=1.5,
             alpha=0.7,
         )
-    _period_starts(p, starts)
+    p.y_range = DataRange1d(renderers=data)
     return p
 
 
@@ -613,18 +518,18 @@ def fit_entries(version, compare, error_bars: bool, show_periods: bool) -> list[
     if show_periods:
         out += [
             K.entry(
-                "a period starts",
-                "The experiment changes what it does here, such as adding or removing a drug.",
-                style.MUTED,
-                "┆",
+                "a period",
+                "The experiment's periods, shaded in turn: a new shade where it changes what it "
+                "does, such as adding a drug. Hover a band for what it sets and changes there.",
+                style.PALETTE[2],
+                "▮",
             ),
             K.entry(
-                "what the experiment sets",
-                "Under the data: a quantity the experiment controls over time, such as a drug's "
-                "concentration. Dashed before the first period: the value held while the system "
-                "settled to steady state before the experiment began (pre-equilibration).",
-                style.PALETTE[2],
-                "━",
+                "pre-equilibration",
+                "Before the first period, the system run to steady state under the experiment's "
+                "pre-equilibration condition.",
+                style.MUTED,
+                "▮",
             ),
         ]
     return out
@@ -673,7 +578,7 @@ class FitTab:
             value=[],
             sizing_mode="stretch_width",
         )
-        self.show_periods = pn.widgets.Checkbox(name="what each experiment sets", value=True)
+        self.show_periods = pn.widgets.Checkbox(name="periods", value=True)
         self.error_bars = pn.widgets.Checkbox(name="noise σ as error bars", value=True)
         self._version_seen: int | None = None
         self.app.param.watch(self._reset, "version")
@@ -756,9 +661,17 @@ class FitTab:
         cards = []
         for eid in experiments:
             sub = sim[sim["experiment_id"] == eid]
-            proto = protocol(problem, self.app.inputs, eid, float(ends.get(eid, 0.0)))
-            _, preeq = periods(problem, eid, float(ends.get(eid, 0.0)))
-            starts = proto.starts if show_periods else []
+            table, preeq = periods(problem, eid, float(ends.get(eid, 0.0)))
+            bands = None
+            if show_periods:
+                # An input's formula where the experiment sets every target it reads.
+                targets = {
+                    item.split(" = ", 1)[0] for text in table["sets"] for item in text.split("; ")
+                }
+                formulas = [
+                    f"{i.id}(t) = {i.formula}" for i in self.app.inputs if set(i.targets) <= targets
+                ]
+                bands = period_bands(table, preeq, formulas)
             measured = [o for o in chi2(sub, "observable_id").index if o in set(observables)]
             # One time axis for the card's plots, so they zoom and pan together.
             x_range = DataRange1d()
@@ -770,7 +683,7 @@ class FitTab:
                     theirs = other[
                         (other["experiment_id"] == eid) & (other["observable_id"] == obs)
                     ]
-                plots.append(observable_figure(obs, points, theirs, starts, error_bars, x_range))
+                plots.append(observable_figure(obs, points, theirs, bands, error_bars, x_range))
             if not plots:
                 continue
             total = float((sub["residual_weighted"].astype(float) ** 2).sum())
@@ -782,12 +695,10 @@ class FitTab:
                         titles.get(eid),
                         f"χ² {total:.3g}",
                         f"pre-equilibrated in {preeq}" if preeq else None,
-                        f"{len(proto.starts) + 1} periods" if proto.starts else None,
+                        f"{len(table)} periods" if len(table) > 1 else None,
                     ],
                 )
             )
-            if show_periods:
-                plots += protocol_figures(proto, x_range)
             # Bokeh's own figures, side by side as the window allows: built through HoloViews, a
             # card's four plots took most of the tab's load.
             items = [
@@ -805,18 +716,11 @@ class FitTab:
                     sizing_mode="stretch_width",
                 )
             ]
-            notes = []
-            if show_periods and (line := settings_line(proto, titles.get(eid))):
-                notes.append(line)
             if len(measured) > TRACKS:
-                notes.append(
-                    f"{len(measured) - TRACKS} more observables measured here, better fitted: "
-                    "pick them above."
-                )
-            if notes:
                 items.append(
                     pn.pane.Markdown(
-                        "  \n".join(notes),
+                        f"{len(measured) - TRACKS} more observables measured here, better fitted: "
+                        "pick them above.",
                         styles={"font-size": "12px"},
                         sizing_mode="stretch_width",
                     )
