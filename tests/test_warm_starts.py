@@ -8,16 +8,15 @@ does not help. Without it, "adding this term made the fit worse" is ambiguous be
 answer and a multistart that never found the parent's basin — the ambiguity
 ``petab_mcp.nesting`` has to warn about.
 
-The remaining warm starts are the parent multistart's OTHER converged optima (``previous_optima``),
-remapped onto the child's parameter vector by NAME: a shared parameter is carried across through
-linear (the two problems can scale it differently), and anything the parent did not have keeps
-its neutral nominal value, which is how a lower-dimensional parent point expands into the child's
-space. Everything is projected into the child's bounds before use, and deduplicated after, so a
-tightened box cannot spend two warm starts on one feasible point. Jitter around start 0 fills the
-budget only when the parent cannot supply enough distinct optima.
+The remaining warm starts are the parent multistart's OTHER basins, one start each
+(``previous_optima``), remapped onto the child's parameter vector by NAME: a shared parameter is
+carried across through linear (the two problems can scale it differently), and anything the
+parent did not have keeps its neutral nominal value, which is how a lower-dimensional parent point
+expands into the child's space. Everything is projected into the child's bounds before use, and
+deduplicated after, so a tightened box cannot spend two warm starts on one feasible point.
 
-The other half stays freshly sampled: a new parameter can open local optima none of the parent's
-basins contain.
+The rest stays freshly sampled: a new parameter can open local optima none of the parent's basins
+contain, and a warm budget the parent's basins do not fill goes to fresh starts too.
 """
 
 from __future__ import annotations
@@ -65,29 +64,14 @@ def _pdf(k1=0.5, k2=0.1):
     ).set_index("parameterId")
 
 
-def test_half_the_starts_are_warm_and_the_first_is_the_nominal_point():
+def test_without_a_previous_fit_the_one_warm_start_is_the_nominal_point():
     g = fitting.warm_start_guesses(_problem(), _pdf(), n_starts=10)
-    assert g.shape == (5, 3)  # WARM_START_FRACTION of 10, full-dimensional vectors
-    # start 0 is the un-jittered current optimum, on each parameter's ESTIMATION scale
+    assert g.shape == (1, 3)  # full-dimensional; the other nine are sampled fresh
+    # start 0 is the current optimum, on each parameter's ESTIMATION scale
     assert g[0, 0] == pytest.approx(np.log10(0.5))
     assert g[0, 1] == pytest.approx(np.log10(0.1))
     # the fixed coordinate is carried through untouched (pyPESTO re-inserts it either way)
     assert g[0, 2] == pytest.approx(1.0)
-
-
-def test_the_remaining_warm_starts_scatter_around_it():
-    g = fitting.warm_start_guesses(_problem(), _pdf(), n_starts=10)
-    # all distinct — running the same optimization five times would waste half the budget
-    assert len({tuple(row) for row in g}) == 5
-    # ...but local: within a few jitter widths of the parent optimum, not a fresh uniform draw
-    spread = fitting.WARM_START_JITTER * (2.0 - -4.0)
-    assert np.abs(g[1:, :2] - g[0, :2]).max() < 5 * spread
-
-
-def test_jitter_is_clipped_to_the_box():
-    # nominal sitting hard against the upper bound: every jittered start must stay inside it
-    g = fitting.warm_start_guesses(_problem(), _pdf(k1=100.0, k2=100.0), n_starts=40)
-    assert (g[:, :2] <= 2.0 + 1e-12).all() and (g[:, :2] >= -4.0 - 1e-12).all()
 
 
 def test_a_nominal_point_outside_a_tightened_bound_is_pulled_back_in():
@@ -95,12 +79,6 @@ def test_a_nominal_point_outside_a_tightened_bound_is_pulled_back_in():
     # and then optimize from an infeasible point, so start 0 is clipped like the rest.
     g = fitting.warm_start_guesses(_problem(), _pdf(k1=1e6), n_starts=4)
     assert g[0, 0] == pytest.approx(2.0)
-
-
-def test_deterministic_across_calls():
-    a = fitting.warm_start_guesses(_problem(), _pdf(), n_starts=10)
-    b = fitting.warm_start_guesses(_problem(), _pdf(), n_starts=10)
-    assert np.array_equal(a, b)
 
 
 def test_no_guesses_when_there_is_no_room_for_one():
@@ -131,7 +109,7 @@ def test_pypesto_accepts_the_guesses_and_takes_them_as_start_points(session, eng
     n_starts = 8
     guesses = fitting.warm_start_guesses(problem, session.problem.parameter_df, n_starts)
     problem.x_guesses_full = guesses
-    assert problem.x_guesses.shape == (4, problem.dim)  # reduced to the free coordinates
+    assert problem.x_guesses.shape == (1, problem.dim)  # reduced to the free coordinates
     # the guess equals the nominal point pyPESTO's objective would be evaluated at
     assert problem.x_guesses[0] == pytest.approx(
         fitting.problem_x_from_nominal(problem, session.problem.parameter_df)
@@ -215,7 +193,9 @@ def _prev(*points, scales=("log10", "log10"), names=("k1", "k2")):
     return {
         "x_names": list(names),
         "x_scales": list(scales),
-        "starts": [{"start": i, "fval": -100.0 + i, "x": list(p)} for i, p in enumerate(points)],
+        "starts": [
+            {"start": i, "fval": -100.0 + 10 * i, "x": list(p)} for i, p in enumerate(points)
+        ],
     }
 
 
@@ -238,7 +218,7 @@ def test_a_new_parameter_gets_all_THREE_neutral_candidates_on_the_parent_optimum
     # n_starts=12 (n_warm=6) so all three candidates fit: they are capped at half the warm
     # budget, and at n_warm=4 only two would be generated.
     g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
-    assert g.shape == (6, 3)
+    assert g.shape == (5, 3)  # the nominal point is the unit candidate, and the best basin is it
     # rows 0-2 are the three candidates, ALL on the parent's optimum in the shared coordinates
     for row in g[:3]:
         assert row[:2] == pytest.approx([np.log10(0.5), np.log10(0.1)])
@@ -251,7 +231,7 @@ def test_a_new_parameter_gets_all_THREE_neutral_candidates_on_the_parent_optimum
 def test_the_starts_rerun_when_stopped_are_those_on_the_parent_optimum():
     """A fit reruns once a stopped start that sits on the parent's optimum, since one of those keeps
     a nested edit within reach of its parent (multistart, #118): the neutral candidates, or the
-    nominal point when the edit adds no parameter, never the parent's other basins or the jitter.
+    nominal point when the edit adds no parameter, never the parent's other basins.
     Without a parent there is nothing to keep."""
     prev = _prev(
         [np.log10(0.5), np.log10(0.1)],
@@ -314,13 +294,34 @@ def test_previous_optima_are_converted_across_a_changed_scale():
 
 
 def test_duplicate_previous_optima_do_not_eat_the_warm_budget():
-    # A multistart that converged everything to one point supplies ONE basin, not n_warm copies.
+    # A multistart that converged everything to one point supplies ONE basin, not n_warm copies;
+    # the budget it leaves is sampled fresh.
     same = [np.log10(0.5), np.log10(0.1)]
     g = fitting.warm_start_guesses(
         _nested_problem(), _nested_pdf(), 8, optimization=_prev(same, same, same)
     )
-    assert g.shape == (4, 3)
-    assert len({tuple(row) for row in g}) == 4  # the repeats were replaced by jittered starts
+    assert g.shape == (2, 3)  # the unit and lower-bound candidates on the nominal point
+
+
+def test_starts_that_share_an_optimum_take_one_warm_start():
+    """PEtab-MCP#382: starts that converge to one optimum still differ in their coordinates, so
+    each took a warm start of its own: 115 of a Fujita child's 150 warm starts began in its
+    parent's best basin and all ended there. A basin is the starts within AT_BEST_NLL_TOL of the
+    best one kept before them."""
+    prev = _prev(
+        [np.log10(0.5), np.log10(0.1)],
+        [np.log10(9.0), np.log10(0.02)],
+        [np.log10(9.1), np.log10(0.021)],
+        [np.log10(0.3), np.log10(7.0)],
+    )
+    for start, fval in zip(prev["starts"], (-100.0, -90.0, -89.5, -80.0)):
+        start["fval"] = fval
+    g = fitting.warm_start_guesses(_problem(), _pdf(), 20, optimization=prev)
+    assert [[round(float(v), 3) for v in row[:2]] for row in g] == [
+        [round(np.log10(0.5), 3), round(np.log10(0.1), 3)],
+        [round(np.log10(9.0), 3), round(np.log10(0.02), 3)],
+        [round(np.log10(0.3), 3), round(np.log10(7.0), 3)],
+    ]
 
 
 def test_failed_previous_starts_are_not_treated_as_basins():
@@ -332,22 +333,21 @@ def test_failed_previous_starts_are_not_treated_as_basins():
     assert not any(np.allclose(row[:2], [np.log10(9.0), np.log10(0.02)]) for row in g)
 
 
-def test_a_previous_fit_without_scales_falls_back_to_jitter():
+def test_a_previous_fit_without_scales_reuses_none_of_its_optima():
     """Remapping without the scales would mix log10 and linear coordinates — worse than not
     reusing the optima at all. Legacy payloads (written before x_scales) take the old path."""
     prev = _prev([np.log10(9.0), np.log10(0.02)])
     prev.pop("x_scales")
     # n_starts=12 for the same reason as above: the guard has to be REACHED to be tested.
     g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
-    assert g.shape == (6, 3)
+    assert g.shape == (3, 3)  # the three neutral candidates
     assert not any(np.allclose(row[:2], [np.log10(9.0), np.log10(0.02)]) for row in g)
 
 
 def test_no_previous_fit_still_warm_starts_from_the_nominal_point():
-    # The session's FIRST fit has no previous optima; the nominal point plus jitter is still better
-    # than nothing, and keeps the warm/fresh split intact.
+    # The session's FIRST fit has no previous optima: the nominal point, and the rest fresh.
     g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 8, optimization=None)
-    assert g.shape == (4, 3)
+    assert g.shape == (1, 3)
     assert g[0, :2] == pytest.approx([np.log10(0.5), np.log10(0.1)])
 
 
@@ -384,7 +384,7 @@ def test_previous_optima_are_projected_into_the_current_bounds():
     # n_starts=12 so BOTH mapped optima are in scope past the candidate rows — at n_warm=4 the
     # second one is never reached and "not spent twice" would be vacuously true.
     g = fitting.warm_start_guesses(_nested_problem(), _nested_pdf(), 12, optimization=prev)
-    assert g.shape == (6, 3)
+    assert g.shape == (4, 3)  # three candidates and the one corner
     assert (g[:, :3] <= 2.0 + 1e-12).all() and (g[:, :3] >= -4.0 - 1e-12).all()
     corner = [np.allclose(row[:2], [2.0, -4.0]) for row in g]
     # the first out-of-box optimum is pulled to the corner...

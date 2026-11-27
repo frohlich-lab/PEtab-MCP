@@ -16,6 +16,7 @@ from petab_mcp.validation import (
     _fixed_constant_role_issues,
     _power_issues,
     _unread_reactant_issues,
+    exponents_below_one_at_zero,
     frozen_parametric_stoichiometry_issues,
     validate_problem,
 )
@@ -469,12 +470,12 @@ end
         ("(B + 1)^h", 0.5, None),
     ],
 )
-def test_a_base_at_zero_raised_to_an_exponent_that_may_go_below_one_is_warned(rate, lower, when):
+def test_a_base_at_zero_raised_to_an_exponent_that_may_go_below_one_is_found(rate, lower, when):
     """#341 (lun 63612603_109): `M2d^hM2`, its base an input the non-MAP2K2 conditions set to 0,
     fitted hM2 to 0.998 and left the gradient NaN at that optimum. Below 1 the power's slope at 0 is
     infinite: in AMICI 1.2 a readout's sensitivities there are NaN, and a rate reading `P^h` with
     P(0) = 0 fails to simulate (AMICI_FIRST_SRHSFUNC_ERR), with or without `max`/`abs` on the base;
-    h = 1.5 runs clean."""
+    h = 1.5 runs clean. An edit raises such an exponent's lower bound to 1 (#382)."""
     import types
 
     import pandas as pd
@@ -488,16 +489,9 @@ def test_a_base_at_zero_raised_to_an_exponent_that_may_go_below_one_is_warned(ra
         {"conditionId": ["ctrl", "treat"], "targetId": ["c", "c"], "targetValue": [0.0, 1.0]}
     )
     problem = types.SimpleNamespace(model=model, parameter_df=pdf, condition_df=cdf)
-    said = [i["message"] for i in _power_issues(problem) if i["check"] == "power_of_zero"]
-    assert len(said) == (when is not None), said
-    if rate == "B^h" and when:
-        assert said == [
-            "reaction `r2` raises `B`, which is 0 in condition `ctrl`, to `h`, whose lower bound "
-            "is below 1, where the power's slope at 0 is infinite: the fit's gradient there is "
-            "NaN. Give `h` a lower bound of 1."
-        ]
-    elif when:
-        assert f"which {when}, to `h`" in said[0], said[0]
+    found = exponents_below_one_at_zero(problem)
+    base = rate.rsplit("^", 1)[0]
+    assert found == ({"h": f"reaction `r2` raises `{base}`, which {when}"} if when else {})
 
 
 def _problem(body: str, formula: str = "B", estimated=(), targets=()):

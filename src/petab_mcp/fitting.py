@@ -202,31 +202,20 @@ def _apply_amici_solver_defaults(problem) -> None:
             setter(value)
 
 
-# The warm-start jitter's seed and the multistart's optimizer. Named constants rather than
-# parameters: the fit's own log line hard-codes "optimizer=fides", so a signature knob would be
-# configurable in name only.
-FIT_SEED = 0
-FIT_OPTIMIZER = "fides"
-
 # -- warm starts (see `warm_start_guesses`) ---------------------------------
-# Fraction of the multistart re-entered at the PREVIOUS fit's optima — its best one (which the
-# write-back left in the nominal values) and then its other converged basins, each remapped onto
-# this problem's parameter vector. For a NESTED edit (a new parameter added at a neutral value)
-# the best one reproduces the parent's likelihood exactly, so a fit that starts there cannot
+# At most this fraction of the multistart re-enters the PREVIOUS fit's optima — its best one (which
+# the write-back left in the nominal values) and then one start per other basin, each remapped
+# onto this problem's parameter vector. For a NESTED edit (a new parameter added at a neutral
+# value) the best one reproduces the parent's likelihood exactly, so a fit that starts there cannot
 # converge WORSE than its parent unless the added structure genuinely cannot help. That is the
 # whole point: an "adding this term made the fit worse" result is otherwise indistinguishable
 # from an under-converged multistart that never found the parent's basin (see :mod:`nesting`),
 # and an agent has read the latter as the former. Re-entering the OTHER basins matters for the
 # same reason one notch down: they are the local optima the parent's own multistart paid to find,
 # and an additive edit does not destroy them.
-# The other half stays FRESH random: an added parameter can create new local optima that none of
-# the parent's basins contain, and only an unbiased sample finds those.
+# The rest stays FRESH random: an added parameter can create new local optima that none of the
+# parent's basins contain, and only an unbiased sample finds those.
 WARM_START_FRACTION = 0.5
-# Spread of the FALLBACK warm starts, as a fraction of each parameter's box width in ESTIMATION
-# scale. Used only to fill the warm budget when the previous fit cannot supply enough DISTINCT
-# optima — the session's first fit, or a multistart that converged everything to one point — so the
-# warm half explores that point's neighbourhood instead of re-running one optimization N times.
-WARM_START_JITTER = 0.05
 
 
 def _fides_maxtime_options(per_start_timeout: float) -> dict[str, Any]:
@@ -950,7 +939,7 @@ def problem_x_full_from_nominal(problem, parameter_df) -> list[float]:
 
 
 def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[list[float]]:
-    """The PREVIOUS fit's per-start optima, remapped onto this problem's parameter vector and
+    """The PREVIOUS fit's optima, one per basin, remapped onto this problem's parameter vector and
     ranked best-first — the raw material for the warm starts.
 
     ``optimization`` is a :func:`_optimization_payload` dict (``session.optimization``), whose
@@ -961,6 +950,12 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
     problem forces its sigmas to a linear scale) and anything the previous fit did not have keeps
     its value from ``x0``, the current nominal point. For an additive edit that means every
     previous local optimum is re-entered with the new parameter at its neutral value.
+
+    A basin is the starts within :data:`AT_BEST_NLL_TOL` of the best one kept before them, the
+    yardstick ``starts_at_best`` counts by; only that best one is kept. Starts that converge to one
+    optimum still differ in their coordinates, so telling basins apart by coordinate re-enters one
+    optimum once per start that found it: 108 of a Fujita parent's starts shared its best
+    (PEtab-MCP#382).
 
     Returns ``[]`` when there is no usable previous fit: no payload (the first fit), or one
     written before ``x_names``/``x_scales`` were recorded — remapping without the scales would
@@ -984,9 +979,11 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
         return []
 
     out: list[list[float]] = []
+    kept = None  # the objective of the basin re-entered last
     for start in starts:
         xs = start.get("x")
-        if not xs or _flt(start.get("fval")) is None:
+        fval = _flt(start.get("fval"))
+        if not xs or fval is None or (kept is not None and fval <= kept + AT_BEST_NLL_TOL):
             continue
         point = list(x0)
         try:
@@ -998,6 +995,7 @@ def previous_optima(problem, optimization: dict[str, Any] | None, x0) -> list[li
         except (IndexError, KeyError, TypeError, ValueError):
             continue  # a malformed/short vector is one unusable start, not a broken fit
         out.append(point)
+        kept = fval
     return out
 
 
@@ -1018,8 +1016,8 @@ def renamed_optimization(optimization, renamed) -> dict[str, Any] | None:
 
 
 def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
-    """``WARM_START_FRACTION`` of the multistart's start points, seeded from the PREVIOUS fit.
-    Returns a ``(n_warm, dim_full)`` array — pyPESTO fills the first ``n_warm`` starts from it
+    """At most ``WARM_START_FRACTION`` of the multistart's start points, seeded from the PREVIOUS
+    fit. Returns a ``(n_warm, dim_full)`` array — pyPESTO fills the first ``n_warm`` starts from it
     and samples the remaining ``n_starts - n_warm`` freshly.
 
     The warm starts are seeded from the PREVIOUS fit's optima — and any parameter the previous
@@ -1046,16 +1044,11 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     only unit is tried, which is the single best guess but not a proof.
 
     The neutral candidates come first (see the paragraph above); the previous multistart's OTHER
-    optima follow, best-first (see :func:`previous_optima`), deduplicated against each other. Those are real, converged basins
-    of the parent likelihood — under an additive edit they stay basins — so re-entering them is a
-    far better use of the warm half than perturbing one point at random. Only when the previous
-    fit cannot supply enough distinct optima (the first fit, or a multistart that converged
-    everything to one point) is the remainder filled by jittering start 0 (Gaussian,
-    ``WARM_START_JITTER`` of each box's width in estimation scale), so the warm/fresh split still
-    holds. Every start is clipped into the box.
-
-    Deterministic: jitter is drawn from a private ``default_rng(FIT_SEED)``, so it neither
-    depends on nor perturbs the global stream pyPESTO samples its fresh starts from.
+    basins follow, one start each, best-first (see :func:`previous_optima`). Those are real,
+    converged basins of the parent likelihood — under an additive edit they stay basins. When the
+    previous fit has fewer basins than the warm budget (the first fit has none), the rest of the
+    budget is sampled fresh: scattering it around a basin already re-entered re-finds that basin.
+    Every start is clipped into the box.
 
     Returns an empty ``(0, dim_full)`` array when there is nothing to warm-start from
     (``n_starts < 2``, no free parameters, or a free parameter with no usable nominal value),
@@ -1086,8 +1079,8 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
     # reaches the optimizer and must not disable warm starts for the parameters that do.
     if not np.all(np.isfinite(x0[free])):
         return np.zeros((0, dim_full))
-    # Bounds are free-space vectors (pyPESTO drops the fixed coordinates), so clipping (and the
-    # jitter fallback) happen on the free sub-vector and are written back into the full one.
+    # Bounds are free-space vectors (pyPESTO drops the fixed coordinates), so clipping happens on
+    # the free sub-vector and is written back into the full one.
     lb = np.asarray(problem.lb, dtype=float)
     ub = np.asarray(problem.ub, dtype=float)
 
@@ -1165,29 +1158,7 @@ def warm_start_guesses(problem, parameter_df, n_starts: int, optimization=None):
         guesses.append(row)
         if len(guesses) == n_warm:
             break
-
-    if len(guesses) < n_warm:
-        # Not enough distinct previous optima — scatter around start 0 to fill the warm budget.
-        rng = np.random.default_rng(FIT_SEED)
-        # An unbounded coordinate has no box width to scale by, and `inf * normal()` would put
-        # inf/NaN start points in front of the optimizer (clipping to an infinite bound leaves
-        # them there). Give those coordinates zero spread: their warm starts stay at the nominal
-        # value, which is at least feasible.
-        width = ub - lb
-        spread = WARM_START_JITTER * np.where(np.isfinite(width), width, 0.0)
-        # Scatter around the nominal point -- the PARENT'S optimum -- not guesses[0], which is
-        # now a candidate row sitting at a BOUND; perturbing that and clipping back would pile
-        # roughly half the filler starts exactly onto the bound. CLIPPED, because x0 itself can
-        # sit outside the box (a `parameters` edit in the same call can narrow a bound away from
-        # the minted nominal value), and an out-of-box base would put every filler on a bound for
-        # the same reason.
-        anchor = _clipped(np.array(x0, dtype=float))
-        base = anchor[free]
-        while len(guesses) < n_warm:
-            row = np.array(anchor, dtype=float)
-            row[free] = np.clip(base + rng.normal(0.0, 1.0, size=len(free)) * spread, lb, ub)
-            guesses.append(row)
-    return np.asarray(guesses)
+    return np.asarray(guesses, dtype=float).reshape(-1, dim_full)
 
 
 def parent_starts(problem, guesses, optimization) -> frozenset[str]:
@@ -1262,7 +1233,7 @@ def _run_fit(session, engine, n_starts: int) -> dict[str, Any]:
     # a previous fit rather than silently reusing them.
     # ...but ONLY when there is something to rescue the point WITH. With no newly-added
     # parameter there are no candidates, so a non-finite objective at the nominal point means
-    # exactly what it used to: the warm half would be spent jittering around a region that just
+    # exactly what it used to: the warm half would be spent re-entering a region that just
     # failed, where the fresh sample is the only way in.
     # A `rename` in this call carries each previous coordinate to its new id, as the reconcile
     # carried its row: the renamed parameter is the previous fit's, not a new one.
