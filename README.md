@@ -103,9 +103,9 @@ default). The tabs show that version, and every plot explains on hover how to re
   coloured by how it ended or by waterfall cluster. Beside it is each start's objective over its
   run, and below, where each start ended within each estimated parameter's bounds. A running fit's
   starts appear as they finish.
-- **Fit:** data against simulation, one card per experiment, worst-fitted first, with what the
-  experiment sets over time plotted under its data on the same time axis. A Residuals sub-tab sits
-  beside it.
+- **Fit:** data against simulation, one card per experiment, worst-fitted first, each plot shaded
+  by the experiment's periods; hover a period for what the experiment sets and changes in it. A
+  Residuals sub-tab sits beside it.
 
 The page never writes to the store and never compiles or simulates a model: it shows what the fits
 stored. A running fit reaches it through `fit_progress.json`, which the server keeps in the store
