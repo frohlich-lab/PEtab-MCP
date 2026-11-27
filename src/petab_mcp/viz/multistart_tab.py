@@ -153,11 +153,19 @@ OTHERS = "#c7c7c7"
 #: The tab's colourings, each applied to all three plots.
 BY_EXIT, BY_CLUSTER, BY_START = "how each ended", "waterfall cluster", "warm or cold start"
 
-#: A start's colour by where it began, and what that means.
-START_COLORS = {"warm": style.PALETTE[1], "cold": style.PALETTE[0]}
+#: A start's colour by where it began, and what that means. A fit before PEtab-MCP#368 did not
+#: record which of its starts were warm, and they cannot be told from their start points: the
+#: warm half is the parent's optima, its best with the new parameters at three guesses and then
+#: its other optima, so no rule on x0 finds them all.
+NOT_RECORDED = "not recorded"
+START_COLORS = {"warm": style.PALETTE[1], "cold": style.PALETTE[0], NOT_RECORDED: style.MUTED}
 START_MEANINGS = {
-    "warm": "Began from the best parameters of an earlier version instead of a random guess.",
+    "warm": "Began from the optima of the version this one was made from (its best, and its other "
+    "optima) instead of a random guess.",
     "cold": "Began from a random guess within the parameters' bounds.",
+    NOT_RECORDED: "This fit did not record which of its starts were warm (the server records it "
+    "since 25 November 2026), and its start points cannot tell: up to half of a fit's starts are "
+    "warm, begun from the optima of the version it was made from.",
 }
 
 WATERFALL = """
@@ -255,18 +263,20 @@ def cluster_colors(cluster: pd.Series) -> dict[int, str]:
     return {c: style.PALETTE[i] for i, c in enumerate(shared)}
 
 
-def waterfall_frame(starts: pd.DataFrame, n_warm: int = 0) -> pd.DataFrame:
+def waterfall_frame(starts: pd.DataFrame, n_warm: int | None = None) -> pd.DataFrame:
+    """The waterfall's starts. ``n_warm``, the fit's warm starts, numbered first; ``None`` where
+    the fit did not record them."""
     df = starts.copy()
     best = df["fval"].min()
     df["rank"] = np.arange(len(df))
     df["above_best"] = df["fval"] - best + OFFSET
     df["ended"] = [_exit(f, m) for f, m in zip(df["exitflag"], df["message"])]
-    df["warm"] = [str(i).isdigit() and int(i) < n_warm for i in df["id"]]
+    df["warm"] = [n_warm is not None and str(i).isdigit() and int(i) < n_warm for i in df["id"]]
     df = df.dropna(subset=["fval"])
     df["cluster"] = clusters(df["fval"])
     df["cluster_color"] = df["cluster"].map(cluster_colors(df["cluster"])).fillna(OTHERS)
     df["exit_color"] = df["ended"].map(EXIT_COLORS).fillna(style.MUTED)
-    df["began"] = np.where(df["warm"], "warm", "cold")
+    df["began"] = NOT_RECORDED if n_warm is None else np.where(df["warm"], "warm", "cold")
     df["start_color"] = df["began"].map(START_COLORS)
     return df
 
@@ -297,7 +307,7 @@ def legend(df: pd.DataFrame, starts: pd.DataFrame, by: str, chosen: list[int]) -
     objective to plot, but the summary counts its exit, and the legend must say what it means."""
     out = []
     if by == BY_START:
-        for began, n in df["began"].value_counts().reindex(["warm", "cold"]).dropna().items():
+        for began, n in df["began"].value_counts().reindex(list(START_COLORS)).dropna().items():
             out.append(
                 K.entry(
                     f"{began} · {int(n)}",
@@ -945,7 +955,8 @@ class MultistartTab:
                 "simulate-only pass."
             )
         meta, opt = store.meta(version), store.optimization(version) or {}
-        df = waterfall_frame(starts, int(opt.get("n_warm_starts") or 0))
+        warm = opt.get("n_warm_starts")
+        df = waterfall_frame(starts, None if warm is None else int(warm))
         hidden = self.legend.param.hidden
         tf = trace_frame(store.trace(version), df)
         ylim = y_range(df, tf)

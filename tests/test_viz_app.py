@@ -264,6 +264,9 @@ def test_warm_and_cold_starts_are_a_colouring_of_their_own():
     assert set(M.colors(df, M.BY_START, ["start:warm"])) == {2, 3}
     labels = [e["label"] for e in M.legend(df, starts, M.BY_START, [])]
     assert labels[:2] == ["warm · 2", "cold · 2"]
+    # A fit before the server recorded its warm starts: none is claimed cold.
+    unknown = M.waterfall_frame(starts)
+    assert set(unknown["began"]) == {M.NOT_RECORDED} and not unknown["warm"].any()
 
 
 def test_a_versions_warm_starts_are_read_from_its_optimization_record(viz_store):

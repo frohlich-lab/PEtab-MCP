@@ -269,6 +269,8 @@ class ProvenanceStore:
             # the optimizer log runs at ERROR -- so a restored version cannot answer
             # "optimiser-limited or structure-limited?" without it. This whitelist
             # silently dropped it: a key absent here is not persisted and nothing warns.
+            # n_warm_starts says which starts were warm (pyPESTO numbers them first), for
+            # petab_mcp.viz; it too was dropped here.
             for k in (
                 "n_starts",
                 "starts",
@@ -277,6 +279,7 @@ class ProvenanceStore:
                 "x_scales",
                 "exitflag_counts",
                 "n_starts_killed",
+                "n_warm_starts",
             )
         }
         (vdir / "optimization.json").write_text(_dumps(persist), encoding="utf-8")
