@@ -85,6 +85,34 @@ resumes the latest version (a store written by the PEtab v1 server is refused). 
 stderr goes to `stderr.log` there, beside `petab_mcp.log` and the fit log `pypesto.log`. A ready toy
 problem lives at `tests/data/toy_v2/`; `tests/data/toy_v1/` is the same problem in v1 form.
 
+## Viewer
+
+`petab-mcp-viz` serves a read-only web page over a session's store, live or archived (the `viz`
+extra: `pip install 'petab-mcp[viz]'`):
+
+```bash
+petab-mcp-viz --petab-yaml path/to/problem.yaml   # --provenance-dir DIR  --port 5006  --no-show
+```
+
+Pick a version in the sidebar, which also picks the version to compare it with (its parent by
+default). The tabs show that version, and every plot explains on hover how to read it:
+
+- **Versions:** the session's versions as a tree, each joined to the one it was made from, over a
+  table of the reason given for each change.
+- **Multistart:** the fit start by start. A waterfall shows each start's objective above the best,
+  coloured by how it ended or by waterfall cluster. Beside it is each start's objective over its
+  run, and below, where each start ended within each estimated parameter's bounds. A running fit's
+  starts appear as they finish.
+- **Fit:** data against simulation, one card per experiment, worst-fitted first, each plot shaded
+  by the experiment's periods; hover a period for what the experiment sets and changes in it.
+  Grouped by observable instead, the experiments are overlaid; the x axis can be time, the
+  simulated value, or an input that differs between experiments (dose-response). A Residuals
+  sub-tab sits beside it.
+
+The page never writes to the store and never compiles or simulates a model: it shows what the fits
+stored. A running fit reaches it through `fit_progress.json`, which the server keeps in the store
+while a change runs. See [`petab_mcp.viz`](src/petab_mcp/viz/__init__.py).
+
 ## Fitting on SLURM
 
 The fits of many servers, a sweep's runs say, share one pool of SLURM workers. `petab-mcp-pool`

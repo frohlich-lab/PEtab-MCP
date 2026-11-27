@@ -98,6 +98,18 @@ def test_snapshot_persists_optimization_and_copies_result_file(tmp_path):
     assert store.get_version(v2)["optimization"] is None
 
 
+def test_a_fits_warm_starts_are_stored_with_its_starts(tmp_path):
+    """The viewer colours a start warm or cold from the count; the whitelist dropped it."""
+    store = ProvenanceStore(tmp_path / ".petab_mcp")
+    v = store.snapshot_version(
+        "model m() end",
+        _pdf([{"parameterId": "k", "estimate": 1}]),
+        label="fit",
+        optimization={"n_starts": 2, "starts": [], "n_warm_starts": 1},
+    )
+    assert store.get_version(v)["optimization"]["n_warm_starts"] == 1
+
+
 def test_events_appended_and_tailed(tmp_path):
     store = ProvenanceStore(tmp_path / ".petab_mcp")
     for i in range(5):

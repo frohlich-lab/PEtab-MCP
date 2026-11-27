@@ -234,6 +234,19 @@ class _RateLimitFilter(logging.Filter):
         return self._count <= _AMICI_PER_SECOND
 
 
+#: The level names ``AMICI_LOG`` may give, as the standard library defines them.
+_STANDARD_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "FATAL": logging.FATAL,
+    "ERROR": logging.ERROR,
+    "WARN": logging.WARNING,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+    "NOTSET": logging.NOTSET,
+}
+
+
 def _amici_level() -> int:
     """``AMICI_LOG`` env as a level, or ``WARNING``.
 
@@ -247,7 +260,10 @@ def _amici_level() -> int:
         return int(raw)
     except ValueError:
         pass
-    named = logging.getLevelNamesMapping().get(raw.strip().upper())
+    # The standard names only: logging's own table also holds whatever level a library has
+    # registered, and param (the viewer's, PEtab-MCP's `viz` extra) adds VERBOSE = 19 once its
+    # logger exists, which read AMICI_LOG=VERBOSE as 19 in a process that had loaded it.
+    named = _STANDARD_LEVELS.get(raw.strip().upper())
     return named if named is not None else logging.WARNING
 
 

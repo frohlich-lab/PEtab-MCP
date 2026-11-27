@@ -69,9 +69,9 @@ dependencies = [
     "pandas>=1.5",
     "numpy>=1.23",
     "duckdb>=0.9",
-    # Never imported here: pyPESTO's storage API writes the per-fit pypesto_result.hdf5
-    # (fitting._write_result_hdf5 / provenance's copy-forward) and h5py is what it writes
-    # through. Pinned explicitly so that path can't break on a transitive graph change.
+    # pyPESTO's storage API writes the per-fit pypesto_result.hdf5 through it
+    # (fitting._write_result_hdf5 / provenance's copy-forward), and the viewer reads each start's
+    # exit flag back with it (petab_mcp.viz.store), without pyPESTO, whose import loads AMICI.
     "h5py>=3",
     "sympy>=1.10",
     # Imported directly for the chi2 goodness-of-fit p-value (residual_tests, fitting). Only
@@ -138,10 +138,15 @@ statements = [
     # (README, Install); pip cannot provide it.
     "bionetgen>=0.8.7",
 ]
+# The viewer (`petab-mcp-viz`, petab_mcp.viz), the only importer; the server never imports it.
+# The floors are the releases it was written and tested against (holoviews 1.23.2, panel 1.11.1);
+# nothing older was tried.
+viz = ["holoviews>=1.23", "panel>=1.11"]
 dev = [
-    # The dask and statements extras, so CI runs tests/test_dask_engine.py, tests/test_pool.py
-    # (which submits nothing to SLURM) and the statements route rather than skipping them.
-    "petab-mcp[dask,statements]",
+    # The dask, statements and viz extras, so CI runs tests/test_dask_engine.py, tests/test_pool.py
+    # (which submits nothing to SLURM), the statements route and the viewer's tests rather than
+    # skipping them.
+    "petab-mcp[dask,statements,viz]",
     "pytest>=7", "pytest-asyncio>=0.23", "pytest-xdist>=3",
     # The MCP Python client, whose 1 MiB SSE event limit tests/test_server.py holds `get_version`
     # under (PEtab-MCP#231); only transitively present via fastmcp otherwise. 2.3 is fastmcp 4.1's
@@ -160,6 +165,7 @@ dev = [
 [project.scripts]
 petab-mcp = "petab_mcp.cli:main"
 petab-mcp-pool = "petab_mcp.pool:main"
+petab-mcp-viz = "petab_mcp.viz.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/frohlich-lab/PEtab-MCP"
