@@ -223,7 +223,7 @@ def test_a_pool_lost_mid_fit_ends_the_call_as_fit_pool(
 def test_a_pool_restarted_at_its_address_serves_the_next_fit_unless_from_another_environment(
     yaml_path, amici_build_root, tmp_path, monkeypatch
 ):
-    """A pool resubmitted to SLURM came back 4 min later (NEMO, 2026-11-04), long after its client
+    """A pool resubmitted to SLURM came back 4 min later (2026-11-04), long after its client
     had stopped reconnecting and closed, and every later fit failed as ``fit_pool`` until the server
     restarted (#216). A fit while the pool is away still fails so; the next one, once it is back,
     opens a new client there and runs. A pool back from another environment is refused naming
@@ -284,7 +284,7 @@ def test_the_pool_listens_on_its_port_and_takes_every_slurm_setting_from_dask_co
     directories, and the scheduler's host. With no batch, nothing is submitted."""
     logs = tmp_path / "logs"
     config = {
-        "jobqueue.slurm.queue": "ncpu",
+        "jobqueue.slurm.queue": "compute",
         "jobqueue.slurm.cores": 4,
         "jobqueue.slurm.processes": 4,
         "jobqueue.slurm.memory": "8GiB",
@@ -299,7 +299,7 @@ def test_the_pool_listens_on_its_port_and_takes_every_slurm_setting_from_dask_co
     with dask.config.set(config), pool._slurm_cluster(port, 0, 1, 60.0) as cluster:
         script = cluster.job_script()
         assert cluster.scheduler_address == f"tcp://127.0.0.1:{port}"
-    for directive in ("-p ncpu", "--cpus-per-task=4", "--mem=8G", "-t 01:00:00", f"-o {logs}/"):
+    for directive in ("-p compute", "--cpus-per-task=4", "--mem=8G", "-t 01:00:00", f"-o {logs}/"):
         assert f"#SBATCH {directive}" in script
     for arg in ("--nworkers 4", "--nthreads 1", "--lifetime 55m", "--local-directory $TMPDIR"):
         assert arg in script
@@ -336,7 +336,7 @@ _FAKE_SLURM_HEAD = """
 
 class _UnpickledSlowly(WorkerPlugin):
     """Takes 8 s to unpickle on a worker, as :class:`~petab_mcp.dask_engine._NoBuild` does where
-    ``import petab_mcp`` is cold (48-98 s on NEMO)."""
+    ``import petab_mcp`` is cold (48-98 s from shared storage)."""
 
     def __reduce__(self):
         def unpickle():
@@ -385,7 +385,7 @@ def test_jobs_still_starting_run_the_batches_and_only_a_job_running_none_is_canc
 ):
     """A worker joins the scheduler, then unpickles its plugins, and takes no batch until it has.
     dask's ``adapt`` took such a job's workers for idle beside the queued batches, cancelled the job
-    and submitted another, and so on: on NEMO five 64-worker jobs came up and were cancelled within
+    and submitted another, and so on: on a cluster five 64-worker jobs came up and were cancelled within
     15 s each, and the fit ran 0/100 starts in 300 s (#250). It also closed single idle workers, and
     the cluster cancels the job of each, busy workers included. Here the workers' plugin takes 8 s,
     and 3 batches get the 2 jobs they need; once 2 have finished, the job not running the last one
@@ -425,8 +425,8 @@ def test_jobs_still_starting_run_the_batches_and_only_a_job_running_none_is_canc
 
 def test_a_job_whose_workers_have_all_left_is_replaced_while_batches_wait(tmp_path, monkeypatch):
     """A job that ended (its walltime, a failed node) was never replaced: the cluster matches a
-    worker's name to its job's, and a job's 2 workers are ``<job>-0`` and ``<job>-1`` (NEMO,
-    2026-11-04). Here the job is killed under its batch, once the pool has seen it run: it is
+    worker's name to its job's, and a job's 2 workers are ``<job>-0`` and ``<job>-1``
+    (2026-11-04). Here the job is killed under its batch, once the pool has seen it run: it is
     cancelled, another is submitted, and the batch reruns there."""
     config = {
         "distributed.deploy.lost-worker-timeout": "1s",

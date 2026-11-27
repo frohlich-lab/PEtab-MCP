@@ -30,7 +30,7 @@ shared server instead and was closed as superseded.
 - **`DaskEngine`** (`dask_engine.py`) is the server's side: a pyPESTO engine that sends a fit's
   starts to the pool and waits for them (`multistart.watch`).
 - **`python -m petab_mcp.pool_stress`** loads a pool's scheduler as a sweep's servers would, and
-  says whether it holds up (see "Measured on NEMO").
+  says whether it holds up (see "Measured on a cluster").
 - **The sweep driver is gemot's** (frohlich-lab/gemot#107): it submits, finds and signals the
   pool's job, refuses a sweep whose pool is not published and reachable, and gives each task the
   pool's address and build root.
@@ -85,7 +85,7 @@ shared server instead and was closed as superseded.
   - A worker killed under a batch (`KilledWorker`: memory, a crash, or its job ending) fails the
     fit with a message that names the pool, not the model; nothing is scored.
 
-## Measured on NEMO
+## Measured on a cluster
 
 On 2026-11-04, with `pool_stress` at 1200 workers and 100 clients each sending a fit's batches in
 one burst:
@@ -102,8 +102,6 @@ Also found there:
   worker jobs ask for a walltime past the pool's life and set no `--lifetime`.
 - **A full job's workers need time to start.** Importing from GPFS takes 48–98 s cold, so
   `death-timeout` is 600 s, not dask's 60.
-- **NEMO moves any job of 6 h or less to QOS `short`,** which runs only on 12 nodes (cn077–cn088)
-  that are often full. So the pool's job and its worker jobs ask for more than 6 h.
 
 ## Decisions
 
@@ -124,8 +122,8 @@ Also found there:
 
 ## Open
 
-- **Scaling is not measured on NEMO.** How long a resubmitted worker job waits there, and so what
-  `--slurm-idle-minutes` a sweep needs, is not known. `--slurm-min-jobs` equal to
+- **Scaling is not measured on a cluster.** How long a resubmitted worker job waits in SLURM's
+  queue, and so what `--slurm-idle-minutes` a sweep needs, is not known. `--slurm-min-jobs` equal to
   `--slurm-max-jobs` keeps the fixed pool measured above.
 - **The sweep driver** (frohlich-lab/gemot#107, PR frohlich-lab/gemot#114) is not merged. Until it
   is, the application repositories still carry their own copies of `slurm/`, and drop them at the

@@ -91,8 +91,8 @@ class _Jobs(Adaptive):
 
     * **The target is the batches queued or running**, a worker each. ``Scheduler.adaptive_target``
       drops to the workers it would not retire, and it retires an idle one whatever is queued: a
-      job's workers are idle from joining until they have imported ``petab_mcp``, 48-98 s cold on
-      NEMO. It also counts a batch never seen as 0.5 s against a 5 s goal, a tenth of a worker.
+      job's workers are idle from joining until they have imported ``petab_mcp``, 48-98 s cold from
+      shared storage. It also counts a batch never seen as 0.5 s against a 5 s goal, a tenth of a worker.
     * **Only a whole job is closed**, one none of whose workers has run a batch for ``idle_s``,
       newest first, its workers retired first so that no batch lands on them meanwhile. dask closes
       single workers, and ``SpecCluster`` cancels the job of each, busy workers included.

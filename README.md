@@ -115,7 +115,7 @@ to 10 min for the batches running, then cancels its jobs, failing the fits still
   whose `amici`, `pypesto`, `petab` or `petab-mcp` differs from its own, naming both. After a pin
   bump, restart the pool;
 - **a job of 2 CPUs and 8 GB for the pool itself**: at 1200 workers and 100 servers its scheduler
-  used about one core and 1.4 GB (`python -m petab_mcp.pool_stress`, on NEMO);
+  used about one core and 1.4 GB (`python -m petab_mcp.pool_stress`, on a SLURM cluster);
 - **the worker jobs and the scheduler configured in dask's own config**, not by flags: a YAML file
   in `~/.config/dask/` (or `DASK_*` variables) where the pool runs, for example:
 
@@ -147,7 +147,7 @@ A dask task runs as many starts as fill `PETAB_MCP_FIT_TASK_SECONDS` (default 27
 `PETAB_MCP_FIT_PER_START_TIMEOUT`) without one, but no more than spread the fit over the pool's idle
 workers; `PETAB_MCP_FIT_STARTS_PER_TASK` fixes the number instead. A pool lost mid-fit, or a worker
 that cannot import a model, ends the call with `infrastructure_error: fit_pool: `, as a full disk
-does (see "Tools"). How the pool's parts fit together, and what was measured on NEMO, is in
+does (see "Tools"). How the pool's parts fit together, and what was measured on a cluster, is in
 [docs/fit-pool.md](docs/fit-pool.md).
 
 ## Tools
