@@ -8,8 +8,8 @@
   parameter the best starts disagree on, or one at a bound, stands out; optionally each start a
   line through the parameters.
 
-One colouring, how each start ended or its waterfall cluster, applies to all three plots, under
-one legend. Box-selecting starts in the waterfall picks them out in the other two. "At the best" is the
+One colouring, how each start ended, its waterfall cluster or whether it was a warm start,
+applies to all three plots, under one legend. Box-selecting starts in the waterfall picks them out in the other two. "At the best" is the
 server's own count, within :data:`petab_mcp.constants.AT_BEST_NLL_TOL` of the lowest objective;
 a waterfall cluster is a run of starts each within that of the one before.
 How each start ended is in the version's ``pypesto_result.hdf5``; a store without it (an archive)
@@ -63,6 +63,10 @@ OFFSET = 1.0
 #: allow it (``linked_axes``) one range for a dimension of one name, so a zoom in either is a zoom
 #: in both. No other pane on the page allows it.
 ABOVE = hv.Dimension("above_best", label=f"objective − best + {OFFSET:g}")
+
+#: The height of the waterfall's and the objective plot's plotting areas: the same, and their
+#: controls under them, so the y axis they share lines up side by side.
+FRAME = 320
 
 
 #: Fides' ``ExitFlag`` names by value, written out: importing fides to look them up cost half a
@@ -146,8 +150,15 @@ CLUSTER_MIN, CLUSTER_SHARE = 3, 0.02
 #: The grey of the starts that are context: the uncoloured clusters, the starts not picked.
 OTHERS = "#c7c7c7"
 
-#: The tab's two colourings, each applied to all three plots.
-BY_EXIT, BY_CLUSTER = "how each ended", "waterfall cluster"
+#: The tab's colourings, each applied to all three plots.
+BY_EXIT, BY_CLUSTER, BY_START = "how each ended", "waterfall cluster", "warm or cold start"
+
+#: A start's colour by where it began, and what that means.
+START_COLORS = {"warm": style.PALETTE[1], "cold": style.PALETTE[0]}
+START_MEANINGS = {
+    "warm": "Began from the best parameters of an earlier version instead of a random guess.",
+    "cold": "Began from a random guess within the parameters' bounds.",
+}
 
 WATERFALL = """
 Fitting runs an optimiser from many random guesses of the parameters and lets each improve its fit
@@ -161,13 +172,14 @@ same best fit from different guesses: it is very likely the best this model can 
 right are other fits the optimiser got stuck in (local optima). If only one or two dots reach the
 bottom, the best fit was found by luck, and a better one may exist that more starts would find.
 
-Colour, the same in all three plots, says how each start ended or which step (cluster) it is on.
+Colour, the same in all three plots, says how each start ended, which step (cluster) it is on, or
+whether it began from an earlier version's best (warm) or a random guess (cold).
 Box-select dots to follow those starts in the other two plots; press Esc to clear.
 """
 
 LEGEND = """
-One colour per group of starts, the same in all three plots: how each start ended, or which
-waterfall cluster it is in. Untick a group to grey it out in the waterfall and leave it out of the
+One colour per group of starts, the same in all three plots: how each start ended, which
+waterfall cluster it is in, or whether it was a warm or a cold start. Untick a group to grey it out in the waterfall and leave it out of the
 other two plots. Hover an entry for what it means.
 """
 
@@ -191,7 +203,8 @@ Box-select starts in the waterfall to show only those.
 SPREAD = """
 Where each start's fitted parameters ended. Each column is one estimated parameter; up is where its
 value ended between the lowest (0) and highest (1) value it was allowed, on the scale it is
-estimated on (usually log10, so equal steps are equal fold changes). With "values" on, up is the
+estimated on, named over each column (log₁₀ for most, where equal steps are equal fold changes;
+hover the legend for each). With "values" on, up is the
 value itself on that scale, and grey bars mark each parameter's bounds. Within a column the dots
 are moved sideways only so they do not hide each other.
 
@@ -253,12 +266,16 @@ def waterfall_frame(starts: pd.DataFrame, n_warm: int = 0) -> pd.DataFrame:
     df["cluster"] = clusters(df["fval"])
     df["cluster_color"] = df["cluster"].map(cluster_colors(df["cluster"])).fillna(OTHERS)
     df["exit_color"] = df["ended"].map(EXIT_COLORS).fillna(style.MUTED)
+    df["began"] = np.where(df["warm"], "warm", "cold")
+    df["start_color"] = df["began"].map(START_COLORS)
     return df
 
 
 def groups(df: pd.DataFrame, by: str) -> pd.Series:
-    """Each start's colour group, the toggle of its legend entry: how it ended, or its cluster
-    (all the uncoloured clusters one group)."""
+    """Each start's colour group, the toggle of its legend entry: how it ended, its cluster (all
+    the uncoloured clusters one group), or where it began."""
+    if by == BY_START:
+        return "start:" + df["began"]
     if by == BY_CLUSTER:
         return np.where(
             df["cluster_color"] == OTHERS, "cluster:others", "cluster:" + df["cluster"].astype(str)
@@ -267,10 +284,10 @@ def groups(df: pd.DataFrame, by: str) -> pd.Series:
 
 
 def colors(df: pd.DataFrame, by: str, hidden=()) -> dict[int, str]:
-    """Each start's colour by its rank, ``by`` either colouring; the starts of a ``hidden`` group
+    """Each start's colour by its rank, ``by`` any colouring; the starts of a ``hidden`` group
     left out."""
     shown = ~pd.Series(groups(df, by), index=df.index).isin(list(hidden))
-    column = "cluster_color" if by == BY_CLUSTER else "exit_color"
+    column = {BY_CLUSTER: "cluster_color", BY_START: "start_color"}.get(by, "exit_color")
     return dict(zip(df.loc[shown, "rank"], df.loc[shown, column]))
 
 
@@ -279,7 +296,17 @@ def legend(df: pd.DataFrame, starts: pd.DataFrame, by: str, chosen: list[int]) -
     starts (:func:`groups`). How the starts ended counts every start, a failed one too: it has no
     objective to plot, but the summary counts its exit, and the legend must say what it means."""
     out = []
-    if by == BY_CLUSTER:
+    if by == BY_START:
+        for began, n in df["began"].value_counts().reindex(["warm", "cold"]).dropna().items():
+            out.append(
+                K.entry(
+                    f"{began} · {int(n)}",
+                    START_MEANINGS[began],
+                    START_COLORS[began],
+                    toggle=f"start:{began}",
+                )
+            )
+    elif by == BY_CLUSTER:
         for c, color in cluster_colors(df["cluster"]).items():
             sub = df[df["cluster"] == c]
             low, high = f"{sub['fval'].min():.6g}", f"{sub['fval'].max():.6g}"
@@ -326,7 +353,7 @@ def legend(df: pd.DataFrame, starts: pd.DataFrame, by: str, chosen: list[int]) -
             "╌",
         )
     )
-    if n_warm := int(df["warm"].sum()):
+    if (n_warm := int(df["warm"].sum())) and by != BY_START:
         out.append(
             K.entry(
                 f"warm start · {n_warm}",
@@ -369,6 +396,7 @@ WATERFALL_HOVER = [
     ("objective", "@{fval}{0.[000]}"),
     ("ended", "@{ended}"),
     ("cluster", "@{cluster}"),
+    ("began", "@{began}"),
     ("time (s)", "@{time}{0.0}"),
     ("evaluations", "@{n_fval}"),
 ]
@@ -405,7 +433,7 @@ def waterfall_points(
     return hv.Points(
         df,
         ["rank", ABOVE],
-        ["id", "fval", "ended", "cluster", "time", "n_fval", "color"],
+        ["id", "fval", "ended", "cluster", "began", "time", "n_fval", "color"],
     ).opts(
         color=hv.dim("color"),
         size=8,
@@ -419,7 +447,7 @@ def waterfall_points(
         xlabel="start rank (best first)",
         ylabel=ABOVE.label,
         responsive=True,
-        height=370,
+        frame_height=FRAME,
         ylim=ylim or y_range(df, None),
     )
 
@@ -518,7 +546,7 @@ def traces(
     table: a path per start made HoloViews build a dataset for each, 7.8 s of
     Fujita's 300 starts."""
     if tf is None:
-        return hv.Curve([]).opts(responsive=True, height=300)
+        return hv.Curve([]).opts(responsive=True, frame_height=FRAME)
     shown = set(color) & set(chosen) if chosen else set(color)
     t = tf[tf["rank"].isin(shown) & (tf["accepted"] | (rejected and not median))]
     xs = t[x].to_numpy(dtype=float) + (1 if x == "iteration" else 0)
@@ -554,7 +582,7 @@ def traces(
         hv.opts.Area(logx=log, logy=log),
         hv.opts.Overlay(
             responsive=True,
-            height=300,
+            frame_height=FRAME,
             ylim=(ylim or (OFFSET / 2, None)) if log else (None, None),
             xlabel="evaluation" if x == "iteration" else "time (s)",
             ylabel=ABOVE.label,
@@ -623,6 +651,31 @@ def spread_frame(starts: pd.DataFrame, opt: dict, parameters: pd.DataFrame | Non
 #: How far either side of its column a start's dots move, as a share of the columns' spacing.
 SIDEWAYS = 0.3
 
+#: Each estimation scale's name above its columns, and what a step along a column means on it.
+SCALE_NAMES = {"log10": "log₁₀", "log": "ln", "lin": "lin"}
+SCALE_ABOUT = {
+    "log10": "Estimated as the log₁₀ of its value: one step up is ten times the value, so a spread "
+    "along the column is a spread in fold changes.",
+    "log": "Estimated as the natural log of its value: one step up is e (2.7) times the value.",
+    "lin": "Estimated as its value itself: equal steps are equal differences, not fold changes.",
+}
+
+
+def scale_entries(df: pd.DataFrame) -> list[dict]:
+    """The parameter plot's legend: each estimation scale its columns are on."""
+    if df.empty:
+        return []
+    counts = df.groupby("parameter")["scale"].first().value_counts()
+    return [
+        K.entry(
+            f"{SCALE_NAMES.get(scale, scale)} · {n} parameter{'s' if n > 1 else ''}",
+            SCALE_ABOUT.get(scale, ""),
+            style.MUTED,
+            "",
+        )
+        for scale, n in counts.items()
+    ]
+
 
 def spread(
     df: pd.DataFrame,
@@ -650,6 +703,7 @@ def spread(
     )
     column = {p: i for i, p in enumerate(order)}
     bounds = df.groupby("parameter")[["lower", "upper"]].first().reindex(order)
+    scales = df.groupby("parameter")["scale"].first().reindex(order)
     # The golden ratio's fractions spread the starts evenly across the offsets, the same in
     # every column.
     offset = ((df["rank"].to_numpy() * 0.618034) % 1 - 0.5) * 2 * SIDEWAYS
@@ -675,10 +729,25 @@ def spread(
             hv.Segments(ticks, ["x0", "y0", "x1", "y1"]).opts(color=style.MUTED, line_width=2)
         ]
         pad = 0.05 * float((bounds["upper"] - bounds["lower"]).max())
-        ylim = (float(bounds["lower"].min()) - pad, float(bounds["upper"].max()) + pad)
+        ylim = (float(bounds["lower"].min()) - pad, float(bounds["upper"].max()) + 3 * pad)
+        named = float(bounds["upper"].max()) + 1.8 * pad
     else:
         layers = [hv.HLine(edge).opts(color=style.MUTED, line_width=1) for edge in (0, 1)]
-        ylim = (-0.05, 1.05)
+        ylim, named = (-0.05, 1.15), 1.09
+    # Each column's estimation scale over it (scale_entries says what each means).
+    layers.append(
+        hv.Labels(
+            pd.DataFrame(
+                {
+                    "column": np.arange(len(order)),
+                    "named": named,
+                    "scale": [SCALE_NAMES.get(sc, sc) for sc in scales],
+                }
+            ),
+            [col, "named"],
+            "scale",
+        ).opts(text_font_size="8pt", text_color=style.MUTED)
+    )
 
     def lines(x0, y0, x1, y1, frame) -> pd.DataFrame:
         return pd.DataFrame(
@@ -825,7 +894,10 @@ class MultistartTab:
     def __init__(self, app) -> None:
         self.app = app
         self.colour = pn.widgets.RadioButtonGroup(
-            options=[BY_EXIT, BY_CLUSTER], value=BY_EXIT, button_type="light", align="center"
+            options=[BY_EXIT, BY_CLUSTER, BY_START],
+            value=BY_EXIT,
+            button_type="light",
+            align="center",
         )
         #: The one legend, kept across versions so a colour unticked stays unticked.
         self.legend = K.key("Colours", LEGEND)
@@ -873,7 +945,7 @@ class MultistartTab:
                 "simulate-only pass."
             )
         meta, opt = store.meta(version), store.optimization(version) or {}
-        df = waterfall_frame(starts, int(meta.get("n_warm_starts") or 0))
+        df = waterfall_frame(starts, int(opt.get("n_warm_starts") or 0))
         hidden = self.legend.param.hidden
         tf = trace_frame(store.trace(version), df)
         ylim = y_range(df, tf)
@@ -966,15 +1038,17 @@ class MultistartTab:
                 plot(
                     "Objective over the run",
                     TRACES,
+                    pn.bind(trace_plot, self.log, self.median, self.axis),
                     pn.FlexBox(
                         self.axis, self.rejected, self.median, self.log, align_items="center"
                     ),
-                    pn.bind(trace_plot, self.log, self.median, self.axis),
                 ),
                 flex_wrap="wrap",
                 sizing_mode="stretch_width",
             ),
-            K.key("Where each start ended, per estimated parameter", SPREAD),
+            K.key(
+                "Where each start ended, per estimated parameter", SPREAD, scale_entries(spread_df)
+            ),
             pn.Row(self.show_x0, self.connect, self.raw),
             pn.bind(spread_plot, self.raw),
             sizing_mode="stretch_width",

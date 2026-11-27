@@ -247,6 +247,42 @@ def test_a_trace_is_matched_to_its_start_by_place_and_keeps_only_lowering_steps(
     assert list(best["accepted"]) == [True, False, True, False, True]
 
 
+def test_warm_and_cold_starts_are_a_colouring_of_their_own():
+    """A warm start began from an earlier version's best: the first ``n_warm_starts`` ids."""
+    from petab_mcp.viz import multistart_tab as M
+
+    starts = pd.DataFrame(
+        {
+            "id": ["0", "1", "2", "3"],
+            "fval": [1.0, 2.0, 3.0, 4.0],
+            "exitflag": [1, 1, 1, 1],
+            "message": [""] * 4,
+        }
+    )
+    df = M.waterfall_frame(starts, n_warm=2)
+    assert list(M.groups(df, M.BY_START)) == ["start:warm"] * 2 + ["start:cold"] * 2
+    assert set(M.colors(df, M.BY_START, ["start:warm"])) == {2, 3}
+    labels = [e["label"] for e in M.legend(df, starts, M.BY_START, [])]
+    assert labels[:2] == ["warm · 2", "cold · 2"]
+
+
+def test_a_versions_warm_starts_are_read_from_its_optimization_record(viz_store):
+    """The server counts a fit's warm starts on its optimization record, not its meta.json; read
+    from meta, no start was ever warm."""
+    from petab_mcp.viz.multistart_tab import BY_START
+
+    root, yaml = viz_store
+    opt_path = root / "versions" / "v0" / "optimization.json"
+    opt = json.loads(opt_path.read_text())
+    opt["n_warm_starts"] = 1
+    opt_path.write_text(json.dumps(opt))
+    app = VizApp(Store(root), WorkingProblem.from_yaml(yaml), poll_seconds=0)
+    app.multistart.colour.value = BY_START
+    app.multistart._version(0)
+    labels = [e["label"] for e in app.multistart.legend.entries]
+    assert labels[:2] == ["warm · 1", "cold · 2"]
+
+
 def test_the_exit_names_are_fides_own():
     """Written out so the page need not import fides (half a second of its first load)."""
     from fides import ExitFlag
