@@ -50,6 +50,9 @@ class VizApp(param.Parameterized):
     compare = param.Integer(default=None, allow_None=True)
     #: Bumped whenever the store changes, for views that read what is not a version (the fit).
     tick = param.Integer(default=0)
+    #: Bumped at each poll while a fit runs and nothing was written: its clock moves though its
+    #: progress file does not, which the server rewrites only when a start finishes.
+    clock = param.Integer(default=0)
 
     def __init__(
         self,
@@ -122,6 +125,8 @@ class VizApp(param.Parameterized):
     def poll(self) -> None:
         signature = self.store.signature()
         if signature == self._signature:
+            if signature[2] is not None:  # the fit's progress file: a fit is running
+                self.clock += 1
             return
         new_version = signature[-1] != self._signature[-1] or signature[0] != self._signature[0]
         self._signature = signature

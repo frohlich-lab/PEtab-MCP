@@ -901,33 +901,68 @@ def spread(
     )
 
 
-def live_view(
-    progress: dict | None, reference: tuple[int, float] | None = None
-) -> pn.viewable.Viewable | None:
-    """The running fit, or ``None`` when none runs. ``reference``, HEAD's version and best
-    objective, says whether the fit is beating what is stored."""
-    if not progress:
-        return None
-    now = time.time()
-    phase, total, done = (
-        progress.get("phase"),
-        progress.get("total") or 0,
-        progress.get("done") or 0,
-    )
-    line = [f"**Fitting now** · {phase} for {now - (progress.get('since') or now):.0f} s"]
+#: A running fit's phases, in words.
+PHASES = {
+    "compiling": "compiling the model",
+    "queued": "waiting for a worker",
+    "running": "running its starts",
+}
+
+
+def duration(seconds: float) -> str:
+    """``seconds`` as a person reads them."""
+    s = max(int(round(seconds)), 0)
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min {s % 60:02d} s"
+    return f"{s // 3600} h {s % 3600 // 60:02d} min"
+
+
+def live_text(progress: dict, reference: tuple[int, float] | None, now: float) -> str:
+    """The running fit in words, as of ``now``: what it is doing and how long the change has run,
+    its starts done, running and not begun, its best against ``reference`` (HEAD's version and
+    best objective), and how long it has left at the rate its finished starts took."""
+    phase = progress.get("phase")
+    total, done = progress.get("total") or 0, progress.get("done") or 0
+    queued = progress.get("queued") or 0
+    # A progress file from before the server published `started`: the phase's start instead.
+    started = progress.get("started") or progress.get("since") or now
+    lines = [
+        f"**Fitting now** · {PHASES.get(phase, phase)} · "
+        f"{duration(now - started)} since the change began"
+    ]
     if total:
-        line.append(f"{done}/{total} starts done, {progress.get('queued') or 0} not begun")
+        lines.append(
+            f"{done} of {total} starts done · {max(total - done - queued, 0)} running · "
+            f"{queued} not begun"
+        )
     if progress.get("best") is not None:
-        line.append(f"best so far {progress['best']:.6g}")
+        best = f"best so far {progress['best']:.6g}"
         if reference is not None:
-            line.append(f"v{reference[0]}'s best was {reference[1]:.6g}")
+            best += f" · v{reference[0]}'s best was {reference[1]:.6g}"
+        lines.append(best)
     began = progress.get("began")
     if began and done and done < total:
         waited = (progress.get("waited") or 0.0) + (
             now - progress["since"] if phase == "queued" else 0.0
         )
-        line.append(f"about {(now - began - waited) * (total - done) / done:.0f} s left")
-    items = [pn.pane.Markdown(" · ".join(line))]
+        left = (now - began - waited) * (total - done) / done
+        lines.append(f"about {duration(left)} left · about {duration(now - started + left)} in all")
+    return "  \n".join(lines)
+
+
+def live_view(progress: dict, text: pn.viewable.Viewable) -> pn.Card:
+    """The running fit: ``text`` (:func:`live_text`, kept current by the caller), its starts done
+    as a bar, and the objectives of those finished so far."""
+    total, done = progress.get("total") or 0, progress.get("done") or 0
+    items = [text]
+    if total:
+        items.append(
+            pn.indicators.Progress(
+                value=done, max=total, bar_color="warning", sizing_mode="stretch_width", height=12
+            )
+        )
     fvals = sorted(progress.get("fvals") or [])
     if fvals:
         # Dimensions of their own: HoloViews links the ranges of same-named dimensions across the
@@ -1000,12 +1035,24 @@ class MultistartTab:
         )
 
     def _live(self, _tick):
+        """The running fit, drawn anew when its progress file changes; its words also at each
+        poll in between (the app's ``clock``), so its times move while no start finishes."""
         store, head = self.app.store, self.app.store.head()
+        progress = store.fit_progress()
+        if not progress:
+            return pn.Spacer(height=0)
         starts = store.starts(head) if head is not None else None
         reference = None
         if starts is not None and starts["fval"].notna().any():
             reference = (head, float(starts["fval"].min()))
-        return live_view(store.fit_progress(), reference) or pn.Spacer(height=0)
+
+        def text(_clock):
+            return live_text(store.fit_progress() or progress, reference, time.time())
+
+        return live_view(
+            progress,
+            pn.pane.Markdown(pn.bind(text, self.app.param.clock), sizing_mode="stretch_width"),
+        )
 
     def _version(self, version):
         store = self.app.store

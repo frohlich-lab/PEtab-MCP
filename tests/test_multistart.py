@@ -356,6 +356,7 @@ def test_a_running_fit_publishes_its_finished_starts_for_a_viewer(monkeypatch, t
 
     assert (seen[0]["done"], seen[0]["total"], seen[0]["fvals"]) == (2, 3, [3.0])
     assert seen[0]["began"] == pytest.approx(time.time(), abs=60)
+    assert seen[0]["started"] <= seen[0]["began"]
     final = json.loads(path.read_text())
     assert (final["done"], final["best"], final["fvals"]) == (3, 1.5, [3.0, 1.5])
     progress.close()

@@ -103,7 +103,8 @@ class Progress:
     begun, and ``best``, the lowest objective among them (``None`` until one is finite). A
     sequential fit is not watched, and leaves it empty.
 
-    ``phase`` is the change's since ``since``: ``compiling`` while it builds a model
+    ``started`` is when the change began. ``phase`` is the change's since ``since``:
+    ``compiling`` while it builds a model
     (:func:`compiling`), ``queued`` while none of its multistart's starts is running, else
     ``running``. ``waited`` is the multistart's seconds queued before the current phase. ``fvals``
     are the finite objectives of the finished starts, in the order they were read.
@@ -119,7 +120,7 @@ class Progress:
         self.best: float | None = None
         self.fvals: list[float] = []
         self.phase = "running"
-        self.since = time.monotonic()
+        self.since = self.started = time.monotonic()
         self.waited = 0.0
         self.path = path
         self._published: dict[str, Any] | None = None
@@ -149,6 +150,7 @@ class Progress:
         wall = time.time() - time.monotonic()
         state = {
             "phase": self.phase,
+            "started": self.started + wall,
             "since": self.since + wall,
             "began": None if self.began is None else self.began + wall,
             "waited": self.waited,
