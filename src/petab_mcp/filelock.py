@@ -10,7 +10,7 @@ nodes. It takes two locks, in this order:
   deletes a lock file (that races). Not a pid file either (stale after a crash, meaningless on
   another host). A filesystem that refuses it raises; nothing goes on unlocked.
 
-Not ``flock``: on NEMO's GPFS share it is node-local, and a waiter on a second node took it while
+Not ``flock``: on a GPFS share it is node-local, and a waiter on a second node took it while
 the first held it, then deleted the build in progress as unfinished; ``lockf`` there made it wait
 until the holder released it or was killed (PEtab-MCP#189, Check 4). And not ``flock`` beside
 ``lockf``: the two conflict on macOS even on one descriptor, and Linux emulates ``flock`` on NFS as

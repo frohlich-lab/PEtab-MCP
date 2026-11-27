@@ -1,7 +1,7 @@
 [
  {
   "id": "sweep_55max/case0/gene_module",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_module",
@@ -19,7 +19,7 @@
  },
  {
   "id": "sweep_55max/case1/gene_module",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_module",
@@ -37,7 +37,7 @@
  },
  {
   "id": "sweep_55max/case2/gene_repress",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_repress",
@@ -55,7 +55,7 @@
  },
  {
   "id": "sweep_55max/case3/gene_module3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_module3",
@@ -75,7 +75,7 @@
  },
  {
   "id": "sweep_55max/case4/gene_repress2",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_repress2",
@@ -95,7 +95,7 @@
  },
  {
   "id": "sweep_55max/case5/gene_module4",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_module4",
@@ -113,7 +113,7 @@
  },
  {
   "id": "sweep_55max/case6/gene_module5",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_module5",
@@ -133,7 +133,7 @@
  },
  {
   "id": "sweep_55max/case7/homeo1",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "homeo1",
@@ -149,7 +149,7 @@
  },
  {
   "id": "sweep_55max/case8/homeo2q",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "homeo2q",
@@ -169,7 +169,7 @@
  },
  {
   "id": "sweep_55max/case9/protturn",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "protturn",
@@ -186,7 +186,7 @@
  },
  {
   "id": "sweep_55max/case22/p21turn",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "p21turn",
@@ -208,7 +208,7 @@
  },
  {
   "id": "sweep_55max/case23/p21turn",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "p21turn",
@@ -230,7 +230,7 @@
  },
  {
   "id": "sweep_55max/case24/p21turn3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "p21turn3",
@@ -251,7 +251,7 @@
  },
  {
   "id": "sweep_55max/case25/p21turn4",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "p21turn4",
@@ -271,7 +271,7 @@
  },
  {
   "id": "sweep_55max/case26/p21turn5",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "p21turn5",
@@ -294,7 +294,7 @@
  },
  {
   "id": "sweep_55max/case27/homeo1b",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "homeo1b",
@@ -313,7 +313,7 @@
  },
  {
   "id": "sweep_55max/case28/p21turn6",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "DecreaseAmount",
    "policy": "p21turn6",
@@ -333,7 +333,7 @@
  },
  {
   "id": "sweep_55max/case29/gexpr",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr",
@@ -353,7 +353,7 @@
  },
  {
   "id": "sweep_55max/case30/gexpr2",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr2",
@@ -379,7 +379,7 @@
  },
  {
   "id": "sweep_55max/case31/gexpr3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr3",
@@ -403,7 +403,7 @@
  },
  {
   "id": "sweep_55max/case32/gexpr3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr3",
@@ -427,7 +427,7 @@
  },
  {
   "id": "sweep_55max/case33/gexpr5",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr5",
@@ -455,7 +455,7 @@
  },
  {
   "id": "sweep_55max/case34/gexpr8",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr8",
@@ -476,7 +476,7 @@
  },
  {
   "id": "sweep_55max/case35/gexpr9",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr9",
@@ -494,7 +494,7 @@
  },
  {
   "id": "sweep_55max/case36/gexpr10",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr10",
@@ -517,7 +517,7 @@
  },
  {
   "id": "sweep_55max/case37/gexpr11",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr11",
@@ -542,7 +542,7 @@
  },
  {
   "id": "sweep_55max/case38/gexpr12",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr12",
@@ -567,7 +567,7 @@
  },
  {
   "id": "sweep_55max/case40/gexpr13",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr13",
@@ -596,7 +596,7 @@
  },
  {
   "id": "sweep_55max/case41/pka_release_camp",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "pka_release_camp",
@@ -619,7 +619,7 @@
  },
  {
   "id": "sweep_55max/case42/pka_release_camp",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "pka_release_camp",
@@ -642,7 +642,7 @@
  },
  {
   "id": "sweep_55max/case43/gene_ind",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_ind",
@@ -660,7 +660,7 @@
  },
  {
   "id": "sweep_55max/case44/gene_rep",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_rep",
@@ -677,7 +677,7 @@
  },
  {
   "id": "sweep_55max/case45/gene_mix",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_mix",
@@ -698,7 +698,7 @@
  },
  {
   "id": "sweep_55max/case46/gene_ind2",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_ind2",
@@ -715,7 +715,7 @@
  },
  {
   "id": "sweep_55max/case47/gene_rep2",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_rep2",
@@ -732,7 +732,7 @@
  },
  {
   "id": "sweep_55max/case48/gene_mix2",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_mix2",
@@ -752,7 +752,7 @@
  },
  {
   "id": "sweep_55max/case49/gene_ind3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_ind3",
@@ -769,7 +769,7 @@
  },
  {
   "id": "sweep_55max/case50/gene_rep3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_rep3",
@@ -785,7 +785,7 @@
  },
  {
   "id": "sweep_55max/case51/gene_mix3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_mix3",
@@ -804,7 +804,7 @@
  },
  {
   "id": "sweep_55max/case52/gene_int",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_int",
@@ -821,7 +821,7 @@
  },
  {
   "id": "sweep_55max/case53/gene_ind_ppS3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_ind_ppS3",
@@ -837,7 +837,7 @@
  },
  {
   "id": "sweep_55max/case54/gene_int_R",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_int_R",
@@ -853,7 +853,7 @@
  },
  {
   "id": "sweep_55max/case55/gene_ind4",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_ind4",
@@ -871,7 +871,7 @@
  },
  {
   "id": "sweep_55max/case56/gene_mix4",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_mix4",
@@ -892,7 +892,7 @@
  },
  {
   "id": "sweep_55max/case57/gene_ind4",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_ind4",
@@ -911,7 +911,7 @@
  },
  {
   "id": "sweep_55max/case58/gene_mix4",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_mix4",
@@ -933,7 +933,7 @@
  },
  {
   "id": "sweep_55max/case59/gene_rep3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_rep3",
@@ -950,7 +950,7 @@
  },
  {
   "id": "sweep_55max/case60/gene_int_R",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_int_R",
@@ -967,7 +967,7 @@
  },
  {
   "id": "sweep_55max/case61/gene_ind_ppS3",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_ind_ppS3",
@@ -984,7 +984,7 @@
  },
  {
   "id": "sweep_55max/case62/gene_mix6",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_mix6",
@@ -1008,7 +1008,7 @@
  },
  {
   "id": "sweep_55max/case63/gene_mix6",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gene_mix6",
@@ -1032,7 +1032,7 @@
  },
  {
   "id": "sweep_55max/case64/camp_release",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release",
@@ -1052,7 +1052,7 @@
  },
  {
   "id": "sweep_55max/case65/camp_release_comp",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release_comp",
@@ -1072,7 +1072,7 @@
  },
  {
   "id": "sweep_55max/case66/camp_release_hill",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release_hill",
@@ -1092,7 +1092,7 @@
  },
  {
   "id": "sweep_55max/case67/camp_release_h",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release_h",
@@ -1113,7 +1113,7 @@
  },
  {
   "id": "sweep_55max/case68/camp_release_phos",
-  "source": "sweep_indra_55max, NEMO scheme_check/cases.json",
+  "source": "sweep_indra_55max, scheme_check/cases.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release_phos",
@@ -1134,7 +1134,7 @@
  },
  {
   "id": "sweep_55max/multi0/h4_ac_coop_5",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "h4_ac_coop_5",
    "statement_type": "Acetylation",
@@ -1155,7 +1155,7 @@
  },
  {
   "id": "sweep_55max/multi1/h4_ac_coop_8",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "h4_ac_coop_8",
    "statement_type": "Acetylation",
@@ -1175,7 +1175,7 @@
  },
  {
   "id": "sweep_55max/multi2/h4_ac_coop_12",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "h4_ac_coop_12",
    "statement_type": "Acetylation",
@@ -1195,7 +1195,7 @@
  },
  {
   "id": "sweep_55max/multi3/h4_ac_coop_16",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "h4_ac_coop_16",
    "statement_type": "Acetylation",
@@ -1215,7 +1215,7 @@
  },
  {
   "id": "sweep_55max/multi4/h4_ac_coop_16",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a16",
@@ -1236,7 +1236,7 @@
  },
  {
   "id": "sweep_55max/multi5/h4_ac_coop_16",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a16",
@@ -1258,7 +1258,7 @@
  },
  {
   "id": "sweep_55max/multi6/h4_ac_coop_16",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a16",
@@ -1280,7 +1280,7 @@
  },
  {
   "id": "sweep_55max/multi7/h4_ac_coop_5",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a5",
@@ -1301,7 +1301,7 @@
  },
  {
   "id": "sweep_55max/multi8/h4_ac_coop_8",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a8",
@@ -1321,7 +1321,7 @@
  },
  {
   "id": "sweep_55max/multi9/h4_ac_coop_12",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a12",
@@ -1341,7 +1341,7 @@
  },
  {
   "id": "sweep_55max/multi10/h4_ac_coop_16",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a16",
@@ -1363,7 +1363,7 @@
  },
  {
   "id": "sweep_55max/multi11/h4_ac_coop_5b",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a5",
@@ -1382,7 +1382,7 @@
  },
  {
   "id": "sweep_55max/multi12/h4_ac_coop_16b",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a16",
@@ -1401,7 +1401,7 @@
  },
  {
   "id": "sweep_55max/multi13/h4_ac_coop_5c",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a5",
@@ -1421,7 +1421,7 @@
  },
  {
   "id": "sweep_55max/multi14/h4_ac_coop_16c",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "a16",
@@ -1441,7 +1441,7 @@
  },
  {
   "id": "sweep_55max/multi15/raf_act_gate",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_basal",
@@ -1455,7 +1455,7 @@
  },
  {
   "id": "sweep_55max/multi16/raf_act_gate2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_basal",
@@ -1477,7 +1477,7 @@
  },
  {
   "id": "sweep_55max/multi17/dimer_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -1491,7 +1491,7 @@
  },
  {
   "id": "sweep_55max/multi18/gene_module",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1509,7 +1509,7 @@
  },
  {
   "id": "sweep_55max/multi19/protein_synth",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_ts",
@@ -1523,7 +1523,7 @@
  },
  {
   "id": "sweep_55max/multi20/gene_module",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1541,7 +1541,7 @@
  },
  {
   "id": "sweep_55max/multi21/gene_repress",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd0",
@@ -1559,7 +1559,7 @@
  },
  {
   "id": "sweep_55max/multi22/c24u_m",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -1573,7 +1573,7 @@
  },
  {
   "id": "sweep_55max/multi23/gene_module3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1593,7 +1593,7 @@
  },
  {
   "id": "sweep_55max/multi24/gene_repress2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd0",
@@ -1613,7 +1613,7 @@
  },
  {
   "id": "sweep_55max/multi25/gene_module4",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1631,7 +1631,7 @@
  },
  {
   "id": "sweep_55max/multi26/gene_module5",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1651,7 +1651,7 @@
  },
  {
   "id": "sweep_55max/multi27/lig_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -1665,7 +1665,7 @@
  },
  {
   "id": "sweep_55max/multi28/insulin_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "insulin_bind",
@@ -1682,7 +1682,7 @@
  },
  {
   "id": "sweep_55max/multi29/reversible_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "reversible_bind",
@@ -1696,7 +1696,7 @@
  },
  {
   "id": "sweep_55max/multi30/sink_uptake",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_onq",
@@ -1710,7 +1710,7 @@
  },
  {
   "id": "sweep_55max/multi31/rev_state_change",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -1724,7 +1724,7 @@
  },
  {
   "id": "sweep_55max/multi32/rev_conversion",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -1738,7 +1738,7 @@
  },
  {
   "id": "sweep_55max/multi33/cascade_conversion",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -1752,7 +1752,7 @@
  },
  {
   "id": "sweep_55max/multi34/homeo1",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "homeo1",
    "scheme": "obj() >> None @ kd*obj()\nNone >> obj() @ kd + ks*modulated_by_0",
@@ -1768,7 +1768,7 @@
  },
  {
   "id": "sweep_55max/multi35/homeo2q",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "homeo2q",
    "scheme": "obj() >> None @ kd*obj()\nNone >> obj() @ kd + (ks1*modulated_by_0 + ks2*modulated_by_1)*Kq2/(Kq2 + modulated_by_2*modulated_by_2)",
@@ -1788,7 +1788,7 @@
  },
  {
   "id": "sweep_55max/multi36/protturn",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "protturn",
    "scheme": "obj() >> None @ kp*obj() + kdm*modulated_by_0*obj()\nNone >> obj() @ kp*modulated_by_1",
@@ -1805,7 +1805,7 @@
  },
  {
   "id": "sweep_55max/multi37/homeo1",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1821,7 +1821,7 @@
  },
  {
   "id": "sweep_55max/multi38/homeo2q",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1841,7 +1841,7 @@
  },
  {
   "id": "sweep_55max/multi39/protturn",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kp",
@@ -1858,7 +1858,7 @@
  },
  {
   "id": "sweep_55max/multi40/homeo1",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1874,7 +1874,7 @@
  },
  {
   "id": "sweep_55max/multi41/homeo2q",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1894,7 +1894,7 @@
  },
  {
   "id": "sweep_55max/multi42/protturn",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kp",
@@ -1911,7 +1911,7 @@
  },
  {
   "id": "sweep_55max/multi43/homeo1",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1927,7 +1927,7 @@
  },
  {
   "id": "sweep_55max/multi44/homeo2q",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -1947,7 +1947,7 @@
  },
  {
   "id": "sweep_55max/multi45/protturn",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kp",
@@ -1964,7 +1964,7 @@
  },
  {
   "id": "sweep_55max/multi49/p21turn",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kp",
@@ -1986,7 +1986,7 @@
  },
  {
   "id": "sweep_55max/multi50/p21turn",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kp",
@@ -2008,7 +2008,7 @@
  },
  {
   "id": "sweep_55max/multi51/p21turn3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kp",
@@ -2029,7 +2029,7 @@
  },
  {
   "id": "sweep_55max/multi52/p21turn4",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kp",
@@ -2049,7 +2049,7 @@
  },
  {
   "id": "sweep_55max/multi53/p21turn5",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kp",
@@ -2072,7 +2072,7 @@
  },
  {
   "id": "sweep_55max/multi54/homeo1b",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2091,7 +2091,7 @@
  },
  {
   "id": "sweep_55max/multi55/p21turn6",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kdm",
@@ -2111,7 +2111,7 @@
  },
  {
   "id": "sweep_55max/multi56/hat1_pair",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_solo",
@@ -2125,7 +2125,7 @@
  },
  {
   "id": "sweep_55max/multi57/hat1_pair",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_solo",
@@ -2139,7 +2139,7 @@
  },
  {
   "id": "sweep_55max/multi58/k16_context",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_dep",
@@ -2154,7 +2154,7 @@
  },
  {
   "id": "sweep_55max/multi59/k8_context",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_h",
@@ -2169,7 +2169,7 @@
  },
  {
   "id": "sweep_55max/multi60/k12_first",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_rest",
@@ -2183,7 +2183,7 @@
  },
  {
   "id": "sweep_55max/multi61/k16_context2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_dep",
@@ -2199,7 +2199,7 @@
  },
  {
   "id": "sweep_55max/multi62/k8_context2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_h",
@@ -2215,7 +2215,7 @@
  },
  {
   "id": "sweep_55max/multi63/hat1_pair2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_pair",
@@ -2230,7 +2230,7 @@
  },
  {
   "id": "sweep_55max/multi64/k16_context3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_mat",
@@ -2245,7 +2245,7 @@
  },
  {
   "id": "sweep_55max/multi65/k8_context3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_m",
@@ -2260,7 +2260,7 @@
  },
  {
   "id": "sweep_55max/multi66/k8_context4",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_l",
@@ -2274,7 +2274,7 @@
  },
  {
   "id": "sweep_55max/multi67/sirt16_ctx",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_prot",
@@ -2288,7 +2288,7 @@
  },
  {
   "id": "sweep_55max/multi68/k16_context5",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_mat",
@@ -2304,7 +2304,7 @@
  },
  {
   "id": "sweep_55max/multi69/stat5_dimer",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2318,7 +2318,7 @@
  },
  {
   "id": "sweep_55max/multi70/stat5_dimer",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2332,7 +2332,7 @@
  },
  {
   "id": "sweep_55max/multi71/gexpr",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "gexpr",
@@ -2352,7 +2352,7 @@
  },
  {
   "id": "sweep_55max/multi72/gexpr2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2378,7 +2378,7 @@
  },
  {
   "id": "sweep_55max/multi73/gexpr3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2402,7 +2402,7 @@
  },
  {
   "id": "sweep_55max/multi74/gexpr3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2426,7 +2426,7 @@
  },
  {
   "id": "sweep_55max/multi75/gexpr5",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2454,7 +2454,7 @@
  },
  {
   "id": "sweep_55max/multi76/gexpr8",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2475,7 +2475,7 @@
  },
  {
   "id": "sweep_55max/multi77/gexpr9",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2493,7 +2493,7 @@
  },
  {
   "id": "sweep_55max/multi78/gexpr10",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2516,7 +2516,7 @@
  },
  {
   "id": "sweep_55max/multi79/gexpr11",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2541,7 +2541,7 @@
  },
  {
   "id": "sweep_55max/multi80/gexpr12",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2567,7 +2567,7 @@
  },
  {
   "id": "sweep_55max/multi81/gexpr12",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2592,7 +2592,7 @@
  },
  {
   "id": "sweep_55max/multi82/gexpr13",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -2621,7 +2621,7 @@
  },
  {
   "id": "sweep_55max/multi83/bind_ir",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2635,7 +2635,7 @@
  },
  {
   "id": "sweep_55max/multi84/bind_ir",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2649,7 +2649,7 @@
  },
  {
   "id": "sweep_55max/multi85/bind_ir2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2663,7 +2663,7 @@
  },
  {
   "id": "sweep_55max/multi86/bind_ir1f",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kr"
@@ -2676,7 +2676,7 @@
  },
  {
   "id": "sweep_55max/multi87/bind_ir2f",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kr"
@@ -2689,7 +2689,7 @@
  },
  {
   "id": "sweep_55max/multi88/receptor_degrade",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2704,7 +2704,7 @@
  },
  {
   "id": "sweep_55max/multi89/bind_shared",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2719,7 +2719,7 @@
  },
  {
   "id": "sweep_55max/multi90/bind_shared",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2734,7 +2734,7 @@
  },
  {
   "id": "sweep_55max/multi91/bind_conv",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2748,7 +2748,7 @@
  },
  {
   "id": "sweep_55max/multi92/phos_bd",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -2762,7 +2762,7 @@
  },
  {
   "id": "sweep_55max/multi93/pka_release_camp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_act",
@@ -2782,7 +2782,7 @@
  },
  {
   "id": "sweep_55max/multi94/pka_release_sp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_sp",
@@ -2798,7 +2798,7 @@
  },
  {
   "id": "sweep_55max/multi95/pka_reassoc",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_re"
@@ -2811,7 +2811,7 @@
  },
  {
   "id": "sweep_55max/multi96/pka_release_camp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_act",
@@ -2834,7 +2834,7 @@
  },
  {
   "id": "sweep_55max/multi97/pka_release_sp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k_sp",
@@ -2854,7 +2854,7 @@
  },
  {
   "id": "sweep_55max/multi98/lig_cycle",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "lig_cycle",
    "scheme": "subj(b=None) + obj(b=None) >> subj(b=1) % obj(b=1) @ kf_lig\nsubj(b=1) % obj(b=1) >> subj(b=None) + obj(b=None) @ kr_lig\nsubj(b=1) % obj(b=1) >> subj(b=None) @ kdeg_R",
@@ -2869,7 +2869,7 @@
  },
  {
   "id": "sweep_55max/multi99/rr_S2S2_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "rr_S2S2_pp",
    "scheme": "members_0(S465='p', S467='p', cx=None) + members_1(S465='p', S467='p', cx=None) >> members_0(cx=1) % members_1(cx=1) @ kf\nmembers_0(cx=1) % members_1(cx=1) >> members_0(cx=None) + members_1(cx=None) @ kr",
@@ -2883,7 +2883,7 @@
  },
  {
   "id": "sweep_55max/multi100/rr_S2S3_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "rr_S2S3_pp",
    "scheme": "members_0(S465='p', S467='p', cx=None) + members_1(S423='p', S425='p', cx=None) >> members_0(cx=1) % members_1(cx=1) @ kf\nmembers_0(cx=1) % members_1(cx=1) >> members_0(cx=None) + members_1(cx=None) @ kr",
@@ -2897,7 +2897,7 @@
  },
  {
   "id": "sweep_55max/multi101/rr_S3S3_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "rr_S3S3_pp",
    "scheme": "members_0(S423='p', S425='p', cx=None) + members_1(S423='p', S425='p', cx=None) >> members_0(cx=1) % members_1(cx=1) @ kf\nmembers_0(cx=1) % members_1(cx=1) >> members_0(cx=None) + members_1(cx=None) @ kr",
@@ -2911,7 +2911,7 @@
  },
  {
   "id": "sweep_55max/multi102/r4w_S2u",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "r4w_S2u",
    "scheme": "members_0(S465='off', S467='off', cx=None) + members_1(cx=None) >> members_0(cx=1) % members_1(cx=1) @ kf\nmembers_0(cx=1) % members_1(cx=1) >> members_0(cx=None) + members_1(cx=None) @ kr",
@@ -2925,7 +2925,7 @@
  },
  {
   "id": "sweep_55max/multi103/r4w_S3u",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "r4w_S3u",
    "scheme": "members_0(S423='off', S425='off', cx=None) + members_1(cx=None) >> members_0(cx=1) % members_1(cx=1) @ kf\nmembers_0(cx=1) % members_1(cx=1) >> members_0(cx=None) + members_1(cx=None) @ kr",
@@ -2939,7 +2939,7 @@
  },
  {
   "id": "sweep_55max/multi104/r4p_S2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "r4p_S2",
    "scheme": "members_0(S465='p', S467='p', cx=None) + members_1(cx=None) >> members_0(cx=1) % members_1(cx=1) @ kf\nmembers_0(cx=1) % members_1(cx=1) >> members_0(cx=None) + members_1(cx=None) @ kr",
@@ -2953,7 +2953,7 @@
  },
  {
   "id": "sweep_55max/multi105/r4p_S3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "r4p_S3",
    "scheme": "members_0(S423='p', S425='p', cx=None) + members_1(cx=None) >> members_0(cx=1) % members_1(cx=1) @ kf\nmembers_0(cx=1) % members_1(cx=1) >> members_0(cx=None) + members_1(cx=None) @ kr",
@@ -2967,7 +2967,7 @@
  },
  {
   "id": "sweep_55max/multi106/gene_ind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "gene_ind",
    "scheme": "subj() >> subj() + obj() @ kd*(1 + alpha*(amount(modulated_by_0) + amount(modulated_by_1))/(Ka + amount(modulated_by_0) + amount(modulated_by_1)))\nobj() >> None @ kd delete_molecules",
@@ -2985,7 +2985,7 @@
  },
  {
   "id": "sweep_55max/multi107/gene_rep",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "gene_rep",
    "scheme": "subj() >> subj() + obj() @ kd/(1 + gamma*(amount(modulated_by_0) + amount(modulated_by_1)))\nobj() >> None @ kd delete_molecules",
@@ -3002,7 +3002,7 @@
  },
  {
   "id": "sweep_55max/multi108/gene_mix",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "gene_mix",
    "scheme": "subj() >> subj() + obj() @ kd*(1 + alpha*(amount(modulated_by_0) + amount(modulated_by_1))/(Ka + amount(modulated_by_0) + amount(modulated_by_1)))/(1 + beta*(amount(modulated_by_2) + amount(modulated_by_3) - 2))\nobj() >> None @ kd delete_molecules",
@@ -3023,7 +3023,7 @@
  },
  {
   "id": "sweep_55max/multi109/rr_S2S2_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3037,7 +3037,7 @@
  },
  {
   "id": "sweep_55max/multi110/rr_S2S3_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3051,7 +3051,7 @@
  },
  {
   "id": "sweep_55max/multi111/rr_S3S3_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3065,7 +3065,7 @@
  },
  {
   "id": "sweep_55max/multi112/r4w_S2u",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3079,7 +3079,7 @@
  },
  {
   "id": "sweep_55max/multi113/r4w_S3u",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3093,7 +3093,7 @@
  },
  {
   "id": "sweep_55max/multi114/r4p_S2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3107,7 +3107,7 @@
  },
  {
   "id": "sweep_55max/multi115/r4p_S3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3121,7 +3121,7 @@
  },
  {
   "id": "sweep_55max/multi116/lig_cycle",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf_lig",
@@ -3136,7 +3136,7 @@
  },
  {
   "id": "sweep_55max/multi117/lig_cycle",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf_lig",
@@ -3151,7 +3151,7 @@
  },
  {
   "id": "sweep_55max/multi118/lig_cycle",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf_lig",
@@ -3166,7 +3166,7 @@
  },
  {
   "id": "sweep_55max/multi119/lig_cycle",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf_lig",
@@ -3181,7 +3181,7 @@
  },
  {
   "id": "sweep_55max/multi120/rr_S2S2_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3209,7 +3209,7 @@
  },
  {
   "id": "sweep_55max/multi121/rr_S2S3_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3237,7 +3237,7 @@
  },
  {
   "id": "sweep_55max/multi122/rr_S3S3_pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3265,7 +3265,7 @@
  },
  {
   "id": "sweep_55max/multi123/r4w_S2u",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3289,7 +3289,7 @@
  },
  {
   "id": "sweep_55max/multi124/r4w_S3u",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3313,7 +3313,7 @@
  },
  {
   "id": "sweep_55max/multi125/r4p_S2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3337,7 +3337,7 @@
  },
  {
   "id": "sweep_55max/multi126/r4p_S3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3361,7 +3361,7 @@
  },
  {
   "id": "sweep_55max/multi127/rr_S2uS3pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3389,7 +3389,7 @@
  },
  {
   "id": "sweep_55max/multi128/rr_S2mS3pp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3417,7 +3417,7 @@
  },
  {
   "id": "sweep_55max/multi129/rr_S2ppS3u",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3445,7 +3445,7 @@
  },
  {
   "id": "sweep_55max/multi130/rr_S2ppS3m",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3473,7 +3473,7 @@
  },
  {
   "id": "sweep_55max/multi131/rr_S2uS3u",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3501,7 +3501,7 @@
  },
  {
   "id": "sweep_55max/multi132/lig_irrev",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf_lig",
@@ -3515,7 +3515,7 @@
  },
  {
   "id": "sweep_55max/multi133/gene_ind2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3532,7 +3532,7 @@
  },
  {
   "id": "sweep_55max/multi134/gene_rep2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3549,7 +3549,7 @@
  },
  {
   "id": "sweep_55max/multi135/gene_mix2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3569,7 +3569,7 @@
  },
  {
   "id": "sweep_55max/multi136/gene_ind3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3586,7 +3586,7 @@
  },
  {
   "id": "sweep_55max/multi137/gene_rep3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3602,7 +3602,7 @@
  },
  {
   "id": "sweep_55max/multi138/gene_mix3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3621,7 +3621,7 @@
  },
  {
   "id": "sweep_55max/multi139/gene_int",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3638,7 +3638,7 @@
  },
  {
   "id": "sweep_55max/multi140/gene_ind_ppS3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3654,7 +3654,7 @@
  },
  {
   "id": "sweep_55max/multi141/gene_int_R",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3670,7 +3670,7 @@
  },
  {
   "id": "sweep_55max/multi142/gene_ind4",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3688,7 +3688,7 @@
  },
  {
   "id": "sweep_55max/multi143/gene_mix4",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3709,7 +3709,7 @@
  },
  {
   "id": "sweep_55max/multi144/gene_ind4",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3728,7 +3728,7 @@
  },
  {
   "id": "sweep_55max/multi145/gene_mix4",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3750,7 +3750,7 @@
  },
  {
   "id": "sweep_55max/multi146/gene_rep3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3767,7 +3767,7 @@
  },
  {
   "id": "sweep_55max/multi147/gene_int_R",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3784,7 +3784,7 @@
  },
  {
   "id": "sweep_55max/multi148/gene_ind_ppS3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3801,7 +3801,7 @@
  },
  {
   "id": "sweep_55max/multi149/gene_mix6",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kd",
@@ -3824,7 +3824,7 @@
  },
  {
   "id": "sweep_55max/multi151/lig_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "lig_bind",
    "scheme": "members_0(members_1=None) >> members_0(members_1='egf') @ kf\nmembers_0(members_1='egf') >> members_0(members_1=None) @ kr",
@@ -3838,7 +3838,7 @@
  },
  {
   "id": "sweep_55max/multi152/cet_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "policy": "cet_bind",
    "scheme": "members_0(members_1=None) >> members_0(members_1='cet') @ kf\nmembers_0(members_1='cet') >> members_0(members_1=None) @ kr",
@@ -3852,7 +3852,7 @@
  },
  {
   "id": "sweep_55max/multi153/lig_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3866,7 +3866,7 @@
  },
  {
   "id": "sweep_55max/multi154/cet_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3880,7 +3880,7 @@
  },
  {
   "id": "sweep_55max/multi155/lig_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3894,7 +3894,7 @@
  },
  {
   "id": "sweep_55max/multi156/cet_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3908,7 +3908,7 @@
  },
  {
   "id": "sweep_55max/multi157/lig_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3930,7 +3930,7 @@
  },
  {
   "id": "sweep_55max/multi158/cet_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3952,7 +3952,7 @@
  },
  {
   "id": "sweep_55max/multi159/lig_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -3967,7 +3967,7 @@
  },
  {
   "id": "sweep_55max/multi160/lig_dephos",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "k"
@@ -3980,7 +3980,7 @@
  },
  {
   "id": "sweep_55max/multi161/rec_driveE",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf"
@@ -4001,7 +4001,7 @@
  },
  {
   "id": "sweep_55max/multi162/bind_mono",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -4015,7 +4015,7 @@
  },
  {
   "id": "sweep_55max/multi163/reset_desens",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "parameters": [
     "kf",
@@ -4029,7 +4029,7 @@
  },
  {
   "id": "sweep_55max/multi164/sub_on_activates_obj",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Activation",
    "policy": "sub_on_activates_obj",
@@ -4043,7 +4043,7 @@
  },
  {
   "id": "sweep_55max/multi165/active_sub_activates",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Activation",
    "policy": "active_sub_activates",
@@ -4065,7 +4065,7 @@
  },
  {
   "id": "sweep_55max/multi166/active_sub_activates",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Activation",
    "policy": "active_sub_activates",
@@ -4087,7 +4087,7 @@
  },
  {
   "id": "sweep_55max/multi167/insulin_act",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Autophosphorylation",
    "policy": "insulin_act",
@@ -4103,7 +4103,7 @@
  },
  {
   "id": "sweep_55max/multi168/insulin_act_off",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Autophosphorylation",
    "policy": "insulin_act_off",
@@ -4117,7 +4117,7 @@
  },
  {
   "id": "sweep_55max/multi169/internalize_recycle",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "internalize_recycle",
@@ -4131,7 +4131,7 @@
  },
  {
   "id": "sweep_55max/multi170/cycle_v1",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "cycle_v1",
@@ -4147,7 +4147,7 @@
  },
  {
   "id": "sweep_55max/multi171/cycle_v2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "cycle_v2",
@@ -4164,7 +4164,7 @@
  },
  {
   "id": "sweep_55max/multi172/cycle_v3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "cycle_v3",
@@ -4181,7 +4181,7 @@
  },
  {
   "id": "sweep_55max/multi173/sink_v1",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "sink_v1",
@@ -4195,7 +4195,7 @@
  },
  {
   "id": "sweep_55max/multi174/sink_v3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "sink_v3",
@@ -4209,7 +4209,7 @@
  },
  {
   "id": "sweep_55max/multi175/cycle_v5",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "cycle_v5",
@@ -4226,7 +4226,7 @@
  },
  {
   "id": "sweep_55max/multi176/rec_v1",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "rec_v1",
@@ -4244,7 +4244,7 @@
  },
  {
   "id": "sweep_55max/multi177/rec_v2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "rec_v2",
@@ -4263,7 +4263,7 @@
  },
  {
   "id": "sweep_55max/multi178/rec_v3",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "rec_v3",
@@ -4282,7 +4282,7 @@
  },
  {
   "id": "sweep_55max/multi179/rec_v4",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "rec_v4",
@@ -4301,7 +4301,7 @@
  },
  {
   "id": "sweep_55max/multi180/rec_v5",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Conversion",
    "policy": "rec_v5",
@@ -4320,7 +4320,7 @@
  },
  {
   "id": "sweep_55max/multi181/ins_internalize",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Phosphorylation",
    "policy": "ins_internalize",
@@ -4336,7 +4336,7 @@
  },
  {
   "id": "sweep_55max/multi182/ins_internalize",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Phosphorylation",
    "policy": "ins_internalize",
@@ -4352,7 +4352,7 @@
  },
  {
   "id": "sweep_55max/multi183/ins_two_state",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Phosphorylation",
    "policy": "ins_two_state",
@@ -4369,7 +4369,7 @@
  },
  {
   "id": "sweep_55max/multi184/sink_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Phosphorylation",
    "policy": "sink_bind",
@@ -4383,7 +4383,7 @@
  },
  {
   "id": "sweep_55max/multi185/sink_recycle",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Phosphorylation",
    "policy": "sink_recycle",
@@ -4399,7 +4399,7 @@
  },
  {
   "id": "sweep_55max/multi186/ins_two_state_nodeg",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Phosphorylation",
    "policy": "ins_two_state_nodeg",
@@ -4415,7 +4415,7 @@
  },
  {
   "id": "sweep_55max/multi187/cis_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "cis_bind",
@@ -4437,7 +4437,7 @@
  },
  {
   "id": "sweep_55max/multi188/socs_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "socs_bind",
@@ -4451,7 +4451,7 @@
  },
  {
   "id": "sweep_55max/multi189/cis_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "cis_bind",
@@ -4473,7 +4473,7 @@
  },
  {
   "id": "sweep_55max/multi190/socs_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "socs_bind",
@@ -4495,7 +4495,7 @@
  },
  {
   "id": "sweep_55max/multi191/cis_bind2",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "cis_bind2",
@@ -4509,7 +4509,7 @@
  },
  {
   "id": "sweep_55max/multi192/proc_bind",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Acetylation",
    "policy": "proc_bind",
@@ -4524,7 +4524,7 @@
  },
  {
   "id": "sweep_55max/multi193/camp_release",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release",
@@ -4544,7 +4544,7 @@
  },
  {
   "id": "sweep_55max/multi194/camp_release_comp",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release_comp",
@@ -4564,7 +4564,7 @@
  },
  {
   "id": "sweep_55max/multi195/camp_release_hill",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release_hill",
@@ -4584,7 +4584,7 @@
  },
  {
   "id": "sweep_55max/multi196/camp_release_h",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release_h",
@@ -4605,7 +4605,7 @@
  },
  {
   "id": "sweep_55max/multi197/camp_release_phos",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Complex",
    "policy": "camp_release_phos",
@@ -4626,7 +4626,7 @@
  },
  {
   "id": "sweep_55max/multi198/turnover",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "IncreaseAmount",
    "policy": "turnover",
@@ -4639,7 +4639,7 @@
  },
  {
   "id": "sweep_55max/multi199/bind_act_deg",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Phosphorylation",
    "policy": "bind_act_deg",
@@ -4662,7 +4662,7 @@
  },
  {
   "id": "sweep_55max/multi200/int_two_step",
-  "source": "sweep_indra_55max, NEMO scheme_check/schemes_multi.json",
+  "source": "sweep_indra_55max, scheme_check/schemes_multi.json",
   "mechanism": {
    "statement_type": "Phosphorylation",
    "policy": "int_two_step",

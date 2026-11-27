@@ -16,7 +16,7 @@ one :class:`DaskEngine`, and every fit and held-out refit of that server runs it
   ``fit_problems/`` in the build root, which the workers read at the same absolute path. Each start
   carried its problem in its task's argument before, and the scheduler keeps that until the fit
   ends: a froehlich start was 0.45 GiB and took 60 s to pickle, so a sweep's 160 in flight needed
-  72 GiB of a pool job of 8 GB (NEMO, 2026-11-07). Deliberately not ``client.scatter``: scattered
+  72 GiB of a pool job of 8 GB (2026-11-07). Deliberately not ``client.scatter``: scattered
   data lives on one worker, so the nanny killing that worker over memory fails every start of the
   fit still queued. The file goes when the fit returns, however it ends; a stopped batch that
   reaches its next start after that fails there, and nothing waits on it.
@@ -208,7 +208,7 @@ class _NoBuild(WorkerPlugin):
     worker process. The pool registers it before any server joins, so a server's registration is a
     no-op (``idempotent``); on a bare cluster it is the first. One that replaced the last would be
     broadcast to every worker: a sweep's 100 servers joining a pool of 1200 workers within seconds
-    stalled its scheduler past every connect's 30 s deadline (NEMO, 2026-11-04)."""
+    stalled its scheduler past every connect's 30 s deadline (2026-11-04)."""
 
     name = "petab-mcp-no-build"
     idempotent = True
@@ -276,7 +276,7 @@ class DaskEngine(CappedEngine):
 
     A pool restarted at the same address serves the next fit without restarting the server. The
     client reconnects by itself for ``distributed.comm.timeouts.connect`` (30 s), then closes for
-    good, and a pool resubmitted to SLURM took 4 min to come back (NEMO, 2026-11-04). So a fit that
+    good, and a pool resubmitted to SLURM took 4 min to come back (2026-11-04). So a fit that
     finds the client closed opens a new one, which this engine and every copy :meth:`batched` made
     then share; while the pool is still away, that fit fails as ``fit_pool`` and the next one tries
     again. Every fit checks the pool's versions first, one call to the scheduler as each of its
