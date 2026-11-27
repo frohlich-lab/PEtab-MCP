@@ -57,7 +57,7 @@ def test_a_second_thread_waits_for_the_first(tmp_path):
 
 
 def test_other_processes_see_the_lock_while_any_thread_holds_it(tmp_path):
-    """PEtab-MCP#189, Check 4: ``flock`` is node-local on NEMO's GPFS, so a server on another node
+    """PEtab-MCP#189, Check 4: ``flock`` is node-local on a GPFS share, so a server on another node
     took the build lock while one held it, and deleted that build as unfinished. What another node
     sees is the file's POSIX lock: held while a thread holds the lock, still held while a second
     thread waits for it (closing any descriptor of the file would drop it), free once both are done.

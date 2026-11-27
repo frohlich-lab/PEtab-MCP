@@ -312,7 +312,7 @@ def test_a_fits_problem_leaves_the_server_once_and_its_starts_carry_only_themsel
 ):
     """Each froehlich start carried its 0.45 GiB problem as its task's argument, which the scheduler
     keeps until the fit ends: a sweep's 160 starts in flight needed 72 GiB of a pool job of 8 GB, and
-    the server pickled the problem once per start, at 60 s each (NEMO, 2026-11-07). A fit now leaves
+    the server pickled the problem once per start, at 60 s each (2026-11-07). A fit now leaves
     its problem in one file, gone once it returns, and each start crosses the scheduler in a few KB."""
     sizes, problem_bytes = [], []
     with _engine(n_workers=1) as engine:
@@ -730,7 +730,7 @@ def _no_build_plugin(dask_worker) -> int:
 def test_a_server_joining_a_cluster_that_has_no_build_reaches_no_worker():
     """A server joining a pool, which registered _NoBuild first, leaves every worker's plugin as it
     was: no plugin-add is broadcast. At 1200 workers, 100 servers' broadcasts stalled the
-    scheduler past every connect's 30 s deadline (NEMO, 2026-11-04)."""
+    scheduler past every connect's 30 s deadline (2026-11-04)."""
     with _engine() as engine:
         installed = engine.client.run(_no_build_plugin)
         with DaskEngine(engine.client.cluster, engine.problems.parent).client:

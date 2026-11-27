@@ -75,9 +75,9 @@ FIT_DEADLINE_MARGIN_S = 600.0
 
 #: How the local pool starts its workers. Deliberately NOT ``fork``, Linux's default before Python
 #: 3.14: a worker forked out of the threaded server inherits every lock another thread holds at that
-#: moment, and on NEMO all 16 workers of two fits sat at 0 CPU until the fit failed as wedged, while
-#: the same fit under ``forkserver`` ran. A worker started this way inherits no log routing, so
-#: :func:`logging_setup.init_worker` sets it up again.
+#: moment, and on a SLURM cluster all 16 workers of two fits sat at 0 CPU until the fit failed as
+#: wedged, while the same fit under ``forkserver`` ran. A worker started this way inherits no log
+#: routing, so :func:`logging_setup.init_worker` sets it up again.
 START_METHOD = "forkserver"
 
 #: Seconds between two progress lines in the session's log.

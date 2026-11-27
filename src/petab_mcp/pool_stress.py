@@ -24,9 +24,9 @@ that worker's batches. :func:`stress` checks for that:
 It is a module, not a script in a checkout, because it runs from the pool's environment: the workers
 import :mod:`petab_mcp.dask_engine` from it anyway. The tests run it small, on a ``LocalCluster``.
 
-At full size, on NEMO, it is run by hand before any sweep shares a pool. Start the pool with every
-worker job up and none retiring (as many minimum jobs as maximum: 12 jobs of 100 workers here).
-Then, from the pool's environment, on a node of its own, since every client runs in this one
+At full size, on a SLURM cluster, it is run by hand before any sweep shares a pool. Start the pool
+with every worker job up and none retiring (as many minimum jobs as maximum: 12 jobs of 100 workers
+here). Then, from the pool's environment, on a node of its own, since every client runs in this one
 process:
 
 .. code-block:: bash

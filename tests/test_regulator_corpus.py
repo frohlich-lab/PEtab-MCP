@@ -1,5 +1,5 @@
 """The regulator corpus (``tests/data/regulator_corpus``): every repro from the reviews of
-PEtab-MCP#127 and #128, and every mechanism agents wrote in a NEMO sweep, through the check of
+PEtab-MCP#127 and #128, and every mechanism agents wrote in a sweep, through the check of
 a row's regulators (:mod:`petab_mcp.regulation`).
 
 - ``rows.json``: rows as a model states them, with their bindings and the mechanisms they use,
