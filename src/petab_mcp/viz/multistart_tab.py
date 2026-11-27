@@ -31,7 +31,7 @@ from bokeh.models import CustomJS, HoverTool
 import pandas as pd
 import panel as pn
 
-from ..constants import AT_BEST_NLL_TOL
+from ..constants import AT_BEST_NLL_TOL, WARM_START_FRACTION
 from . import key as K
 from . import style
 
@@ -153,10 +153,7 @@ OTHERS = "#c7c7c7"
 #: The tab's colourings, each applied to all three plots.
 BY_EXIT, BY_CLUSTER, BY_START = "how each ended", "waterfall cluster", "warm or cold start"
 
-#: A start's colour by where it began, and what that means. A fit before PEtab-MCP#368 did not
-#: record which of its starts were warm, and they cannot be told from their start points: the
-#: warm half is the parent's optima, its best with the new parameters at three guesses and then
-#: its other optima, so no rule on x0 finds them all.
+#: A start's colour by where it began (:func:`warm_starts`), and what that means.
 NOT_RECORDED = "not recorded"
 START_COLORS = {"warm": style.PALETTE[1], "cold": style.PALETTE[0], NOT_RECORDED: style.MUTED}
 START_MEANINGS = {
@@ -164,8 +161,8 @@ START_MEANINGS = {
     "optima) instead of a random guess.",
     "cold": "Began from a random guess within the parameters' bounds.",
     NOT_RECORDED: "This fit did not record which of its starts were warm (the server records it "
-    "since 25 November 2026), and its start points cannot tell: up to half of a fit's starts are "
-    "warm, begun from the optima of the version it was made from.",
+    "since 25 November 2026), and its start points do not tell: none begins where the fit of the "
+    "version it was made from ended, as a warm start would.",
 }
 
 WATERFALL = """
@@ -261,6 +258,75 @@ def cluster_colors(cluster: pd.Series) -> dict[int, str]:
         :CLUSTERS_COLOURED
     ]
     return {c: style.PALETTE[i] for i, c in enumerate(shared)}
+
+
+def _matches(x: np.ndarray, y: np.ndarray) -> bool:
+    return bool(np.all(np.abs(x - y) <= 1e-9 * np.maximum(1.0, np.abs(y))))
+
+
+def warm_starts(store, version: int, problem) -> int | None:
+    """How many of ``version``'s starts were warm, the first so many ids: its fit's record says,
+    since 25 November 2026 (``n_warm_starts``); before, its start points do.
+
+    pyPESTO numbers a problem's guesses first and its random samples after them
+    (``pypesto.startpoint.CheckedStartpoints``; the server's problems never re-sort them), and the
+    server seeds ``WARM_START_FRACTION`` of the starts as guesses whenever it warm-starts
+    (``fitting.warm_start_guesses``): the first at the pre-fit parameter table, which holds the
+    parent's fitted values, the others at the parent's other optima. A random start begins at
+    neither, so one that does makes the fit warm-started. ``None`` where none does."""
+    opt = store.optimization(version) or {}
+    if opt.get("n_warm_starts") is not None:
+        return int(opt["n_warm_starts"])
+    starts = store.starts(version)
+    names, scales = list(opt.get("x_names") or []), list(opt.get("x_scales") or [])
+    if starts is None or not names:
+        return None
+    began = {
+        str(i): np.asarray(x0, dtype=float)
+        for i, x0 in zip(starts["id"], starts["x0"])
+        if isinstance(x0, list) and len(x0) == len(names)
+    }
+    n_warm = int(len(starts) * WARM_START_FRACTION)
+    parent = store.meta(version).get("parent")
+    has_parent = isinstance(parent, int) and parent >= 0
+    table = store.parameters(parent) if has_parent else problem.parameter_df
+    if "0" in began and table is not None:
+        at = [
+            (i, _scaled(float(table.at[n, "nominalValue"]), scales[i]))
+            for i, n in enumerate(names)
+            if n in table.index and str(table.at[n, "estimate"]).lower() in ("1", "true")
+        ]
+        at = [(i, v) for i, v in at if math.isfinite(v)]
+        if at and _matches(began["0"][[i for i, _ in at]], np.array([v for _, v in at])):
+            return n_warm
+    if (
+        has_parent
+        and (popt := store.optimization(parent))
+        and (pstarts := store.starts(parent)) is not None
+    ):
+        pnames = list(popt.get("x_names") or [])
+        shared = [n for n in names if n in pnames]
+        optima = np.array(
+            [
+                np.asarray(x, dtype=float)[[pnames.index(n) for n in shared]]
+                for x in pstarts["x"]
+                if isinstance(x, list) and len(x) == len(pnames)
+            ]
+        )
+        warm = np.array(
+            [
+                began[str(i)][[names.index(n) for n in shared]]
+                for i in range(n_warm)
+                if str(i) in began
+            ]
+        )
+        if shared and optima.size and warm.size:
+            close = np.abs(warm[:, None, :] - optima[None]) <= 1e-9 * np.maximum(
+                1.0, np.abs(optima)
+            )
+            if close.all(axis=2).any():
+                return n_warm
+    return None
 
 
 def waterfall_frame(starts: pd.DataFrame, n_warm: int | None = None) -> pd.DataFrame:
@@ -464,7 +530,7 @@ def waterfall_points(
 
 def waterfall_marks(df: pd.DataFrame) -> hv.Overlay:
     """The waterfall's dashed line at the best and its rings round the warm starts."""
-    warm = hv.Points(df[df["warm"]], ["rank", ABOVE]).opts(
+    warm = hv.Points(df.loc[df["warm"], ["rank", "above_best"]], ["rank", ABOVE]).opts(
         marker="circle",
         fill_alpha=0,
         line_color="black",
@@ -955,8 +1021,7 @@ class MultistartTab:
                 "simulate-only pass."
             )
         meta, opt = store.meta(version), store.optimization(version) or {}
-        warm = opt.get("n_warm_starts")
-        df = waterfall_frame(starts, None if warm is None else int(warm))
+        df = waterfall_frame(starts, warm_starts(store, version, self.app.problem))
         hidden = self.legend.param.hidden
         tf = trace_frame(store.trace(version), df)
         ylim = y_range(df, tf)

@@ -281,9 +281,51 @@ def test_a_versions_warm_starts_are_read_from_its_optimization_record(viz_store)
     opt_path.write_text(json.dumps(opt))
     app = VizApp(Store(root), WorkingProblem.from_yaml(yaml), poll_seconds=0)
     app.multistart.colour.value = BY_START
-    app.multistart._version(0)
+    pn.panel(app.multistart._version(0)).get_root(Document())  # rings round the warm start
     labels = [e["label"] for e in app.multistart.legend.entries]
     assert labels[:2] == ["warm · 1", "cold · 2"]
+
+
+class _Starts:
+    """A store of two versions, v1 made from v0, as warm_starts reads one."""
+
+    def __init__(self, x0s, recorded=None):
+        names = {"x_names": ["k"], "x_scales": ["log10"]}
+        self.opt = {0: names, 1: {**names, "n_warm_starts": recorded}}
+        self.frames = {
+            0: pd.DataFrame({"id": ["0", "1"], "x": [[0.7], [0.2]], "x0": [None, None]}),
+            1: pd.DataFrame(
+                {
+                    "id": [str(i) for i in range(len(x0s))],
+                    "x": [[0.0]] * len(x0s),
+                    "x0": [[x] for x in x0s],
+                }
+            ),
+        }
+
+    def optimization(self, v):
+        return self.opt[v]
+
+    def starts(self, v):
+        return self.frames[v]
+
+    def meta(self, v):
+        return {"parent": v - 1}
+
+    def parameters(self, v):
+        return pd.DataFrame({"nominalValue": [10.0], "estimate": [1]}, index=["k"])
+
+
+def test_a_fits_warm_starts_are_read_off_its_start_points_where_unrecorded():
+    """pyPESTO numbers the guesses first; the server's first guess is the pre-fit table (the
+    parent's fitted k = 10, 1 on log10), the others the parent's optima; a random start is
+    neither."""
+    from petab_mcp.viz.multistart_tab import warm_starts
+
+    assert warm_starts(_Starts([1.0, -3.0, 2.5, 0.1]), 1, None) == 2  # at the pre-fit table
+    assert warm_starts(_Starts([-3.0, 0.2, 2.5, 0.1]), 1, None) == 2  # at a parent optimum
+    assert warm_starts(_Starts([-3.0, 0.4, 2.5, 0.7]), 1, None) is None  # only a cold id at one
+    assert warm_starts(_Starts([-3.0, 0.4, 2.5, 0.1], recorded=0), 1, None) == 0
 
 
 def test_the_exit_names_are_fides_own():

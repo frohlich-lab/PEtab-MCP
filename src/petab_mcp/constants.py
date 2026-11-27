@@ -119,6 +119,22 @@ PARAMETER_AT_BOUND_RELATIVE_TOL = 0.01
 #: of its parent has reached the parent's optimum (:mod:`nesting`).
 AT_BEST_NLL_TOL = 1.0
 
+# -- warm starts -----------------------------------------------------------
+# Fraction of the multistart re-entered at the PREVIOUS fit's optima (fitting.warm_start_guesses;
+# pyPESTO numbers them first, which is how petab_mcp.viz tells them apart) — its best one (which
+# the write-back left in the nominal values) and then its other converged basins, each remapped
+# onto this problem's parameter vector. For a NESTED edit (a new parameter added at a neutral value)
+# the best one reproduces the parent's likelihood exactly, so a fit that starts there cannot
+# converge WORSE than its parent unless the added structure genuinely cannot help. That is the
+# whole point: an "adding this term made the fit worse" result is otherwise indistinguishable
+# from an under-converged multistart that never found the parent's basin (see :mod:`nesting`),
+# and an agent has read the latter as the former. Re-entering the OTHER basins matters for the
+# same reason one notch down: they are the local optima the parent's own multistart paid to find,
+# and an additive edit does not destroy them.
+# The other half stays FRESH random: an added parameter can create new local optima that none of
+# the parent's basins contain, and only an unbiased sample finds those.
+WARM_START_FRACTION = 0.5
+
 # -- merge hints -----------------------------------------------------------
 #: A merge hint whose ``move_scaled`` reaches this carries ``price_unreliable``: its price is a
 #: local quadratic at the fit's optimum, and one decade is where that stops being local on the
