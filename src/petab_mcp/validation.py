@@ -666,40 +666,81 @@ def _sourceless_species_issues(problem) -> list[dict[str, Any]]:
     ]
 
 
-def _power_issues(problem) -> list[dict[str, Any]]:
-    """One warning per power with an estimated exponent that a base near 0 makes fail, in either
-    of two ways.
+def _powers(sm):
+    """``(where, node)`` for each power in the model's math (:func:`_math_of`)."""
+    for where, math in _math_of(sm):
+        stack = [math] if math is not None else []
+        while stack:
+            node = stack.pop()
+            stack += [node.getChild(i) for i in range(node.getNumChildren())]
+            if node.getType() in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
+                yield where, node
 
-    * ``power_of_state``: the base can go negative with a state, and the exponent reads an
-      estimated row. The integrator lets a state dip just below 0, after a pulse, where a
-      non-integer power is NaN and the simulation fails: 11 of 25 fujita runs scored no held-out
-      data for it, while the one whose powers read ``abs()`` of the state scored best
-      (PEtab-MCP#323). A state is a species a reaction or rate rule changes; the base reads one
-      through sums, differences, products, quotients and assignment rules alone, and any function
-      of it (``max``, ``abs``, ``exp``) is taken to guard it.
-    * ``power_of_zero``: the base is exactly 0 at the start or in a condition
-      (:func:`_zero_at`), and the exponent is an estimated row whose lower bound is below 1. Below
-      1 the power's slope at 0 is infinite: AMICI's sensitivities there are NaN, and in a rate the
-      simulation fails, guarded by ``max`` or ``abs`` or not (lun 63612603_109, PEtab-MCP#341).
+
+def _estimated_rows(pdf) -> dict[str, Any]:
+    """``{id: lower bound}`` of the rows ``pdf`` estimates (``None`` without the column)."""
+    lower = pdf[LOWER_BOUND] if LOWER_BOUND in pdf.columns else [None] * len(pdf)
+    rows = {}
+    for pid, estimate, bound in zip(pdf.index, pdf[ESTIMATE], lower):
+        try:
+            if as_bool(estimate):
+                rows[str(pid)] = bound
+        except ValueError:
+            continue
+    return rows
+
+
+def exponents_below_one_at_zero(problem) -> dict[str, str]:
+    """``{exponent: where}``: each estimated exponent whose lower bound is below 1 and whose
+    power's base is exactly 0 at the start or in a condition (:func:`_zero_at`), with what says so
+    ("reaction `r1` raises `P`, which starts at 0"). Below 1 the power's slope at 0 is infinite:
+    AMICI's sensitivities there are NaN, and in a rate the simulation fails, guarded by ``max`` or
+    ``abs`` or not (lun 63612603_109, PEtab-MCP#341)."""
+    sm = getattr(problem.model, "sbml_model", None)
+    pdf = getattr(problem, "parameter_df", None)
+    if sm is None or pdf is None or ESTIMATE not in pdf.columns:
+        return {}
+    steep = set()
+    for pid, bound in _estimated_rows(pdf).items():
+        try:
+            if bound is not None and float(bound) < 1:
+                steep.add(pid)
+        except (TypeError, ValueError):
+            continue
+    if not steep:
+        return {}
+    ruled = {r.getVariable(): r.getMath() for r in sm.getListOfRules() if r.isAssignment()}
+    zero_at = _zero_at(problem, sm, ruled)
+    found: dict[str, str] = {}
+    for where, node in _powers(sm):
+        base, exponent = node.getChild(0), node.getChild(1)
+        if not exponent.isName() or exponent.getName() not in steep - found.keys():
+            continue
+        when = next((w for w, zero in zero_at if _vanishes_at(base, zero, ruled)), None)
+        if when is not None:
+            found[exponent.getName()] = (
+                f"{where} raises `{libsbml.formulaToL3String(base)}`, which {when}"
+            )
+    return found
+
+
+def _power_issues(problem) -> list[dict[str, Any]]:
+    """One ``power_of_state`` warning per power whose base can go negative with a state and whose
+    exponent reads an estimated row. The integrator lets a state dip just below 0, after a pulse,
+    where a non-integer power is NaN and the simulation fails: 11 of 25 fujita runs scored no
+    held-out data for it, while the one whose powers read ``abs()`` of the state scored best
+    (PEtab-MCP#323). A state is a species a reaction or rate rule changes; the base reads one
+    through sums, differences, products, quotients and assignment rules alone, and any function
+    of it (``max``, ``abs``, ``exp``) is taken to guard it.
     """
     sm = getattr(problem.model, "sbml_model", None)
     pdf = getattr(problem, "parameter_df", None)
     if sm is None or pdf is None or ESTIMATE not in pdf.columns:
         return []
-    lower = pdf[LOWER_BOUND] if LOWER_BOUND in pdf.columns else [None] * len(pdf)
-    estimated, steep = set(), set()
-    for pid, estimate, bound in zip(pdf.index, pdf[ESTIMATE], lower):
-        try:
-            if as_bool(estimate):
-                estimated.add(str(pid))
-                if bound is not None and float(bound) < 1:
-                    steep.add(str(pid))
-        except ValueError:
-            continue
+    estimated = set(_estimated_rows(pdf))
     ruled = {r.getVariable(): r.getMath() for r in sm.getListOfRules() if r.isAssignment()}
     states = _changed_species(sm) | {r.getVariable() for r in sm.getListOfRules() if r.isRate()}
     arithmetic = (libsbml.AST_PLUS, libsbml.AST_MINUS, libsbml.AST_TIMES, libsbml.AST_DIVIDE)
-    zero_at = _zero_at(problem, sm, ruled) if steep else []
 
     def signed(node, seen: frozenset = frozenset()) -> bool:
         if node.getType() == libsbml.AST_NAME:
@@ -721,42 +762,18 @@ def _power_issues(problem) -> list[dict[str, Any]]:
         return bool(names & estimated)
 
     said = {}  # a Hill term writes its power twice
-    for where, math in _math_of(sm):
-        stack = [math] if math is not None else []
-        while stack:
-            node = stack.pop()
-            stack += [node.getChild(i) for i in range(node.getNumChildren())]
-            if node.getType() not in (libsbml.AST_POWER, libsbml.AST_FUNCTION_POWER):
-                continue
-            base, exponent = node.getChild(0), node.getChild(1)
-            text, base_text = libsbml.formulaToL3String(node), libsbml.formulaToL3String(base)
-            power = libsbml.formulaToL3String(exponent)
-            found = []
-            if signed(base) and reads_estimated(exponent):
-                guarded = (
-                    f"max({base_text}, 0)^{f'({power})' if exponent.getNumChildren() else power}"
-                )
-                found.append(
-                    (
-                        "power_of_state",
-                        f"{where} raises a state to an estimated power, `{text}`: the integrator "
-                        "can take a state just below 0, as after a pulse, where a non-integer "
-                        f"power is NaN and the simulation fails. Write `{guarded}`.",
-                    )
-                )
-            if exponent.isName() and exponent.getName() in steep:
-                when = next((w for w, zero in zero_at if _vanishes_at(base, zero, ruled)), None)
-                if when is not None:
-                    found.append(
-                        (
-                            "power_of_zero",
-                            f"{where} raises `{base_text}`, which {when}, to `{power}`, whose "
-                            "lower bound is below 1, where the power's slope at 0 is infinite: "
-                            f"the fit's gradient there is NaN. Give `{power}` a lower bound of 1.",
-                        )
-                    )
-            for check, message in found:
-                said[message] = {"level": "warning", "message": message, "check": check}
+    for where, node in _powers(sm):
+        base, exponent = node.getChild(0), node.getChild(1)
+        if not (signed(base) and reads_estimated(exponent)):
+            continue
+        base_text, power = libsbml.formulaToL3String(base), libsbml.formulaToL3String(exponent)
+        guarded = f"max({base_text}, 0)^{f'({power})' if exponent.getNumChildren() else power}"
+        message = (
+            f"{where} raises a state to an estimated power, `{libsbml.formulaToL3String(node)}`: "
+            "the integrator can take a state just below 0, as after a pulse, where a non-integer "
+            f"power is NaN and the simulation fails. Write `{guarded}`."
+        )
+        said[message] = {"level": "warning", "message": message, "check": "power_of_state"}
     return list(said.values())
 
 

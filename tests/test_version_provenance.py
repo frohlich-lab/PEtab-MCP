@@ -315,8 +315,8 @@ def test_a_fork_resumes_from_its_BASE_optimum_not_the_abandoned_branchs(served):
     from version N rather than merely re-use its bounds.
 
     Why it matters more than the bounds do: `_run_fit` writes each fitted value back into
-    `nominalValue`, and `warm_start_guesses` seeds start 0 (plus perturbed neighbours) from that
-    point. Restore the model and the box but not the point, and the fork sets off from the optimum
+    `nominalValue`, and `warm_start_guesses` seeds start 0 from that point. Restore the model
+    and the box but not the point, and the fork sets off from the optimum
     of the branch the agent just decided to abandon — the one place we know it does not want to
     look. Measured here through `objective_before`, the objective AT the starting point before the
     optimizer moves: for a fork whose edit is numerically inert, it must land on v0's own fitted

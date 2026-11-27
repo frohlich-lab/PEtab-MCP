@@ -47,6 +47,7 @@ from .reconcile import _ast_names
 from .validation import (
     _math_of,
     estimated_assignment_issues,
+    exponents_below_one_at_zero,
     frozen_parametric_stoichiometry_issues,
     piecewise_order_issues,
     rate_reads,
@@ -812,6 +813,7 @@ def _commit_change(
                 "bypasses the SBML<->PEtab reconcile every authoring call runs. Author model "
                 "changes through `antimony`."
             )
+        floored = _raise_exponent_floors(problem)
         report = lint()
 
         warnings = []
@@ -871,7 +873,7 @@ def _commit_change(
         # result no longer carries, so they were reaching nobody at all.
         # The regulators' too, and a constraint that could not be checked, in the edit's event as
         # in its result.
-        warnings = [*warnings, *(w for w in (said, unchecked, unpinned_note) if w)]
+        warnings = [*warnings, *floored, *(w for w in (said, unchecked, unpinned_note) if w)]
         edit_messages = M.warnings_from(M.SOURCE_EDIT, warnings) + M.warnings_from(
             M.SOURCE_VALIDATION,
             [i["message"] for i in report["issues"] if i.get("level") == "warning"],
@@ -2217,6 +2219,41 @@ def _reject_repeated_widening(
         "Do not widen again or hard-code a value (there is no value/estimate tool, and a literal "
         "is just a magic number — values come only from the fit)."
     )
+
+
+def _raise_exponent_floors(problem) -> list[str]:
+    """Raise to 1 the lower bound of each estimated exponent whose power's base is 0 at the start or
+    in a condition (:func:`validation.exponents_below_one_at_zero`), and a start value below it,
+    and say so, one message per exponent. Below 1 the model cannot be simulated where that base is
+    0, so the box below 1 holds no fit: starts drawn there fail, and one at 1 whose gradient points
+    below cannot take a step. 147 of fujita's 148 warm starts ended where they began, on their
+    parent's optimum, which read as "the exponent does not help" (PEtab-MCP#382). A box that lies
+    wholly below 1 is refused."""
+    from .parameters import update_parameters
+
+    found = exponents_below_one_at_zero(problem)
+    df = problem.parameter_df
+    updates, said = [], []
+    for pid, where in sorted(found.items()):
+        lb, ub = float(df.loc[pid, LOWER_BOUND]), float(df.loc[pid, UPPER_BOUND])
+        if ub <= 1:
+            message = (
+                f"`{pid}`'s bounds [{lb:g}, {ub:g}] lie below 1: {where}, to `{pid}`, and below 1 "
+                "that power's slope at 0 is infinite, so the model cannot be simulated. Give "
+                f"`{pid}` an upper bound above 1, or write the term without the power."
+            )
+            raise ValidationError(message, issues=[message])
+        update = {"id": pid, "lowerBound": 1.0}
+        if (nominal := R._finite_nominal(df, pid)) is not None and nominal < 1:
+            update["nominalValue"] = 1.0
+        updates.append(update)
+        said.append(
+            f"`{pid}`'s lower bound is raised from {lb:g} to 1: {where}, to `{pid}`, and below 1 "
+            "that power's slope at 0 is infinite, so the model cannot be simulated there."
+        )
+    if updates:
+        update_parameters(problem, updates)
+    return said
 
 
 def _pinned_limit_advice(problem, parameter_id: str, side: str) -> str:

@@ -577,6 +577,38 @@ def test_an_exponent_widened_past_ten_is_warned():
     assert O._warn_exponent_widening(problem, "K", 1e3) is None  # not an exponent
 
 
+_POWER = ["species C in compartment_;", "C = 0;", "r3: B => C; k1*B;", "r4: C => ; k3*C^h;"]
+
+
+def test_an_exponent_of_a_base_that_starts_at_0_is_held_at_or_above_1(session):
+    """PEtab-MCP#382: below 1, `C^h` has no finite slope where C is 0, so the box below 1 holds no
+    fit. Fujita's h_fb, bounded [0.5, 6] by its agent, left 147 of 148 warm starts at 1, their
+    gradient pointing below it, where every step failed. The edit raises the bound, and a start
+    value below it, and says so; a box wholly below 1 is refused."""
+    from petab.v2.C import LOWER_BOUND, NOMINAL_VALUE
+
+    from petab_mcp.errors import ValidationError
+
+    bounds = {"parameter_id": "h", "lower_bound": 0.5, "upper_bound": 6.0, "scale": "lin"}
+    result = _set_model(session, _POWER, parameters=[bounds])
+    assert float(session.problem.parameter_df.loc["h", LOWER_BOUND]) == 1.0
+    assert _said(result, "`h`'s lower bound") == [
+        "`h`'s lower bound is raised from 0.5 to 1: reaction `r4` raises `C`, which starts at 0, "
+        "to `h`, and below 1 that power's slope at 0 is infinite, so the model cannot be "
+        "simulated there."
+    ]
+    # a minted exponent's box starts at 1...
+    power = [*_POWER[:3], "r4: C => ; k3*C^n;"]
+    assert _said(_set_model(session, [*power, "n = 2;"]), "`n`'s lower bound") == []
+    # ...unless its start value is below 1, which widens the box to it: both are raised
+    power = [*_POWER[:3], "r4: C => ; k3*C^m;"]
+    result = _set_model(session, [*power, "m = 0.5;"])
+    assert float(session.problem.parameter_df.loc["m", NOMINAL_VALUE]) == 1.0
+    assert _said(result, "`m`'s lower bound is raised from 0.5 to 1")
+    with pytest.raises(ValidationError, match=r"`h`'s bounds \[0.3, 0.9\] lie below 1"):
+        _set_model(session, _POWER, parameters=[{**bounds, "lower_bound": 0.3, "upper_bound": 0.9}])
+
+
 def test_third_widening_rejected_through_full_operation_and_reverts(session):
     # Same, but through the public op: it must raise without applying the new bound.
     from petab.v2.C import UPPER_BOUND
